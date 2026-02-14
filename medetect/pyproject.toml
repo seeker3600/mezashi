@@ -1,0 +1,33 @@
+[project]
+authors = [
+    { name = "seeker3600", email = "29515315+seeker3600@users.noreply.github.com" },
+]
+name = "medetect"
+# requires-python = ">= 3.11"
+version = "0.1.0"
+dependencies = ["flatbuffers>=25.12.19,<26", "ml-dtypes>=0.5.4,<0.6", "onnx>=1.20.1,<2", "onnxruntime-gpu>=1.24.1,<2", "onnxslim>=0.1.85,<0.2"]
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[tool.pixi.system-requirements]
+cuda = "13.0"
+
+[tool.pixi.pypi-dependencies]
+medetect = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+
+[tool.pixi.dependencies]
+python = "3.13.*"
+ipykernel = ">=7.2.0,<8"
+pytorch-gpu = "*"
+cuda-version = "13.1.*"
+kaggle = ">=1.8.4,<2"
+ultralytics = ">=8.4.14,<9"
+torchvision = ">=0.25.0,<0.26"
