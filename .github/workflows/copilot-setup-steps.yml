@@ -1,0 +1,49 @@
+name: Copilot Setup Steps
+
+# 変更時に自動で検証できるようにしつつ、Actions タブから手動実行もできる形
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # このジョブ名でないと Copilot に拾われません
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # モノレポなので package.json / lockfile の場所を明示する
+      - name: Set up pnpm (with store cache)
+        uses: pnpm/action-setup@v4
+        with:
+          # mefront の package.json に packageManager があれば version 指定は省略可
+          package_json_file: mezashi/mefront/package.json
+          cache: true
+          cache_dependency_path: mezashi/mefront/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: mezashi/mefront
+
+      - name: Build
+        run: pnpm build
+        working-directory: mezashi/mefront
+
+      - name: Biome CI
+        run: pnpm exec biome ci .
+        working-directory: mezashi/mefront
