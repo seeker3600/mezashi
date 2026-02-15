@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { DetectionCanvas } from "./components/DetectionCanvas";
 import { DropZone } from "./components/DropZone";
+import { LoadingSpinner } from "./components/LoadingSpinner";
 import { ResultPanel } from "./components/ResultPanel";
 import { imageDataToCanvas, isGeoTIFFFile, parseGeoTIFF } from "./lib/geotiff";
 import { loadImageFromFile } from "./lib/imageUtils";
@@ -110,11 +111,22 @@ function App() {
 										setIsGeoTIFF(false);
 										setGeoMeta(undefined);
 									}}
-									className="rounded-md bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+									disabled={isProcessing}
+									className="rounded-md bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
 								>
 									別の画像を選択
 								</button>
-								{status && (
+								{isProcessing && (
+									<div className="flex items-center gap-2">
+										<LoadingSpinner size="sm" />
+										{status && (
+											<span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+												{status}
+											</span>
+										)}
+									</div>
+								)}
+								{!isProcessing && status && (
 									<span className="text-sm text-gray-500 dark:text-gray-400">
 										{status}
 									</span>
@@ -124,7 +136,14 @@ function App() {
 					)}
 
 					{!imageSource && status && (
-						<p className="text-sm text-gray-500 dark:text-gray-400">{status}</p>
+						<div className="flex items-center gap-2">
+							{isProcessing && <LoadingSpinner size="sm" />}
+							<p
+								className={`text-sm ${isProcessing ? "font-medium text-gray-700 dark:text-gray-300" : "text-gray-500 dark:text-gray-400"}`}
+							>
+								{status}
+							</p>
+						</div>
 					)}
 				</div>
 
