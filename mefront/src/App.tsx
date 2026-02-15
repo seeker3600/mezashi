@@ -1,10 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { DetectionCanvas } from "./components/DetectionCanvas";
 import { DropZone } from "./components/DropZone";
 import { ResultPanel } from "./components/ResultPanel";
 import { imageDataToCanvas, isGeoTIFFFile, parseGeoTIFF } from "./lib/geotiff";
 import { loadImageFromFile } from "./lib/imageUtils";
 import { runInference } from "./lib/inference";
+import { CONFIDENCE_THRESHOLD } from "./lib/labels";
 import type { Detection, GeoTIFFMeta } from "./lib/types";
 
 function App() {
@@ -13,15 +14,22 @@ function App() {
 	>(null);
 	const [imageWidth, setImageWidth] = useState(0);
 	const [imageHeight, setImageHeight] = useState(0);
-	const [detections, setDetections] = useState<Detection[]>([]);
+	const [rawDetections, setRawDetections] = useState<Detection[]>([]);
 	const [isGeoTIFF, setIsGeoTIFF] = useState(false);
 	const [geoMeta, setGeoMeta] = useState<GeoTIFFMeta | undefined>();
 	const [status, setStatus] = useState<string>("");
 	const [isProcessing, setIsProcessing] = useState(false);
+	const [confidenceThreshold, setConfidenceThreshold] =
+		useState(CONFIDENCE_THRESHOLD);
+
+	const detections = useMemo(
+		() => rawDetections.filter((d) => d.confidence >= confidenceThreshold),
+		[rawDetections, confidenceThreshold],
+	);
 
 	const handleFileSelect = useCallback(async (file: File) => {
 		setIsProcessing(true);
-		setDetections([]);
+		setRawDetections([]);
 		setStatus("画像を読み込んでいます…");
 
 		try {
@@ -58,7 +66,7 @@ function App() {
 				setStatus(`推論中… (${done}/${total} タイル)`);
 			});
 
-			setDetections(dets);
+			setRawDetections(dets);
 			setStatus(`検出完了: ${dets.length} 件`);
 		} catch (err) {
 			setStatus(`エラー: ${err instanceof Error ? err.message : String(err)}`);
@@ -97,7 +105,7 @@ function App() {
 									type="button"
 									onClick={() => {
 										setImageSource(null);
-										setDetections([]);
+										setRawDetections([]);
 										setStatus("");
 										setIsGeoTIFF(false);
 										setGeoMeta(undefined);
@@ -127,6 +135,8 @@ function App() {
 						imageHeight={imageHeight}
 						isGeoTIFF={isGeoTIFF}
 						geoMeta={geoMeta}
+						confidenceThreshold={confidenceThreshold}
+						onConfidenceChange={setConfidenceThreshold}
 					/>
 				)}
 			</div>

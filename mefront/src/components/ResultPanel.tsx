@@ -7,6 +7,8 @@ interface ResultPanelProps {
 	imageHeight: number;
 	isGeoTIFF: boolean;
 	geoMeta?: GeoTIFFMeta;
+	confidenceThreshold: number;
+	onConfidenceChange: (value: number) => void;
 }
 
 export function ResultPanel({
@@ -15,6 +17,8 @@ export function ResultPanel({
 	imageHeight,
 	isGeoTIFF,
 	geoMeta,
+	confidenceThreshold,
+	onConfidenceChange,
 }: ResultPanelProps) {
 	// Group detections by class
 	const classCounts = new Map<string, number>();
@@ -48,12 +52,27 @@ export function ResultPanel({
 				)}
 			</div>
 
+			<div className="mb-4">
+				<label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+					信頼度しきい値: {confidenceThreshold.toFixed(2)}
+					<input
+						type="range"
+						min="0.05"
+						max="0.95"
+						step="0.05"
+						value={confidenceThreshold}
+						onChange={(e) => onConfidenceChange(Number(e.target.value))}
+						className="mt-1 w-full"
+					/>
+				</label>
+			</div>
+
 			{classCounts.size > 0 && (
-				<div className="mb-4">
-					<h3 className="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+				<details className="mb-4">
+					<summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">
 						クラス別検出数
-					</h3>
-					<ul className="space-y-1 text-sm">
+					</summary>
+					<ul className="mt-1 space-y-1 text-sm">
 						{[...classCounts.entries()].map(([name, count]) => (
 							<li
 								key={name}
@@ -64,7 +83,7 @@ export function ResultPanel({
 							</li>
 						))}
 					</ul>
-				</div>
+				</details>
 			)}
 
 			<button
