@@ -55,7 +55,7 @@ async function runTile(
 		const classId = data[offset + 5];
 		const angle = data[offset + 6];
 
-		if (confidence < CONFIDENCE_THRESHOLD) continue;
+		// if (confidence < CONFIDENCE_THRESHOLD) continue;
 
 		detections.push({
 			classId,
