@@ -31,7 +31,7 @@ jobs:
       - name: Set up pnpm (with store cache)
         uses: pnpm/action-setup@v4
         with:
-          # mefront の package.json に packageManager があれば version 指定は省略可
+          version: 10
           package_json_file: mezashi/mefront/package.json
           cache: true
           cache_dependency_path: mezashi/mefront/pnpm-lock.yaml
