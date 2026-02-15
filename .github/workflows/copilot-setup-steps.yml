@@ -24,14 +24,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Inspect repo tree (root)
+        
+      - name: Install Japanese fonts & locale
         working-directory: .
         run: |
-          pwd
-          ls -la
-          ls -la mefront || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            fonts-noto-cjk fonts-noto-color-emoji locales
+          sudo locale-gen ja_JP.UTF-8
+          sudo update-locale LANG=ja_JP.UTF-8
 
+      - name: Show locale (debug)
+        working-directory: .
+        run: |
+          locale
+          fc-list | head -n 20
+          
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
