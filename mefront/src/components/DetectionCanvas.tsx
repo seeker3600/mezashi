@@ -66,19 +66,29 @@ export function DetectionCanvas({
 			ctx.lineWidth = Math.max(2, Math.min(imageWidth, imageHeight) / 500);
 			ctx.stroke();
 
-			// Draw label background
+			// Draw label inside OBB with rotation
 			const label = `${det.className} ${(det.confidence * 100).toFixed(0)}%`;
 			const fontSize = Math.max(12, Math.min(imageWidth, imageHeight) / 80);
 			ctx.font = `bold ${fontSize}px sans-serif`;
 			const textMetrics = ctx.measureText(label);
+			const textW = textMetrics.width + 6;
 			const textH = fontSize + 4;
-			const textX = corners[0][0];
-			const textY = corners[0][1] - textH;
 
+			// Save context state
+			ctx.save();
+
+			// Move to OBB center and rotate
+			ctx.translate(det.cx, det.cy);
+			ctx.rotate(det.angle);
+
+			// Draw label background centered at OBB center
 			ctx.fillStyle = color;
-			ctx.fillRect(textX, textY, textMetrics.width + 6, textH);
+			ctx.fillRect(-textW / 2, -textH / 2, textW, textH);
 			ctx.fillStyle = "#fff";
-			ctx.fillText(label, textX + 3, corners[0][1] - 4);
+			ctx.fillText(label, -textW / 2 + 3, textH / 2 - 4);
+
+			// Restore context state
+			ctx.restore();
 		}
 	}, [imageSource, detections, imageWidth, imageHeight]);
 
