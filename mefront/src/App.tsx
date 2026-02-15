@@ -139,7 +139,11 @@ function App() {
 						<div className="flex items-center gap-2">
 							{isProcessing && <LoadingSpinner size="sm" />}
 							<p
-								className={`text-sm ${isProcessing ? "font-medium text-gray-700 dark:text-gray-300" : "text-gray-500 dark:text-gray-400"}`}
+								className={
+									isProcessing
+										? "text-sm font-medium text-gray-700 dark:text-gray-300"
+										: "text-sm text-gray-500 dark:text-gray-400"
+								}
 							>
 								{status}
 							</p>
