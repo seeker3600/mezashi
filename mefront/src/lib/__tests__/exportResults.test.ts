@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildGeoJSONForClass, buildPixelResultJSON } from "../exportResults";
+import {
+	buildGeoJSONForClass,
+	buildPixelResultJSON,
+	mergeGeoTIFFDetections,
+} from "../exportResults";
 import type { Detection, GeoTIFFMeta } from "../types";
 
 function makeDetection(overrides: Partial<Detection> = {}): Detection {
@@ -120,5 +124,101 @@ describe("buildGeoJSONForClass", () => {
 		expect(ring[ring.length - 1]).toEqual(ring[0]);
 		// Should have 5 points (4 corners + closing)
 		expect(ring).toHaveLength(5);
+	});
+});
+
+describe("mergeGeoTIFFDetections", () => {
+	const meta1: GeoTIFFMeta = {
+		tiePoint: { x: 0, y: 100 },
+		pixelScale: { x: 1, y: 1 },
+		epsg: 32654,
+	};
+
+	const meta2: GeoTIFFMeta = {
+		tiePoint: { x: 50, y: 100 },
+		pixelScale: { x: 1, y: 1 },
+		epsg: 32654,
+	};
+
+	it("should merge detections without duplicates when no overlap", () => {
+		const dets1 = [makeDetection({ cx: 10, cy: 10, width: 10, height: 10 })];
+		const dets2 = [makeDetection({ cx: 200, cy: 200, width: 10, height: 10 })];
+		const merged = mergeGeoTIFFDetections(dets1, meta1, dets2, meta2);
+		expect(merged).toHaveLength(2);
+	});
+
+	it("should remove duplicates when detections overlap significantly", () => {
+		// Same location, same metadata - should be considered duplicate
+		const dets1 = [
+			makeDetection({
+				cx: 100,
+				cy: 100,
+				width: 40,
+				height: 20,
+				confidence: 0.9,
+			}),
+		];
+		const dets2 = [
+			makeDetection({
+				cx: 50,
+				cy: 100,
+				width: 40,
+				height: 20,
+				confidence: 0.8,
+			}),
+		];
+		// In geo coordinates: det1 at (100, 0), det2 at (100, 0) - same location
+		const merged = mergeGeoTIFFDetections(dets1, meta1, dets2, meta2);
+		expect(merged).toHaveLength(1);
+		// Should keep the higher confidence detection
+		expect(merged[0].confidence).toBe(0.9);
+	});
+
+	it("should replace lower confidence duplicate with higher confidence one", () => {
+		const dets1 = [
+			makeDetection({
+				cx: 100,
+				cy: 100,
+				width: 40,
+				height: 20,
+				confidence: 0.8,
+			}),
+		];
+		const dets2 = [
+			makeDetection({
+				cx: 50,
+				cy: 100,
+				width: 40,
+				height: 20,
+				confidence: 0.95,
+			}),
+		];
+		const merged = mergeGeoTIFFDetections(dets1, meta1, dets2, meta2);
+		expect(merged).toHaveLength(1);
+		expect(merged[0].confidence).toBe(0.95);
+	});
+
+	it("should only compare detections of the same class", () => {
+		const dets1 = [
+			makeDetection({ className: "plane", classId: 0, cx: 100, cy: 100 }),
+		];
+		const dets2 = [
+			makeDetection({ className: "ship", classId: 1, cx: 50, cy: 100 }),
+		];
+		const merged = mergeGeoTIFFDetections(dets1, meta1, dets2, meta2);
+		// Different classes, should not be considered duplicates
+		expect(merged).toHaveLength(2);
+	});
+
+	it("should handle empty detection arrays", () => {
+		const merged1 = mergeGeoTIFFDetections([], meta1, [], meta2);
+		expect(merged1).toHaveLength(0);
+
+		const dets = [makeDetection()];
+		const merged2 = mergeGeoTIFFDetections(dets, meta1, [], meta2);
+		expect(merged2).toHaveLength(1);
+
+		const merged3 = mergeGeoTIFFDetections([], meta1, dets, meta2);
+		expect(merged3).toHaveLength(1);
 	});
 });

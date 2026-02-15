@@ -1,4 +1,8 @@
-import { downloadGeoJSON, downloadResultJSON } from "../lib/exportResults";
+import {
+	downloadGeoJSON,
+	downloadMergedGeoJSON,
+	downloadResultJSON,
+} from "../lib/exportResults";
 import type { Detection, GeoTIFFMeta } from "../lib/types";
 
 interface ResultPanelProps {
@@ -9,6 +13,7 @@ interface ResultPanelProps {
 	geoMeta?: GeoTIFFMeta;
 	confidenceThreshold: number;
 	onConfidenceChange: (value: number) => void;
+	isMerged?: boolean;
 }
 
 export function ResultPanel({
@@ -19,6 +24,7 @@ export function ResultPanel({
 	geoMeta,
 	confidenceThreshold,
 	onConfidenceChange,
+	isMerged = false,
 }: ResultPanelProps) {
 	// Group detections by class
 	const classCounts = new Map<string, number>();
@@ -28,7 +34,11 @@ export function ResultPanel({
 
 	const handleDownload = () => {
 		if (isGeoTIFF && geoMeta) {
-			downloadGeoJSON(detections, geoMeta);
+			if (isMerged) {
+				downloadMergedGeoJSON(detections, geoMeta);
+			} else {
+				downloadGeoJSON(detections, geoMeta);
+			}
 		} else {
 			downloadResultJSON(detections, imageWidth, imageHeight);
 		}
@@ -46,9 +56,16 @@ export function ResultPanel({
 				</p>
 				<p>検出数: {detections.length}</p>
 				{isGeoTIFF && (
-					<p className="text-blue-600 dark:text-blue-400">
-						GeoTIFF (EPSG:{geoMeta?.epsg ?? "不明"})
-					</p>
+					<>
+						<p className="text-blue-600 dark:text-blue-400">
+							GeoTIFF (EPSG:{geoMeta?.epsg ?? "不明"})
+						</p>
+						{isMerged && (
+							<p className="text-green-600 dark:text-green-400">
+								統合済み (重複排除)
+							</p>
+						)}
+					</>
 				)}
 			</div>
 
@@ -92,7 +109,11 @@ export function ResultPanel({
 				disabled={detections.length === 0}
 				className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
 			>
-				{isGeoTIFF ? "GeoJSON をダウンロード" : "JSON をダウンロード"}
+				{isGeoTIFF
+					? isMerged
+						? "統合GeoJSON をダウンロード"
+						: "GeoJSON をダウンロード"
+					: "JSON をダウンロード"}
 			</button>
 		</div>
 	);
