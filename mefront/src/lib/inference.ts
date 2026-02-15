@@ -1,6 +1,6 @@
 import * as ort from "onnxruntime-web";
 import { prepareTile } from "./imageUtils";
-import { CLASS_NAMES, CONFIDENCE_THRESHOLD, MODEL_INPUT_SIZE } from "./labels";
+import { CLASS_NAMES, MODEL_INPUT_SIZE } from "./labels";
 import type { Detection } from "./types";
 
 // Use WASM backend (works in all browsers, no WebGL/WebGPU required)
