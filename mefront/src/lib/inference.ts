@@ -51,9 +51,9 @@ async function runTile(
 		const cy = data[offset + 1];
 		const w = data[offset + 2];
 		const h = data[offset + 3];
-		const angle = data[offset + 4];
-		const confidence = data[offset + 5];
-		const classId = data[offset + 6];
+		const confidence = data[offset + 4];
+		const classId = data[offset + 5];
+		const angle = data[offset + 6];
 
 		if (confidence < CONFIDENCE_THRESHOLD) continue;
 
