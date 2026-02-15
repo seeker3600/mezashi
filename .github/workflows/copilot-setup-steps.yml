@@ -49,8 +49,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm build
+      # - name: Build
+      #   run: pnpm build
 
-      - name: Biome CI
-        run: pnpm exec biome ci .
+      # - name: Biome CI
+      #   run: pnpm exec biome ci .
