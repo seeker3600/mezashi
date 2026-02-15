@@ -15,6 +15,9 @@ jobs:
   copilot-setup-steps:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: mezashi/mefront
     permissions:
       contents: read
 
@@ -22,28 +25,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Inspect repo tree (root)
+        working-directory: .
+        run: |
+          pwd
+          ls -la
+          ls -la mezashi || true
+          ls -la mezashi/mefront || true
+
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          package-manager-cache: false
 
-      # モノレポなので package.json / lockfile の場所を明示する
       - name: Set up pnpm (with store cache)
         uses: pnpm/action-setup@v4
         with:
           version: 10
-          package_json_file: mezashi/mefront/package.json
           cache: true
           cache_dependency_path: mezashi/mefront/pnpm-lock.yaml
+          package_json_file: mezashi/mefront/package.json
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-        working-directory: mezashi/mefront
 
       - name: Build
         run: pnpm build
-        working-directory: mezashi/mefront
 
       - name: Biome CI
         run: pnpm exec biome ci .
-        working-directory: mezashi/mefront
