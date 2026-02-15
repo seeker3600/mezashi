@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# ONNX Runtime WASM files (copied by vite-plugin-static-copy)
+public/*.wasm
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
