@@ -67,6 +67,25 @@ export function DetectionCanvas({
 		[disabled, onFileSelect],
 	);
 
+	const handleKeyDown = useCallback(
+		(e: React.KeyboardEvent) => {
+			if (disabled || !onFileSelect) return;
+			if (e.key === "Enter" || e.key === " ") {
+				e.preventDefault();
+				// Trigger file input dialog
+				const input = document.createElement("input");
+				input.type = "file";
+				input.accept = "image/*,.tif,.tiff";
+				input.onchange = () => {
+					const file = input.files?.[0];
+					if (file) onFileSelect(file);
+				};
+				input.click();
+			}
+		},
+		[disabled, onFileSelect],
+	);
+
 	useEffect(() => {
 		const canvas = canvasRef.current;
 		if (!canvas || !imageSource) return;
@@ -126,12 +145,13 @@ export function DetectionCanvas({
 	if (!imageSource) return null;
 
 	return (
-		// biome-ignore lint/a11y/noStaticElementInteractions: drag and drop is the intended interaction
+		// biome-ignore lint/a11y/noStaticElementInteractions: drag and drop is the intended interaction with keyboard support
 		<div
 			ref={containerRef}
 			onDragOver={handleDragOver}
 			onDragLeave={handleDragLeave}
 			onDrop={handleDrop}
+			onKeyDown={handleKeyDown}
 			className={`relative ${onFileSelect && !disabled ? "cursor-pointer" : ""}`}
 			{...(onFileSelect && !disabled ? { role: "button", tabIndex: 0 } : {})}
 		>
