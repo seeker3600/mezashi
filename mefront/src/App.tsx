@@ -179,7 +179,7 @@ function App() {
 					} else {
 						setIsMerged(false);
 						setStatus(
-							`検出完了: ${dets.length} 件 (2枚目の画像に置き換えました)`,
+							`検出完了: ${dets.length} 件 (次の画像に置き換えました)`,
 						);
 					}
 				}
@@ -218,9 +218,7 @@ function App() {
 								detections={detections}
 								imageWidth={imageWidth}
 								imageHeight={imageHeight}
-								onFileSelect={
-									firstImage && !secondImage ? handleFileSelect : undefined
-								}
+								onFileSelect={firstImage ? handleFileSelect : undefined}
 								disabled={isProcessing}
 							/>
 							<div className="flex items-center gap-4">
