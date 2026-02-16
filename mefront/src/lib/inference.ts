@@ -17,7 +17,7 @@ let sessionPromise: Promise<ort.InferenceSession> | null = null;
 export function loadModel(): Promise<ort.InferenceSession> {
 	if (!sessionPromise) {
 		sessionPromise = ort.InferenceSession.create("/models/yolo26n-obb.onnx", {
-			executionProviders: ["wasm"],
+			executionProviders: ["webgpu", "webgl", "wasm"],
 		});
 	}
 	return sessionPromise;
