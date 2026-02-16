@@ -207,18 +207,8 @@ function App() {
 
 			<div className="grid gap-6 lg:grid-cols-[1fr_300px]">
 				<div className="space-y-4">
-					{(!firstImage || (firstImage && !isProcessing)) && (
-						<div>
-							<DropZone
-								onFileSelect={handleFileSelect}
-								disabled={isProcessing}
-							/>
-							{firstImage && !secondImage && (
-								<p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-									2枚目の画像をドロップすると検出を実行します
-								</p>
-							)}
-						</div>
+					{!firstImage && (
+						<DropZone onFileSelect={handleFileSelect} disabled={isProcessing} />
 					)}
 
 					{imageSource && (
@@ -228,6 +218,10 @@ function App() {
 								detections={detections}
 								imageWidth={imageWidth}
 								imageHeight={imageHeight}
+								onFileSelect={
+									firstImage && !secondImage ? handleFileSelect : undefined
+								}
+								disabled={isProcessing}
 							/>
 							<div className="flex items-center gap-4">
 								<button

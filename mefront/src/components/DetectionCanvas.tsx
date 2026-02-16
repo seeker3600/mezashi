@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getOBBCorners } from "../lib/obbUtils";
 import type { Detection } from "../lib/types";
 
@@ -26,6 +26,8 @@ interface DetectionCanvasProps {
 	detections: Detection[];
 	imageWidth: number;
 	imageHeight: number;
+	onFileSelect?: (file: File) => void;
+	disabled?: boolean;
 }
 
 export function DetectionCanvas({
@@ -33,8 +35,37 @@ export function DetectionCanvas({
 	detections,
 	imageWidth,
 	imageHeight,
+	onFileSelect,
+	disabled = false,
 }: DetectionCanvasProps) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
+	const containerRef = useRef<HTMLDivElement>(null);
+	const [isDragOver, setIsDragOver] = useState(false);
+
+	const handleDragOver = useCallback(
+		(e: React.DragEvent) => {
+			e.preventDefault();
+			if (!disabled && onFileSelect) {
+				setIsDragOver(true);
+			}
+		},
+		[disabled, onFileSelect],
+	);
+
+	const handleDragLeave = useCallback(() => {
+		setIsDragOver(false);
+	}, []);
+
+	const handleDrop = useCallback(
+		(e: React.DragEvent) => {
+			e.preventDefault();
+			setIsDragOver(false);
+			if (disabled || !onFileSelect) return;
+			const file = e.dataTransfer.files[0];
+			if (file) onFileSelect(file);
+		},
+		[disabled, onFileSelect],
+	);
 
 	useEffect(() => {
 		const canvas = canvasRef.current;
@@ -95,10 +126,43 @@ export function DetectionCanvas({
 	if (!imageSource) return null;
 
 	return (
-		<canvas
-			ref={canvasRef}
-			className="max-h-[70vh] w-full object-contain"
-			style={{ imageRendering: "auto" }}
-		/>
+		// biome-ignore lint/a11y/noStaticElementInteractions: drag and drop is the intended interaction
+		<div
+			ref={containerRef}
+			onDragOver={handleDragOver}
+			onDragLeave={handleDragLeave}
+			onDrop={handleDrop}
+			className={`relative ${onFileSelect && !disabled ? "cursor-pointer" : ""}`}
+			{...(onFileSelect && !disabled ? { role: "button", tabIndex: 0 } : {})}
+		>
+			<canvas
+				ref={canvasRef}
+				className="max-h-[70vh] w-full object-contain"
+				style={{ imageRendering: "auto" }}
+			/>
+			{onFileSelect && !disabled && (
+				<div
+					className={`pointer-events-none absolute inset-0 flex items-center justify-center transition-all ${
+						isDragOver ? "bg-blue-500/20 backdrop-blur-sm" : "bg-transparent"
+					}`}
+				>
+					{isDragOver && (
+						<div className="rounded-lg bg-white/90 px-6 py-4 text-center shadow-lg dark:bg-gray-800/90">
+							<p className="text-lg font-medium text-gray-800 dark:text-gray-200">
+								2枚目の画像をドロップ
+							</p>
+							<p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+								検出を実行します
+							</p>
+						</div>
+					)}
+				</div>
+			)}
+			{onFileSelect && !disabled && !isDragOver && (
+				<div className="pointer-events-none absolute bottom-4 right-4 rounded-md bg-gray-800/70 px-3 py-2 text-xs text-white backdrop-blur-sm">
+					2枚目の画像をドロップできます
+				</div>
+			)}
+		</div>
 	);
 }
