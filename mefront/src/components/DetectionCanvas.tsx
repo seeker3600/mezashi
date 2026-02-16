@@ -41,6 +41,10 @@ export function DetectionCanvas({
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const [isDragOver, setIsDragOver] = useState(false);
+	const [scale, setScale] = useState(1);
+	const [offset, setOffset] = useState({ x: 0, y: 0 });
+	const [isPanning, setIsPanning] = useState(false);
+	const [startPan, setStartPan] = useState({ x: 0, y: 0 });
 
 	const handleDragOver = useCallback(
 		(e: React.DragEvent) => {
@@ -86,6 +90,79 @@ export function DetectionCanvas({
 		[disabled, onFileSelect],
 	);
 
+	// Reset zoom and pan when image changes
+	useEffect(() => {
+		setScale(1);
+		setOffset({ x: 0, y: 0 });
+	}, [imageSource, imageWidth, imageHeight]);
+
+	const handleWheel = useCallback(
+		(e: React.WheelEvent<HTMLCanvasElement>) => {
+			e.preventDefault();
+			const canvas = canvasRef.current;
+			if (!canvas) return;
+
+			const rect = canvas.getBoundingClientRect();
+			const mouseX = e.clientX - rect.left;
+			const mouseY = e.clientY - rect.top;
+
+			// Calculate base offset (image centering)
+			const scaleX = canvas.width / imageWidth;
+			const scaleY = canvas.height / imageHeight;
+			const fitScale = Math.min(scaleX, scaleY);
+			const displayWidth = imageWidth * fitScale;
+			const displayHeight = imageHeight * fitScale;
+			const baseOffsetX = (canvas.width - displayWidth) / 2;
+			const baseOffsetY = (canvas.height - displayHeight) / 2;
+
+			const delta = e.deltaY > 0 ? 0.9 : 1.1;
+			const newScale = Math.min(Math.max(1.0, scale * delta), 10);
+
+			// Calculate world coordinates at mouse position
+			const worldX = (mouseX - baseOffsetX - offset.x) / scale;
+			const worldY = (mouseY - baseOffsetY - offset.y) / scale;
+
+			// Adjust offset so the same world point stays under the mouse
+			setOffset({
+				x: mouseX - baseOffsetX - worldX * newScale,
+				y: mouseY - baseOffsetY - worldY * newScale,
+			});
+			setScale(newScale);
+		},
+		[scale, offset, imageWidth, imageHeight],
+	);
+
+	const handleMouseDown = useCallback(
+		(e: React.MouseEvent<HTMLCanvasElement>) => {
+			if (e.button === 0) {
+				// Left click
+				setIsPanning(true);
+				setStartPan({ x: e.clientX - offset.x, y: e.clientY - offset.y });
+			}
+		},
+		[offset],
+	);
+
+	const handleMouseMove = useCallback(
+		(e: React.MouseEvent<HTMLCanvasElement>) => {
+			if (isPanning) {
+				setOffset({
+					x: e.clientX - startPan.x,
+					y: e.clientY - startPan.y,
+				});
+			}
+		},
+		[isPanning, startPan],
+	);
+
+	const handleMouseUp = useCallback(() => {
+		setIsPanning(false);
+	}, []);
+
+	const handleMouseLeave = useCallback(() => {
+		setIsPanning(false);
+	}, []);
+
 	useEffect(() => {
 		const canvas = canvasRef.current;
 		if (!canvas || !imageSource) return;
@@ -93,42 +170,73 @@ export function DetectionCanvas({
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
 
-		// Set canvas size to match image
-		canvas.width = imageWidth;
-		canvas.height = imageHeight;
+		// Set canvas size to match container for display
+		const container = containerRef.current;
+		if (container) {
+			const rect = container.getBoundingClientRect();
+			canvas.width = rect.width;
+			canvas.height = rect.height;
+		}
 
-		// Draw image
-		ctx.drawImage(imageSource, 0, 0, imageWidth, imageHeight);
+		// Clear canvas
+		ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+		// Calculate scaling to fit image in canvas while maintaining aspect ratio
+		const scaleX = canvas.width / imageWidth;
+		const scaleY = canvas.height / imageHeight;
+		const fitScale = Math.min(scaleX, scaleY);
+		const displayWidth = imageWidth * fitScale;
+		const displayHeight = imageHeight * fitScale;
+		const baseOffsetX = (canvas.width - displayWidth) / 2;
+		const baseOffsetY = (canvas.height - displayHeight) / 2;
+
+		// Apply transform for zoom and pan
+		ctx.save();
+		ctx.translate(baseOffsetX + offset.x, baseOffsetY + offset.y);
+		ctx.scale(scale, scale);
+
+		// Draw image at origin
+		ctx.drawImage(imageSource, 0, 0, displayWidth, displayHeight);
 
 		// Draw detections
 		for (const det of detections) {
 			const color = COLORS[det.classId % COLORS.length];
 			const corners = getOBBCorners(det);
 
+			// Scale corners to display coordinates
+			const scaledCorners = corners.map(([x, y]) => [
+				x * fitScale,
+				y * fitScale,
+			]);
+
 			// Draw OBB polygon
 			ctx.beginPath();
-			ctx.moveTo(corners[0][0], corners[0][1]);
-			for (let i = 1; i < corners.length; i++) {
-				ctx.lineTo(corners[i][0], corners[i][1]);
+			ctx.moveTo(scaledCorners[0][0], scaledCorners[0][1]);
+			for (let i = 1; i < scaledCorners.length; i++) {
+				ctx.lineTo(scaledCorners[i][0], scaledCorners[i][1]);
 			}
 			ctx.closePath();
 			ctx.strokeStyle = color;
-			ctx.lineWidth = Math.max(2, Math.min(imageWidth, imageHeight) / 500);
+			ctx.lineWidth = Math.max(2, Math.min(displayWidth, displayHeight) / 500);
 			ctx.stroke();
 
 			// Draw label inside OBB with rotation
 			const label = `${det.className} ${(det.confidence * 100).toFixed(0)}%`;
-			const fontSize = Math.max(12, Math.min(imageWidth, imageHeight) / 80);
+			const fontSize = Math.max(12, Math.min(displayWidth, displayHeight) / 80);
 			ctx.font = `bold ${fontSize}px sans-serif`;
 			const textMetrics = ctx.measureText(label);
 			const textW = textMetrics.width + 6;
 			const textH = fontSize + 4;
 
+			// Scale center coordinates
+			const cx = det.cx * fitScale;
+			const cy = det.cy * fitScale;
+
 			// Save context state
 			ctx.save();
 
 			// Move to OBB center and rotate
-			ctx.translate(det.cx, det.cy);
+			ctx.translate(cx, cy);
 			ctx.rotate(det.angle);
 
 			// Draw label background centered at OBB center
@@ -140,7 +248,9 @@ export function DetectionCanvas({
 			// Restore context state
 			ctx.restore();
 		}
-	}, [imageSource, detections, imageWidth, imageHeight]);
+
+		ctx.restore();
+	}, [imageSource, detections, imageWidth, imageHeight, scale, offset]);
 
 	if (!imageSource) return null;
 
@@ -158,7 +268,15 @@ export function DetectionCanvas({
 			<canvas
 				ref={canvasRef}
 				className="max-h-[70vh] w-full object-contain"
-				style={{ imageRendering: "auto" }}
+				style={{
+					imageRendering: "auto",
+					cursor: isPanning ? "grabbing" : "grab",
+				}}
+				onWheel={handleWheel}
+				onMouseDown={handleMouseDown}
+				onMouseMove={handleMouseMove}
+				onMouseUp={handleMouseUp}
+				onMouseLeave={handleMouseLeave}
 			/>
 			{onFileSelect && !disabled && (
 				<div
@@ -176,11 +294,6 @@ export function DetectionCanvas({
 							</p>
 						</div>
 					)}
-				</div>
-			)}
-			{onFileSelect && !disabled && !isDragOver && (
-				<div className="pointer-events-none absolute bottom-4 right-4 rounded-md bg-gray-800/70 px-3 py-2 text-xs text-white backdrop-blur-sm">
-					2枚目の画像をドロップできます
 				</div>
 			)}
 		</div>

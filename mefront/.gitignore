@@ -25,3 +25,4 @@ public/*.wasm
 *.njsproj
 *.sln
 *.sw?
+TODO.md
