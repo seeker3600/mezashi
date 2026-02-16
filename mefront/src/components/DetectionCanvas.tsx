@@ -287,7 +287,7 @@ export function DetectionCanvas({
 					{isDragOver && (
 						<div className="rounded-lg bg-white/90 px-6 py-4 text-center shadow-lg dark:bg-gray-800/90">
 							<p className="text-lg font-medium text-gray-800 dark:text-gray-200">
-								2枚目の画像をドロップ
+								次の画像をドロップ
 							</p>
 							<p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
 								検出を実行します
