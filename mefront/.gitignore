@@ -26,3 +26,5 @@ public/*.wasm
 *.sln
 *.sw?
 TODO.md
+
+samples/

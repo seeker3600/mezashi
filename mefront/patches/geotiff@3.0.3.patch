@@ -1,0 +1,44 @@
+diff --git a/dist-module/imagefiledirectory.js b/dist-module/imagefiledirectory.js
+index 2f884378d4c86c461c797998a5b756ec7fb1c6e5..003792b86285591bc7b9c461f0a522d0dad0f38a 100644
+--- a/dist-module/imagefiledirectory.js
++++ b/dist-module/imagefiledirectory.js
+@@ -167,7 +167,7 @@ class DeferredArray {
+                     offset: this.arrayOffset,
+                     length: this.itemSize * this.length,
+                 }]).then((data) => {
+-                const dataSlice = new DataSlice(data[0], this.arrayOffset, true, false);
++                const dataSlice = new DataSlice(data[0], this.arrayOffset, this.littleEndian, false);
+                 const result = getValues(this.data, getDataSliceReader(dataSlice, this.fieldType), dataSlice, this.fieldType, this.length, this.arrayOffset, true);
+                 // Mark all items as loaded in the bitmap
+                 this.maskBitmap.fill(0xFF);
+@@ -199,7 +199,7 @@ class DeferredArray {
+                         offset,
+                         length: this.itemSize,
+                     }]).then((data) => {
+-                    const dataSlice = new DataSlice(data[0], this.arrayOffset + (index * this.itemSize), true, false);
++                    const dataSlice = new DataSlice(data[0], this.arrayOffset + (index * this.itemSize), this.littleEndian, false);
+                     const readMethod = getDataSliceReader(dataSlice, this.fieldType);
+                     const value = readMethod.call(dataSlice, offset);
+                     this.data[index] = value;
+diff --git a/dist-node/imagefiledirectory.js b/dist-node/imagefiledirectory.js
+index c0d43caca682939c6b36cd3e874b5fa3bacea8ae..0ed59fac3753e44a5918f2065b0ea43a076a1ad6 100644
+--- a/dist-node/imagefiledirectory.js
++++ b/dist-node/imagefiledirectory.js
+@@ -173,7 +173,7 @@ class DeferredArray {
+                     offset: this.arrayOffset,
+                     length: this.itemSize * this.length,
+                 }]).then((data) => {
+-                const dataSlice = new dataslice_js_1.default(data[0], this.arrayOffset, true, false);
++                const dataSlice = new dataslice_js_1.default(data[0], this.arrayOffset, this.littleEndian, false);
+                 const result = getValues(this.data, getDataSliceReader(dataSlice, this.fieldType), dataSlice, this.fieldType, this.length, this.arrayOffset, true);
+                 // Mark all items as loaded in the bitmap
+                 this.maskBitmap.fill(0xFF);
+@@ -205,7 +205,7 @@ class DeferredArray {
+                         offset,
+                         length: this.itemSize,
+                     }]).then((data) => {
+-                    const dataSlice = new dataslice_js_1.default(data[0], this.arrayOffset + (index * this.itemSize), true, false);
++                    const dataSlice = new dataslice_js_1.default(data[0], this.arrayOffset + (index * this.itemSize), this.littleEndian, false);
+                     const readMethod = getDataSliceReader(dataSlice, this.fieldType);
+                     const value = readMethod.call(dataSlice, offset);
+                     this.data[index] = value;
