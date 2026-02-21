@@ -1,6 +1,10 @@
 import * as ort from "onnxruntime-web";
 import { prepareTile } from "./imageUtils";
-import { CLASS_NAMES, MODEL_INPUT_SIZE } from "./labels";
+import {
+	CLASS_NAMES,
+	CONFIDENCE_THRESHOLD_MIN,
+	MODEL_INPUT_SIZE,
+} from "./labels";
 import type { Detection } from "./types";
 
 // Use WASM backend (works in all browsers, no WebGL/WebGPU required)
@@ -55,7 +59,7 @@ async function runTile(
 		const classId = data[offset + 5];
 		const angle = data[offset + 6];
 
-		// if (confidence < CONFIDENCE_THRESHOLD) continue;
+		if (confidence < CONFIDENCE_THRESHOLD_MIN) continue;
 
 		detections.push({
 			classId,

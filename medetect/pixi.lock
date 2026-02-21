@@ -2330,13 +2330,13 @@ packages:
 - pypi: ./
   name: medetect
   version: 0.1.0
-  sha256: ae9137230468260b1ee50f2c7c129e27267df9b0c7a59fec2133e4e2a92957d8
+  sha256: 0c84ae2e053f8dec97169cae76e67ff67ee9cab64df21d424e5965ffb7d2cdb3
   requires_dist:
-  - flatbuffers
-  - ml-dtypes
-  - onnx
-  - onnxruntime-gpu
-  - onnxslim
+  - flatbuffers>=25.12.19,<26
+  - ml-dtypes>=0.5.4,<0.6
+  - onnx>=1.20.1,<2
+  - onnxruntime-gpu>=1.24.1,<2
+  - onnxslim>=0.1.85,<0.2
 - conda: https://conda.anaconda.org/conda-forge/win-64/mkl-2025.3.0-hac47afa_455.conda
   sha256: b2b4c84b95210760e4d12319416c60ab66e03674ccdcbd14aeb59f82ebb1318d
   md5: fd05d1e894497b012d05a804232254ed

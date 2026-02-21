@@ -18,7 +18,10 @@ export const CLASS_NAMES: readonly string[] = [
 ] as const;
 
 /** Model input image size (width and height) */
-export const MODEL_INPUT_SIZE = 1024;
+export const MODEL_INPUT_SIZE = 512;
 
 /** Confidence threshold for detections */
 export const CONFIDENCE_THRESHOLD = 0.25;
+
+/** Minimum confidence threshold for detections */
+export const CONFIDENCE_THRESHOLD_MIN = 0.05;
