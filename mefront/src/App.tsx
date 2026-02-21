@@ -48,6 +48,19 @@ function App() {
 			};
 		}
 
+		// While loading a new image (2nd or later), clear OBBs to avoid overlap
+		if (isProcessing && firstImage) {
+			const current = secondImage ?? firstImage;
+			return {
+				detections: [],
+				imageSource: current.source,
+				imageWidth: current.width,
+				imageHeight: current.height,
+				isGeoTIFF: current.isGeoTIFF,
+				geoMeta: current.geoMeta,
+			};
+		}
+
 		// If we have merged results (both are GeoTIFF)
 		if (
 			firstImage &&
@@ -111,7 +124,7 @@ function App() {
 			isGeoTIFF: false,
 			geoMeta: undefined,
 		};
-	}, [firstImage, secondImage, confidenceThreshold]);
+	}, [firstImage, secondImage, confidenceThreshold, isProcessing]);
 
 	const handleFileSelect = useCallback(
 		async (file: File) => {
@@ -178,9 +191,7 @@ function App() {
 						);
 					} else {
 						setIsMerged(false);
-						setStatus(
-							`検出完了: ${dets.length} 件 (次の画像に置き換えました)`,
-						);
+						setStatus(`検出完了: ${dets.length} 件 (次の画像に置き換えました)`);
 					}
 				}
 			} catch (err) {
