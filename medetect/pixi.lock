@@ -258,6 +258,8 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/8b/c7/8690c81200ae652ac550c1df52f89d7795e6cc941f3cb38c9ef821419e80/onnx-1.20.1-cp312-abi3-win_amd64.whl
       - pypi: https://files.pythonhosted.org/packages/c4/82/223d7120d8a98b07c104ddecfb0cc2536188e566a4e9c2dee7572453f89c/onnxruntime_gpu-1.24.1-cp313-cp313-win_amd64.whl
       - pypi: https://files.pythonhosted.org/packages/82/d3/a85fcee3f440752288e8209da58eb86e3af7c70b5c2831c1b02f4c688985/onnxslim-0.1.85-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a0/a3/0b369cdffef3746157712804f1ded9856c75aa060217ee206f742c74e753/pip_licenses-5.5.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/ee/8c/83087ebc47ab0396ce092363001fa37c17153119ee282700c0713a195853/prettytable-3.17.0-py3-none-any.whl
       - pypi: ./
 packages:
 - conda: https://conda.anaconda.org/conda-forge/win-64/_libavif_api-1.3.0-h57928b3_3.conda
@@ -2330,7 +2332,7 @@ packages:
 - pypi: ./
   name: medetect
   version: 0.1.0
-  sha256: 0c84ae2e053f8dec97169cae76e67ff67ee9cab64df21d424e5965ffb7d2cdb3
+  sha256: cd4aefc6577567e634fb49f6afc34df53707f6281c85ecca4c68734f43ff0746
   requires_dist:
   - flatbuffers>=25.12.19,<26
   - ml-dtypes>=0.5.4,<0.6
@@ -2750,6 +2752,27 @@ packages:
   - pkg:pypi/pillow?source=hash-mapping
   size: 946833
   timestamp: 1767353195062
+- pypi: https://files.pythonhosted.org/packages/a0/a3/0b369cdffef3746157712804f1ded9856c75aa060217ee206f742c74e753/pip_licenses-5.5.1-py3-none-any.whl
+  name: pip-licenses
+  version: 5.5.1
+  sha256: ed5e229a93760e529cfa7edaec6630b5a2cd3874c1bddb8019e5f18a723fdead
+  requires_dist:
+  - prettytable>=3.12.0
+  - tomli>=2 ; python_full_version < '3.11'
+  - autopep8 ; extra == 'dev'
+  - black ; extra == 'dev'
+  - docutils ; extra == 'dev'
+  - isort ; extra == 'dev'
+  - wheel ; extra == 'dev'
+  - mypy ; extra == 'dev'
+  - pip-tools ; extra == 'dev'
+  - pypandoc ; extra == 'dev'
+  - pytest-cov ; extra == 'dev'
+  - pytest-pycodestyle ; extra == 'dev'
+  - pytest-runner ; extra == 'dev'
+  - twine ; extra == 'dev'
+  - tomli-w ; extra == 'dev'
+  requires_python: '>=3.9'
 - conda: https://conda.anaconda.org/conda-forge/win-64/pixman-0.46.4-h5112557_1.conda
   sha256: 246fce4706b3f8b247a7d6142ba8d732c95263d3c96e212b9d63d6a4ab4aff35
   md5: 08c8fa3b419df480d985e304f7884d35
@@ -2821,6 +2844,16 @@ packages:
   - pkg:pypi/polars-runtime-32?source=hash-mapping
   size: 39451459
   timestamp: 1770417363447
+- pypi: https://files.pythonhosted.org/packages/ee/8c/83087ebc47ab0396ce092363001fa37c17153119ee282700c0713a195853/prettytable-3.17.0-py3-none-any.whl
+  name: prettytable
+  version: 3.17.0
+  sha256: aad69b294ddbe3e1f95ef8886a060ed1666a0b83018bbf56295f6f226c43d287
+  requires_dist:
+  - wcwidth
+  - pytest ; extra == 'tests'
+  - pytest-cov ; extra == 'tests'
+  - pytest-lazy-fixtures ; extra == 'tests'
+  requires_python: '>=3.10'
 - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.52-pyha770c72_0.conda
   sha256: 4817651a276016f3838957bfdf963386438c70761e9faec7749d411635979bae
   md5: edb16f14d920fb3faf17f5ce582942d6

@@ -21,7 +21,7 @@ function App() {
 	const hasImage = currentImage != null;
 
 	return (
-		<div className="mx-auto min-h-screen max-w-6xl p-4">
+		<div className="mx-auto flex min-h-screen max-w-6xl flex-col p-4">
 			<header className="mb-6">
 				<h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
 					物体検出
@@ -81,6 +81,15 @@ function App() {
 					/>
 				)}
 			</div>
+
+			<footer className="mt-auto pt-8 text-center text-xs text-gray-400 dark:text-gray-500">
+				<a
+					href="./licenses.html"
+					className="underline hover:text-gray-600 dark:hover:text-gray-300"
+				>
+					Third-Party Licenses
+				</a>
+			</footer>
 		</div>
 	);
 }
