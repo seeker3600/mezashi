@@ -28,3 +28,4 @@ public/*.wasm
 TODO.md
 
 samples/
+scripts/medetect-licenses.json
