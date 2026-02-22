@@ -45,3 +45,17 @@ export interface InferenceResult {
 	/** GeoTIFF metadata (if applicable) */
 	geoMeta?: GeoTIFFMeta;
 }
+
+/** A set of detections from a single image, with optional geo metadata for merging */
+export interface DetectionSet {
+	detections: Detection[];
+	isGeoTIFF: boolean;
+	geoMeta?: GeoTIFFMeta;
+}
+
+/** The currently displayed image data (only the last loaded image is retained) */
+export interface DisplayImage {
+	source: HTMLCanvasElement | HTMLImageElement;
+	width: number;
+	height: number;
+}

@@ -13,8 +13,8 @@ describe("labels", () => {
 		expect(CLASS_NAMES).toContain("swimming pool");
 	});
 
-	it("MODEL_INPUT_SIZE should be 1024", () => {
-		expect(MODEL_INPUT_SIZE).toBe(1024);
+	it("MODEL_INPUT_SIZE should be 512", () => {
+		expect(MODEL_INPUT_SIZE).toBe(512);
 	});
 
 	it("CONFIDENCE_THRESHOLD should be a valid probability", () => {

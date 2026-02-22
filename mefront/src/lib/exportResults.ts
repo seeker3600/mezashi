@@ -1,6 +1,6 @@
 import { pixelToGeo } from "./geotiff";
 import { getOBBCorners } from "./obbUtils";
-import type { Detection, GeoTIFFMeta } from "./types";
+import type { Detection, DetectionSet, GeoTIFFMeta } from "./types";
 
 /**
  * Trigger a file download in the browser.
@@ -263,4 +263,39 @@ export function downloadMergedGeoJSON(
 		const safeName = className.replace(/\s+/g, "_");
 		downloadBlob(blob, `merged_${safeName}.geojson`);
 	}
+}
+
+/**
+ * Merge detections from N GeoTIFF detection sets, removing duplicates.
+ * Iteratively merges each set into the accumulated result.
+ * Returns the merged detections and the GeoTIFFMeta of the last set.
+ */
+export function mergeDetectionSets(
+	sets: DetectionSet[],
+	iouThreshold = 0.5,
+): { detections: Detection[]; meta: GeoTIFFMeta } | null {
+	const geoSets = sets.filter(
+		(s): s is DetectionSet & { geoMeta: GeoTIFFMeta } =>
+			s.isGeoTIFF && s.geoMeta != null,
+	);
+	if (geoSets.length === 0) return null;
+	if (geoSets.length === 1) {
+		return { detections: geoSets[0].detections, meta: geoSets[0].geoMeta };
+	}
+
+	let merged = geoSets[0].detections;
+	let mergedMeta = geoSets[0].geoMeta;
+
+	for (let i = 1; i < geoSets.length; i++) {
+		merged = mergeGeoTIFFDetections(
+			merged,
+			mergedMeta,
+			geoSets[i].detections,
+			geoSets[i].geoMeta,
+			iouThreshold,
+		);
+		mergedMeta = geoSets[i].geoMeta;
+	}
+
+	return { detections: merged, meta: mergedMeta };
 }

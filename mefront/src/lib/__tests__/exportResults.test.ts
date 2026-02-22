@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
 	buildGeoJSONForClass,
 	buildPixelResultJSON,
+	mergeDetectionSets,
 	mergeGeoTIFFDetections,
 } from "../exportResults";
-import type { Detection, GeoTIFFMeta } from "../types";
+import type { Detection, DetectionSet, GeoTIFFMeta } from "../types";
 
 function makeDetection(overrides: Partial<Detection> = {}): Detection {
 	return {
@@ -220,5 +221,92 @@ describe("mergeGeoTIFFDetections", () => {
 
 		const merged3 = mergeGeoTIFFDetections([], meta1, dets, meta2);
 		expect(merged3).toHaveLength(1);
+	});
+});
+
+describe("mergeDetectionSets", () => {
+	const meta1: GeoTIFFMeta = {
+		tiePoint: { x: 0, y: 100 },
+		pixelScale: { x: 1, y: 1 },
+		epsg: 32654,
+	};
+
+	const meta2: GeoTIFFMeta = {
+		tiePoint: { x: 50, y: 100 },
+		pixelScale: { x: 1, y: 1 },
+		epsg: 32654,
+	};
+
+	const meta3: GeoTIFFMeta = {
+		tiePoint: { x: 100, y: 100 },
+		pixelScale: { x: 1, y: 1 },
+		epsg: 32654,
+	};
+
+	it("should return null when there are no GeoTIFF sets", () => {
+		const sets: DetectionSet[] = [
+			{ detections: [makeDetection()], isGeoTIFF: false },
+		];
+		expect(mergeDetectionSets(sets)).toBeNull();
+	});
+
+	it("should return null for empty array", () => {
+		expect(mergeDetectionSets([])).toBeNull();
+	});
+
+	it("should return single set as-is", () => {
+		const dets = [makeDetection({ cx: 10, cy: 10 })];
+		const sets: DetectionSet[] = [
+			{ detections: dets, isGeoTIFF: true, geoMeta: meta1 },
+		];
+		const result = mergeDetectionSets(sets);
+		expect(result).not.toBeNull();
+		expect(result!.detections).toBe(dets);
+		expect(result!.meta).toBe(meta1);
+	});
+
+	it("should merge 2 GeoTIFF sets", () => {
+		const dets1 = [makeDetection({ cx: 10, cy: 10, width: 10, height: 10 })];
+		const dets2 = [makeDetection({ cx: 200, cy: 200, width: 10, height: 10 })];
+		const sets: DetectionSet[] = [
+			{ detections: dets1, isGeoTIFF: true, geoMeta: meta1 },
+			{ detections: dets2, isGeoTIFF: true, geoMeta: meta2 },
+		];
+		const result = mergeDetectionSets(sets);
+		expect(result).not.toBeNull();
+		expect(result!.detections).toHaveLength(2);
+	});
+
+	it("should merge 3 GeoTIFF sets and deduplicate", () => {
+		// Non-overlapping detections across 3 sets
+		const dets1 = [makeDetection({ cx: 10, cy: 10, width: 10, height: 10 })];
+		const dets2 = [makeDetection({ cx: 200, cy: 200, width: 10, height: 10 })];
+		const dets3 = [makeDetection({ cx: 400, cy: 400, width: 10, height: 10 })];
+		const sets: DetectionSet[] = [
+			{ detections: dets1, isGeoTIFF: true, geoMeta: meta1 },
+			{ detections: dets2, isGeoTIFF: true, geoMeta: meta2 },
+			{ detections: dets3, isGeoTIFF: true, geoMeta: meta3 },
+		];
+		const result = mergeDetectionSets(sets);
+		expect(result).not.toBeNull();
+		expect(result!.detections).toHaveLength(3);
+		expect(result!.meta).toBe(meta3);
+	});
+
+	it("should skip non-GeoTIFF sets in merge", () => {
+		const dets1 = [makeDetection({ cx: 10, cy: 10, width: 10, height: 10 })];
+		const dets2 = [makeDetection({ cx: 200, cy: 200, width: 10, height: 10 })];
+		const detsNonGeo = [
+			makeDetection({ cx: 500, cy: 500, width: 10, height: 10 }),
+		];
+		const sets: DetectionSet[] = [
+			{ detections: dets1, isGeoTIFF: true, geoMeta: meta1 },
+			{ detections: detsNonGeo, isGeoTIFF: false },
+			{ detections: dets2, isGeoTIFF: true, geoMeta: meta2 },
+		];
+		const result = mergeDetectionSets(sets);
+		expect(result).not.toBeNull();
+		// Only the 2 GeoTIFF sets should be merged
+		expect(result!.detections).toHaveLength(2);
 	});
 });
