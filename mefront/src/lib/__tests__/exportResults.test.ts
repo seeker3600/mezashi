@@ -291,6 +291,14 @@ describe("mergeDetectionSets", () => {
 		expect(result).not.toBeNull();
 		expect(result!.detections).toHaveLength(3);
 		expect(result!.meta).toBe(meta3);
+
+		// Verify each detection has its correct geoMeta
+		const det1 = result!.detections.find((d) => d.cx === 10);
+		const det2 = result!.detections.find((d) => d.cx === 200);
+		const det3 = result!.detections.find((d) => d.cx === 400);
+		expect(det1?.geoMeta).toBe(meta1);
+		expect(det2?.geoMeta).toBe(meta2);
+		expect(det3?.geoMeta).toBe(meta3);
 	});
 
 	it("should skip non-GeoTIFF sets in merge", () => {

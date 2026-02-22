@@ -72,7 +72,11 @@ export function buildGeoJSONForClass(
 		.filter((d) => d.className === className)
 		.map((d) => {
 			const corners = getOBBCorners(d);
-			const geoCorners = corners.map(([px, py]) => pixelToGeo(px, py, meta));
+			// Use detection's own geoMeta if available, otherwise use the provided meta
+			const detectionMeta = d.geoMeta ?? meta;
+			const geoCorners = corners.map(([px, py]) =>
+				pixelToGeo(px, py, detectionMeta),
+			);
 			// Close the ring for GeoJSON polygon
 			const ring = [
 				...geoCorners.map((c) => [c.x, c.y]),
@@ -138,18 +142,26 @@ export function mergeGeoTIFFDetections(
 	iouThreshold = 0.5,
 ): Detection[] {
 	// First, convert all detections to geo coordinates for comparison
+	// Use each detection's own geoMeta if it has one, otherwise use meta1/meta2
 	const geoDetections1 = detections1.map((d) => ({
 		detection: d,
-		geoCorners: getOBBCorners(d).map(([px, py]) => pixelToGeo(px, py, meta1)),
+		geoCorners: getOBBCorners(d).map(([px, py]) =>
+			pixelToGeo(px, py, d.geoMeta ?? meta1),
+		),
 	}));
 
 	const geoDetections2 = detections2.map((d) => ({
 		detection: d,
-		geoCorners: getOBBCorners(d).map(([px, py]) => pixelToGeo(px, py, meta2)),
+		geoCorners: getOBBCorners(d).map(([px, py]) =>
+			pixelToGeo(px, py, d.geoMeta ?? meta2),
+		),
 	}));
 
-	// Start with all detections from first image
-	const merged: Detection[] = [...detections1];
+	// Start with all detections from first image, preserving their geoMeta if they have one
+	const merged: Detection[] = detections1.map((d) => ({
+		...d,
+		geoMeta: d.geoMeta ?? meta1,
+	}));
 
 	// Check each detection from second image against first image detections
 	for (let i = 0; i < geoDetections2.length; i++) {
@@ -177,15 +189,16 @@ export function mergeGeoTIFFDetections(
 					geoDetections2[i].detection.confidence >
 					geoDetections1[j].detection.confidence
 				) {
-					merged[j] = detections2[i];
+					// Replace with detection from image 2, preserving its geoMeta
+					merged[j] = { ...detections2[i], geoMeta: meta2 };
 				}
 				break;
 			}
 		}
 
-		// If not a duplicate, add to merged results
+		// If not a duplicate, add to merged results with its geoMeta
 		if (!isDuplicate) {
-			merged.push(detections2[i]);
+			merged.push({ ...detections2[i], geoMeta: meta2 });
 		}
 	}
 
@@ -283,7 +296,11 @@ export function mergeDetectionSets(
 		return { detections: geoSets[0].detections, meta: geoSets[0].geoMeta };
 	}
 
-	let merged = geoSets[0].detections;
+	// Start with first image's detections, ensuring they have their geoMeta
+	let merged = geoSets[0].detections.map((d) => ({
+		...d,
+		geoMeta: d.geoMeta ?? geoSets[0].geoMeta,
+	}));
 	let mergedMeta = geoSets[0].geoMeta;
 
 	for (let i = 1; i < geoSets.length; i++) {

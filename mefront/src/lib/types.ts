@@ -16,6 +16,8 @@ export interface Detection {
 	height: number;
 	/** Rotation angle in radians */
 	angle: number;
+	/** GeoTIFF metadata for this detection (if from a GeoTIFF image) */
+	geoMeta?: GeoTIFFMeta;
 }
 
 /** The 4 corner points of an oriented bounding box */
