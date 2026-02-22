@@ -28,9 +28,10 @@ function App() {
 		useState(CONFIDENCE_THRESHOLD);
 	const [isMerged, setIsMerged] = useState(false);
 
-	// Compute the current detections to display
+	// Compute the current detections to display and export
 	const {
-		detections,
+		displayDetections,
+		exportDetections,
 		imageSource,
 		imageWidth,
 		imageHeight,
@@ -39,7 +40,8 @@ function App() {
 	} = useMemo(() => {
 		if (!firstImage && !secondImage) {
 			return {
-				detections: [],
+				displayDetections: [],
+				exportDetections: [],
 				imageSource: null,
 				imageWidth: 0,
 				imageHeight: 0,
@@ -48,7 +50,27 @@ function App() {
 			};
 		}
 
-		// If we have merged results (both are GeoTIFF)
+		// Determine which image to display
+		const currentImage = secondImage || firstImage;
+		if (!currentImage) {
+			return {
+				displayDetections: [],
+				exportDetections: [],
+				imageSource: null,
+				imageWidth: 0,
+				imageHeight: 0,
+				isGeoTIFF: false,
+				geoMeta: undefined,
+			};
+		}
+
+		// Display detections: only show the current image's OBBs
+		const display = currentImage.detections.filter(
+			(d) => d.confidence >= confidenceThreshold,
+		);
+
+		// Export detections: merge if both images are GeoTIFF
+		let exportDets = display;
 		if (
 			firstImage &&
 			secondImage &&
@@ -57,59 +79,22 @@ function App() {
 			firstImage.geoMeta &&
 			secondImage.geoMeta
 		) {
-			const mergedDetections = mergeGeoTIFFDetections(
+			exportDets = mergeGeoTIFFDetections(
 				firstImage.detections,
 				firstImage.geoMeta,
 				secondImage.detections,
 				secondImage.geoMeta,
 			).filter((d) => d.confidence >= confidenceThreshold);
-
-			return {
-				detections: mergedDetections,
-				imageSource: firstImage.source,
-				imageWidth: firstImage.width,
-				imageHeight: firstImage.height,
-				isGeoTIFF: true,
-				geoMeta: firstImage.geoMeta,
-			};
 		}
 
-		// If we have a second image (non-merged case)
-		if (secondImage) {
-			return {
-				detections: secondImage.detections.filter(
-					(d) => d.confidence >= confidenceThreshold,
-				),
-				imageSource: secondImage.source,
-				imageWidth: secondImage.width,
-				imageHeight: secondImage.height,
-				isGeoTIFF: secondImage.isGeoTIFF,
-				geoMeta: secondImage.geoMeta,
-			};
-		}
-
-		// Only first image
-		if (firstImage) {
-			return {
-				detections: firstImage.detections.filter(
-					(d) => d.confidence >= confidenceThreshold,
-				),
-				imageSource: firstImage.source,
-				imageWidth: firstImage.width,
-				imageHeight: firstImage.height,
-				isGeoTIFF: firstImage.isGeoTIFF,
-				geoMeta: firstImage.geoMeta,
-			};
-		}
-
-		// Fallback (should never happen)
 		return {
-			detections: [],
-			imageSource: null,
-			imageWidth: 0,
-			imageHeight: 0,
-			isGeoTIFF: false,
-			geoMeta: undefined,
+			displayDetections: display,
+			exportDetections: exportDets,
+			imageSource: currentImage.source,
+			imageWidth: currentImage.width,
+			imageHeight: currentImage.height,
+			isGeoTIFF: currentImage.isGeoTIFF,
+			geoMeta: currentImage.geoMeta,
 		};
 	}, [firstImage, secondImage, confidenceThreshold]);
 
@@ -178,9 +163,7 @@ function App() {
 						);
 					} else {
 						setIsMerged(false);
-						setStatus(
-							`検出完了: ${dets.length} 件 (次の画像に置き換えました)`,
-						);
+						setStatus(`検出完了: ${dets.length} 件 (次の画像に置き換えました)`);
 					}
 				}
 			} catch (err) {
@@ -215,7 +198,7 @@ function App() {
 						<>
 							<DetectionCanvas
 								imageSource={imageSource}
-								detections={detections}
+								detections={displayDetections}
 								imageWidth={imageWidth}
 								imageHeight={imageHeight}
 								onFileSelect={firstImage ? handleFileSelect : undefined}
@@ -272,7 +255,7 @@ function App() {
 
 				{imageSource && (
 					<ResultPanel
-						detections={detections}
+						detections={exportDetections}
 						imageWidth={imageWidth}
 						imageHeight={imageHeight}
 						isGeoTIFF={isGeoTIFF}
