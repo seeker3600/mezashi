@@ -8,6 +8,9 @@ export interface ModelLicense {
 	text?: string;
 }
 
+/** Supported detection task types */
+export type DetectionTask = "obb" | "detect";
+
 /**
  * Model metadata loaded from a JSON file.
  * This is the format of the JSON file that describes a detection model.
@@ -15,6 +18,8 @@ export interface ModelLicense {
 export interface ModelMetadata {
 	/** Display name of the model */
 	name: string;
+	/** Detection task type ("obb" for oriented bounding boxes, "detect" for axis-aligned bounding boxes) */
+	task: DetectionTask;
 	/** URL of the ONNX model file (absolute or relative to the JSON file's origin) */
 	onnxUrl: string;
 	/** Model input image size in pixels (square: width === height) */

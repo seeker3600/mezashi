@@ -1,6 +1,7 @@
 import * as ort from "onnxruntime-web";
 import { prepareTile } from "./imageUtils";
-import { CONFIDENCE_THRESHOLD_MIN } from "./labels";
+import type { TaskHandler } from "./tasks";
+import { getTaskHandler } from "./tasks";
 import type { Detection, ModelMetadata } from "./types";
 
 // Use WASM backend (works in all browsers, no WebGL/WebGPU required)
@@ -35,6 +36,7 @@ async function runTile(
 	inputData: Float32Array,
 	inputSize: number,
 	classNames: readonly string[],
+	handler: TaskHandler,
 ): Promise<Detection[]> {
 	const tensor = new ort.Tensor("float32", inputData, [
 		1,
@@ -47,31 +49,13 @@ async function runTile(
 	if (!output) return [];
 
 	const data = output.data as Float32Array;
+	const cols = handler.columnsPerDetection;
 	const numDetections = output.dims[1];
 	const detections: Detection[] = [];
 
 	for (let i = 0; i < numDetections; i++) {
-		const offset = i * 7;
-		const cx = data[offset];
-		const cy = data[offset + 1];
-		const w = data[offset + 2];
-		const h = data[offset + 3];
-		const confidence = data[offset + 4];
-		const classId = data[offset + 5];
-		const angle = data[offset + 6];
-
-		if (confidence < CONFIDENCE_THRESHOLD_MIN) continue;
-
-		detections.push({
-			classId,
-			className: classNames[classId] ?? `class_${classId}`,
-			confidence,
-			cx,
-			cy,
-			width: w,
-			height: h,
-			angle,
-		});
+		const det = handler.parseDetection(data, i * cols, classNames);
+		if (det) detections.push(det);
 	}
 
 	return detections;
@@ -97,63 +81,6 @@ function mapDetectionsToOriginal(
 	}));
 }
 
-/**
- * NMS for oriented bounding boxes: approximate using axis-aligned IoU of the enclosing rectangle.
- */
-function nmsOBB(detections: Detection[], iouThreshold: number): Detection[] {
-	if (detections.length === 0) return [];
-
-	// Sort by confidence descending
-	const sorted = [...detections].sort((a, b) => b.confidence - a.confidence);
-	const keep: Detection[] = [];
-	const suppressed = new Set<number>();
-
-	for (let i = 0; i < sorted.length; i++) {
-		if (suppressed.has(i)) continue;
-		keep.push(sorted[i]);
-		for (let j = i + 1; j < sorted.length; j++) {
-			if (suppressed.has(j)) continue;
-			if (sorted[i].classId !== sorted[j].classId) continue;
-			if (computeAABBIoU(sorted[i], sorted[j]) > iouThreshold) {
-				suppressed.add(j);
-			}
-		}
-	}
-	return keep;
-}
-
-function computeAABBIoU(a: Detection, b: Detection): number {
-	// Use the max dimension to approximate axis-aligned bbox
-	const aHalfW = Math.max(a.width, a.height) / 2;
-	const aHalfH = aHalfW;
-	const bHalfW = Math.max(b.width, b.height) / 2;
-	const bHalfH = bHalfW;
-
-	const ax1 = a.cx - aHalfW;
-	const ay1 = a.cy - aHalfH;
-	const ax2 = a.cx + aHalfW;
-	const ay2 = a.cy + aHalfH;
-	const bx1 = b.cx - bHalfW;
-	const by1 = b.cy - bHalfH;
-	const bx2 = b.cx + bHalfW;
-	const by2 = b.cy + bHalfH;
-
-	const ix1 = Math.max(ax1, bx1);
-	const iy1 = Math.max(ay1, by1);
-	const ix2 = Math.min(ax2, bx2);
-	const iy2 = Math.min(ay2, by2);
-
-	const iw = Math.max(0, ix2 - ix1);
-	const ih = Math.max(0, iy2 - iy1);
-	const intersection = iw * ih;
-
-	const aArea = (ax2 - ax1) * (ay2 - ay1);
-	const bArea = (bx2 - bx1) * (by2 - by1);
-	const union = aArea + bArea - intersection;
-
-	return union > 0 ? intersection / union : 0;
-}
-
 /** Threshold for when to use slice inference (pixels) */
 const SLICE_THRESHOLD = 1280;
 /** Overlap between adjacent tiles (fraction) */
@@ -170,8 +97,9 @@ export async function runInference(
 	metadata: ModelMetadata,
 	onProgress?: (done: number, total: number) => void,
 ): Promise<Detection[]> {
-	const { onnxUrl, inputSize, labels } = metadata;
+	const { onnxUrl, inputSize, labels, task } = metadata;
 	const session = await loadModel(onnxUrl);
+	const handler = getTaskHandler(task);
 
 	// Decide whether to use slice inference
 	if (imgWidth <= SLICE_THRESHOLD && imgHeight <= SLICE_THRESHOLD) {
@@ -185,7 +113,7 @@ export async function runInference(
 			inputSize,
 		);
 		onProgress?.(0, 1);
-		const dets = await runTile(session, input, inputSize, labels);
+		const dets = await runTile(session, input, inputSize, labels, handler);
 		onProgress?.(1, 1);
 		return mapDetectionsToOriginal(dets, scale, padX, padY, 0, 0);
 	}
@@ -217,7 +145,13 @@ export async function runInference(
 				inputSize,
 			);
 
-			const tileDets = await runTile(session, input, inputSize, labels);
+			const tileDets = await runTile(
+				session,
+				input,
+				inputSize,
+				labels,
+				handler,
+			);
 			const mapped = mapDetectionsToOriginal(
 				tileDets,
 				scale,
@@ -234,5 +168,5 @@ export async function runInference(
 	}
 
 	// Apply NMS across all tiles to remove duplicate detections in overlapping regions
-	return nmsOBB(allDetections, 0.45);
+	return handler.nms(allDetections, 0.45);
 }

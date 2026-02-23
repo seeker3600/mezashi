@@ -1,4 +1,6 @@
-import type { ModelMetadata } from "./types";
+import type { DetectionTask, ModelMetadata } from "./types";
+
+const VALID_TASKS: readonly DetectionTask[] = ["obb", "detect"];
 
 /**
  * Fetch and validate a model metadata JSON file from the given URL.
@@ -31,7 +33,9 @@ export async function fetchModelMetadata(url: string): Promise<ModelMetadata> {
 	return json;
 }
 
-function validateModelMetadata(data: unknown): asserts data is ModelMetadata {
+export function validateModelMetadata(
+	data: unknown,
+): asserts data is ModelMetadata {
 	if (typeof data !== "object" || data === null) {
 		throw new Error("メタデータはオブジェクトである必要があります");
 	}
@@ -75,5 +79,14 @@ function validateModelMetadata(data: unknown): asserts data is ModelMetadata {
 
 	if (typeof obj.name !== "string" || !obj.name) {
 		throw new Error('メタデータの "name" は空でない文字列である必要があります');
+	}
+
+	if (
+		typeof obj.task !== "string" ||
+		!VALID_TASKS.includes(obj.task as DetectionTask)
+	) {
+		throw new Error(
+			`メタデータの "task" は ${VALID_TASKS.map((t) => `"${t}"`).join(" | ")} のいずれかである必要があります`,
+		);
 	}
 }
