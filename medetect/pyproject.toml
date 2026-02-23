@@ -29,7 +29,9 @@ medetect = { path = ".", editable = true }
 pip-licenses = ">=5.5.1, <6"
 
 [tool.pixi.tasks]
-licenses = "pip-licenses --format=json --with-urls --output-file=../mefront/scripts/medetect-licenses.json"
+# flatbuffers, ml-dtypes, onnx, onnxruntime-gpu, onnxslim のみ（[project] dependencies の直接指定パッケージ）。
+# トレーニング用ツール（ultralytics, matplotlib, jupyter 等）はウェブアプリの帰属表示対象外のため除外。
+licenses = "pip-licenses --format=json --with-urls --packages flatbuffers ml-dtypes onnx onnxruntime-gpu onnxslim --output-file=../mefront/scripts/medetect-licenses.json"
 
 [tool.pixi.dependencies]
 python = "3.13.*"

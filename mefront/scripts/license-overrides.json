@@ -1,0 +1,23 @@
+{
+    "_comment": "pip-licenses や license-checker が UNKNOWN を返すパッケージの手動補完。",
+    "decorator": {
+        "license": "BSD-2-Clause",
+        "url": "https://github.com/micheles/decorator"
+    },
+    "matplotlib-inline": {
+        "license": "BSD-3-Clause",
+        "url": "https://github.com/ipython/matplotlib-inline"
+    },
+    "opencv-python": {
+        "license": "Apache-2.0",
+        "url": "https://github.com/opencv/opencv-python"
+    },
+    "opencv-python-headless": {
+        "license": "Apache-2.0",
+        "url": "https://github.com/opencv/opencv-python"
+    },
+    "torch": {
+        "license": "BSD-3-Clause",
+        "url": "https://github.com/pytorch/pytorch"
+    }
+}
