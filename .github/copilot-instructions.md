@@ -1,6 +1,8 @@
 # Repository overview (monorepo)
 - medetect/: Python (training/export)
+  - pixi を使うときは、medetect/ にcd するか、`pixi -m medetect/pyproject.toml ...` のように -m オプションを使うこと。
 - mefront/: Node.js (browser frontend/inference)
+  - pnpm を使うときは、mefront/ にcd するか、`pnpm -C mefront/ ...` のように -C オプションを使うこと。
 
 # General rules
 - Prefer minimal, consistent changes. Do not mix concerns between medetect/ and mefront/ unless required.
