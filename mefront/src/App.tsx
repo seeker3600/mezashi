@@ -1,8 +1,10 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer } from "react";
 import { DetectionCanvas } from "./components/DetectionCanvas";
 import { DropZone } from "./components/DropZone";
-import { LoadingSpinner } from "./components/LoadingSpinner";
+import { MetadataUrlInput } from "./components/MetadataUrlInput";
+import { ModelLicenseInfo } from "./components/ModelLicenseInfo";
 import { ResultPanel } from "./components/ResultPanel";
+import { StatusMessage } from "./components/StatusMessage";
 import { useDetectionResults } from "./hooks/useDetectionResults";
 import { useImageDetection } from "./hooks/useImageDetection";
 import { appReducer, initialState } from "./lib/appState";
@@ -73,6 +75,8 @@ function App() {
 				disabled={isProcessing}
 			/>
 
+			<ModelLicenseInfo license={modelMetadata?.license} />
+
 			<div className="grid gap-6 lg:grid-cols-[1fr_300px]">
 				<div className="space-y-4">
 					{!hasImage && (
@@ -132,94 +136,6 @@ function App() {
 					Third-Party Licenses
 				</a>
 			</footer>
-		</div>
-	);
-}
-
-// ---------------------------------------------------------------------------
-// StatusMessage – renders the current status with an optional spinner.
-// ---------------------------------------------------------------------------
-
-function StatusMessage({
-	status,
-}: {
-	status: import("./lib/appState").AppStatus;
-}) {
-	if (status.type === "idle") return null;
-
-	const isActive = status.type === "loading" || status.type === "processing";
-
-	return (
-		<div className="flex items-center gap-2">
-			{isActive && <LoadingSpinner size="sm" />}
-			<span
-				className={
-					isActive
-						? "text-sm font-medium text-gray-700 dark:text-gray-300"
-						: "text-sm text-gray-500 dark:text-gray-400"
-				}
-			>
-				{status.message}
-			</span>
-		</div>
-	);
-}
-
-// ---------------------------------------------------------------------------
-// MetadataUrlInput – lets the user specify a model metadata JSON URL.
-// ---------------------------------------------------------------------------
-
-function MetadataUrlInput({
-	value,
-	onChange,
-	disabled,
-}: {
-	value: string;
-	onChange: (url: string) => void;
-	disabled: boolean;
-}) {
-	const [draft, setDraft] = useState(value);
-
-	const commit = () => {
-		const trimmed = draft.trim();
-		if (trimmed && trimmed !== value) {
-			onChange(trimmed);
-		}
-	};
-
-	return (
-		<div className="mb-4 flex flex-col gap-1">
-			<label
-				htmlFor="metadata-url"
-				className="text-xs font-medium text-gray-600 dark:text-gray-400"
-			>
-				モデルメタデータ URL（JSON ファイル）
-			</label>
-			<div className="flex gap-2">
-				<input
-					id="metadata-url"
-					type="url"
-					value={draft}
-					onChange={(e) => setDraft(e.target.value)}
-					onBlur={commit}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") {
-							e.currentTarget.blur();
-						}
-					}}
-					disabled={disabled}
-					placeholder="https://example.com/model.json"
-					className="min-w-0 flex-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
-				/>
-				<button
-					type="button"
-					onClick={commit}
-					disabled={disabled || draft.trim() === value}
-					className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-blue-500 dark:hover:bg-blue-600"
-				>
-					適用
-				</button>
-			</div>
 		</div>
 	);
 }
