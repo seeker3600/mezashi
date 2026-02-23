@@ -1,3 +1,28 @@
+/** License information for a model or dataset */
+export interface ModelLicense {
+	/** License name (e.g. "CC BY 4.0") */
+	name: string;
+	/** URL of the license text */
+	url?: string;
+	/** Additional notes or attribution text */
+	text?: string;
+}
+
+/**
+ * Model metadata loaded from a JSON file.
+ * This is the format of the JSON file that describes a detection model.
+ */
+export interface ModelMetadata {
+	/** URL of the ONNX model file (absolute or relative to the JSON file's origin) */
+	onnxUrl: string;
+	/** Model input image size in pixels (square: width === height) */
+	inputSize: number;
+	/** Ordered list of class label names matching the model output */
+	labels: string[];
+	/** License information for the training data / model weights */
+	license: ModelLicense;
+}
+
 /** A single oriented bounding box detection */
 export interface Detection {
 	/** Class index (0-14) */

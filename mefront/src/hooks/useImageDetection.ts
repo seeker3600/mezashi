@@ -3,6 +3,7 @@ import type { AppAction } from "../lib/appState";
 import { imageDataToCanvas, isGeoTIFFFile, parseGeoTIFF } from "../lib/geotiff";
 import { loadImageFromFile } from "../lib/imageUtils";
 import { runInference } from "../lib/inference";
+import type { ModelMetadata } from "../lib/types";
 
 /**
  * Hook that returns a file-select handler.
@@ -10,10 +11,21 @@ import { runInference } from "../lib/inference";
  */
 export function useImageDetection(
 	dispatch: Dispatch<AppAction>,
-	modelUrl: string,
+	modelMetadata: ModelMetadata | null,
 ) {
 	return useCallback(
 		async (file: File) => {
+			if (!modelMetadata) {
+				dispatch({
+					type: "SET_STATUS",
+					status: {
+						type: "error",
+						message:
+							"モデルメタデータが読み込まれていません。URL を確認してください。",
+					},
+				});
+				return;
+			}
 			dispatch({
 				type: "SET_STATUS",
 				status: { type: "loading", message: "画像を読み込んでいます…" },
@@ -58,7 +70,7 @@ export function useImageDetection(
 					src,
 					w,
 					h,
-					modelUrl,
+					modelMetadata,
 					(done, total) => {
 						dispatch({
 							type: "SET_STATUS",
@@ -97,6 +109,6 @@ export function useImageDetection(
 				});
 			}
 		},
-		[dispatch, modelUrl],
+		[dispatch, modelMetadata],
 	);
 }

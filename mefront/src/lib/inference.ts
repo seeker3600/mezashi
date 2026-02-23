@@ -1,11 +1,7 @@
 import * as ort from "onnxruntime-web";
 import { prepareTile } from "./imageUtils";
-import {
-	CLASS_NAMES,
-	CONFIDENCE_THRESHOLD_MIN,
-	MODEL_INPUT_SIZE,
-} from "./labels";
-import type { Detection } from "./types";
+import { CONFIDENCE_THRESHOLD_MIN } from "./labels";
+import type { Detection, ModelMetadata } from "./types";
 
 // Use WASM backend (works in all browsers, no WebGL/WebGPU required)
 ort.env.wasm.wasmPaths = import.meta.env.DEV
@@ -37,12 +33,14 @@ export function loadModel(url: string): Promise<ort.InferenceSession> {
 async function runTile(
 	session: ort.InferenceSession,
 	inputData: Float32Array,
+	inputSize: number,
+	classNames: readonly string[],
 ): Promise<Detection[]> {
 	const tensor = new ort.Tensor("float32", inputData, [
 		1,
 		3,
-		MODEL_INPUT_SIZE,
-		MODEL_INPUT_SIZE,
+		inputSize,
+		inputSize,
 	]);
 	const results = await session.run({ images: tensor });
 	const output = results.output0;
@@ -66,7 +64,7 @@ async function runTile(
 
 		detections.push({
 			classId,
-			className: CLASS_NAMES[classId] ?? `class_${classId}`,
+			className: classNames[classId] ?? `class_${classId}`,
 			confidence,
 			cx,
 			cy,
@@ -169,10 +167,11 @@ export async function runInference(
 	img: HTMLCanvasElement | HTMLImageElement,
 	imgWidth: number,
 	imgHeight: number,
-	modelUrl: string,
+	metadata: ModelMetadata,
 	onProgress?: (done: number, total: number) => void,
 ): Promise<Detection[]> {
-	const session = await loadModel(modelUrl);
+	const { onnxUrl, inputSize, labels } = metadata;
+	const session = await loadModel(onnxUrl);
 
 	// Decide whether to use slice inference
 	if (imgWidth <= SLICE_THRESHOLD && imgHeight <= SLICE_THRESHOLD) {
@@ -183,16 +182,16 @@ export async function runInference(
 			0,
 			imgWidth,
 			imgHeight,
-			MODEL_INPUT_SIZE,
+			inputSize,
 		);
 		onProgress?.(0, 1);
-		const dets = await runTile(session, input);
+		const dets = await runTile(session, input, inputSize, labels);
 		onProgress?.(1, 1);
 		return mapDetectionsToOriginal(dets, scale, padX, padY, 0, 0);
 	}
 
 	// Slice inference for large images
-	const tileSize = MODEL_INPUT_SIZE;
+	const tileSize = inputSize;
 	const stride = Math.round(tileSize * (1 - TILE_OVERLAP));
 
 	const tilesX = Math.max(1, Math.ceil((imgWidth - tileSize) / stride) + 1);
@@ -215,10 +214,10 @@ export async function runInference(
 				sy,
 				sw,
 				sh,
-				MODEL_INPUT_SIZE,
+				inputSize,
 			);
 
-			const tileDets = await runTile(session, input);
+			const tileDets = await runTile(session, input, inputSize, labels);
 			const mapped = mapDetectionsToOriginal(
 				tileDets,
 				scale,

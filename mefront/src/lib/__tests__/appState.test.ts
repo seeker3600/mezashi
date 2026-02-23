@@ -71,18 +71,21 @@ describe("appReducer", () => {
 	});
 
 	describe("CLEAR_ALL", () => {
-		it("should reset to initial state but preserve confidenceThreshold", () => {
+		it("should reset to initial state but preserve confidenceThreshold, metadataUrl, and modelMetadata", () => {
 			const modified: AppState = {
 				currentImage: dummyImage,
 				detectionSets: [{ detections: [], isGeoTIFF: false }],
 				status: { type: "success", message: "done" },
 				confidenceThreshold: 0.5,
+				metadataUrl: "https://example.com/model.json",
+				modelMetadata: null,
 			};
 			const next = appReducer(modified, { type: "CLEAR_ALL" });
 			expect(next.currentImage).toBeNull();
 			expect(next.detectionSets).toHaveLength(0);
 			expect(next.status.type).toBe("idle");
 			expect(next.confidenceThreshold).toBe(0.5);
+			expect(next.metadataUrl).toBe("https://example.com/model.json");
 		});
 	});
 

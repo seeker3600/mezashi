@@ -1,9 +1,10 @@
-import { CONFIDENCE_THRESHOLD, DEFAULT_MODEL_URL } from "./labels";
+import { CONFIDENCE_THRESHOLD, DEFAULT_METADATA_URL } from "./labels";
 import type {
 	Detection,
 	DetectionSet,
 	DisplayImage,
 	GeoTIFFMeta,
+	ModelMetadata,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -30,8 +31,10 @@ export interface AppState {
 	status: AppStatus;
 	/** Confidence threshold for filtering. */
 	confidenceThreshold: number;
-	/** URL of the ONNX model file. */
-	modelUrl: string;
+	/** URL of the model metadata JSON file. */
+	metadataUrl: string;
+	/** Loaded model metadata (null while loading or on error). */
+	modelMetadata: ModelMetadata | null;
 }
 
 export const initialState: AppState = {
@@ -39,7 +42,8 @@ export const initialState: AppState = {
 	detectionSets: [],
 	status: { type: "idle" },
 	confidenceThreshold: CONFIDENCE_THRESHOLD,
-	modelUrl: DEFAULT_MODEL_URL,
+	metadataUrl: DEFAULT_METADATA_URL,
+	modelMetadata: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -57,7 +61,8 @@ export type AppAction =
 	| { type: "CLEAR_ALL" }
 	| { type: "SET_STATUS"; status: AppStatus }
 	| { type: "SET_CONFIDENCE"; value: number }
-	| { type: "SET_MODEL_URL"; url: string };
+	| { type: "SET_METADATA_URL"; url: string }
+	| { type: "SET_MODEL_METADATA"; metadata: ModelMetadata | null };
 
 // ---------------------------------------------------------------------------
 // Reducer
@@ -83,6 +88,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 			return {
 				...initialState,
 				confidenceThreshold: state.confidenceThreshold,
+				metadataUrl: state.metadataUrl,
+				modelMetadata: state.modelMetadata,
 			};
 
 		case "SET_STATUS":
@@ -91,8 +98,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 		case "SET_CONFIDENCE":
 			return { ...state, confidenceThreshold: action.value };
 
-		case "SET_MODEL_URL":
-			return { ...state, modelUrl: action.url };
+		case "SET_METADATA_URL":
+			return { ...state, metadataUrl: action.url };
+
+		case "SET_MODEL_METADATA":
+			return { ...state, modelMetadata: action.metadata };
 
 		default:
 			return state;
