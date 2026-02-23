@@ -5,6 +5,7 @@ import { LoadingSpinner } from "./components/LoadingSpinner";
 import { ResultPanel } from "./components/ResultPanel";
 import { useDetectionResults } from "./hooks/useDetectionResults";
 import { useImageDetection } from "./hooks/useImageDetection";
+import { useModelMetadata } from "./hooks/useModelMetadata";
 import { appReducer, initialState } from "./lib/appState";
 
 function App() {
@@ -12,6 +13,7 @@ function App() {
 	const { currentImage, detectionSets, status, confidenceThreshold } = state;
 
 	const handleFileSelect = useImageDetection(dispatch);
+	const modelMetadata = useModelMetadata();
 
 	const { displayDetections, exportDetections, isGeoTIFF, geoMeta, isMerged } =
 		useDetectionResults(detectionSets, confidenceThreshold);
@@ -83,6 +85,15 @@ function App() {
 			</div>
 
 			<footer className="mt-auto pt-8 text-center text-xs text-gray-400 dark:text-gray-500">
+				<p className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
+					⚠️
+					このモデルは学習データのライセンス条件の適用を受けます。ご利用前に必ずライセンスをご確認ください。
+				</p>
+				{modelMetadata.trainingDataLicense && (
+					<p className="mb-2">
+						学習データライセンス: {modelMetadata.trainingDataLicense}
+					</p>
+				)}
 				<a
 					href="./licenses.html"
 					className="underline hover:text-gray-600 dark:hover:text-gray-300"
