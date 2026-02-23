@@ -13,13 +13,14 @@ export function ModelLicenseInfo({ name, license }: ModelLicenseInfoProps) {
 
 	return (
 		<div className="mb-4 space-y-2">
-			{name && (
-				<div className="rounded-md border border-gray-200 bg-blue-50 px-3 py-2 text-sm font-medium text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-blue-200">
-					モデル名: {name}
-				</div>
-			)}
 			{license && (
 				<div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+					{name && (
+						<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+							<span className="font-medium">モデル名: </span>
+							{name}
+						</div>
+					)}
 					<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
 						<span className="font-medium">モデルライセンス: </span>
 						{license.url ? (
