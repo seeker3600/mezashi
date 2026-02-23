@@ -13,6 +13,8 @@ export interface ModelLicense {
  * This is the format of the JSON file that describes a detection model.
  */
 export interface ModelMetadata {
+	/** Display name of the model */
+	name: string;
 	/** URL of the ONNX model file (absolute or relative to the JSON file's origin) */
 	onnxUrl: string;
 	/** Model input image size in pixels (square: width === height) */

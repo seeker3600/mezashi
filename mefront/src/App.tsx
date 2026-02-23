@@ -75,7 +75,10 @@ function App() {
 				disabled={isProcessing}
 			/>
 
-			<ModelLicenseInfo license={modelMetadata?.license} />
+			<ModelLicenseInfo
+				name={modelMetadata?.name}
+				license={modelMetadata?.license}
+			/>
 
 			<div className="grid gap-6 lg:grid-cols-[1fr_300px]">
 				<div className="space-y-4">

@@ -1,4 +1,6 @@
 {
+  "name": "YOLOv2.6n-OBB",
+  "task": "obb",
   "onnxUrl": "/models/yolo26n-obb.onnx",
   "inputSize": 512,
   "labels": [

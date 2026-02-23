@@ -72,4 +72,8 @@ function validateModelMetadata(data: unknown): asserts data is ModelMetadata {
 			'メタデータの "license.name" は空でない文字列である必要があります',
 		);
 	}
+
+	if (typeof obj.name !== "string" || !obj.name) {
+		throw new Error('メタデータの "name" は空でない文字列である必要があります');
+	}
 }
