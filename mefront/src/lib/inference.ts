@@ -14,13 +14,16 @@ ort.env.wasm.wasmPaths = import.meta.env.DEV
 ort.env.wasm.numThreads = 1;
 
 let sessionPromise: Promise<ort.InferenceSession> | null = null;
+let sessionUrl: string | null = null;
 
 /**
  * Load (or return cached) ONNX inference session.
+ * If the URL has changed since the last call, the session is recreated.
  */
-export function loadModel(): Promise<ort.InferenceSession> {
-	if (!sessionPromise) {
-		sessionPromise = ort.InferenceSession.create("/models/yolo26n-obb.onnx", {
+export function loadModel(url: string): Promise<ort.InferenceSession> {
+	if (!sessionPromise || sessionUrl !== url) {
+		sessionUrl = url;
+		sessionPromise = ort.InferenceSession.create(url, {
 			executionProviders: ["webgpu", "webgl", "wasm"],
 		});
 	}
@@ -166,9 +169,10 @@ export async function runInference(
 	img: HTMLCanvasElement | HTMLImageElement,
 	imgWidth: number,
 	imgHeight: number,
+	modelUrl: string,
 	onProgress?: (done: number, total: number) => void,
 ): Promise<Detection[]> {
-	const session = await loadModel();
+	const session = await loadModel(modelUrl);
 
 	// Decide whether to use slice inference
 	if (imgWidth <= SLICE_THRESHOLD && imgHeight <= SLICE_THRESHOLD) {

@@ -8,7 +8,10 @@ import { runInference } from "../lib/inference";
  * Hook that returns a file-select handler.
  * It loads the image, runs inference, and dispatches the result into the app state.
  */
-export function useImageDetection(dispatch: Dispatch<AppAction>) {
+export function useImageDetection(
+	dispatch: Dispatch<AppAction>,
+	modelUrl: string,
+) {
 	return useCallback(
 		async (file: File) => {
 			dispatch({
@@ -51,17 +54,23 @@ export function useImageDetection(dispatch: Dispatch<AppAction>) {
 					},
 				});
 
-				const detections = await runInference(src, w, h, (done, total) => {
-					dispatch({
-						type: "SET_STATUS",
-						status: {
-							type: "processing",
-							message: `推論中… (${done}/${total} タイル)`,
-							done,
-							total,
-						},
-					});
-				});
+				const detections = await runInference(
+					src,
+					w,
+					h,
+					modelUrl,
+					(done, total) => {
+						dispatch({
+							type: "SET_STATUS",
+							status: {
+								type: "processing",
+								message: `推論中… (${done}/${total} タイル)`,
+								done,
+								total,
+							},
+						});
+					},
+				);
 
 				dispatch({
 					type: "ADD_RESULT",
@@ -88,6 +97,6 @@ export function useImageDetection(dispatch: Dispatch<AppAction>) {
 				});
 			}
 		},
-		[dispatch],
+		[dispatch, modelUrl],
 	);
 }

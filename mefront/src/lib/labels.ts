@@ -25,3 +25,6 @@ export const CONFIDENCE_THRESHOLD = 0.25;
 
 /** Minimum confidence threshold for detections */
 export const CONFIDENCE_THRESHOLD_MIN = 0.05;
+
+/** Default URL of the ONNX model file */
+export const DEFAULT_MODEL_URL = "/models/yolo26n-obb.onnx";

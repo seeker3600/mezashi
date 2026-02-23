@@ -1,4 +1,4 @@
-import { CONFIDENCE_THRESHOLD } from "./labels";
+import { CONFIDENCE_THRESHOLD, DEFAULT_MODEL_URL } from "./labels";
 import type {
 	Detection,
 	DetectionSet,
@@ -30,6 +30,8 @@ export interface AppState {
 	status: AppStatus;
 	/** Confidence threshold for filtering. */
 	confidenceThreshold: number;
+	/** URL of the ONNX model file. */
+	modelUrl: string;
 }
 
 export const initialState: AppState = {
@@ -37,6 +39,7 @@ export const initialState: AppState = {
 	detectionSets: [],
 	status: { type: "idle" },
 	confidenceThreshold: CONFIDENCE_THRESHOLD,
+	modelUrl: DEFAULT_MODEL_URL,
 };
 
 // ---------------------------------------------------------------------------
@@ -53,7 +56,8 @@ export type AppAction =
 	  }
 	| { type: "CLEAR_ALL" }
 	| { type: "SET_STATUS"; status: AppStatus }
-	| { type: "SET_CONFIDENCE"; value: number };
+	| { type: "SET_CONFIDENCE"; value: number }
+	| { type: "SET_MODEL_URL"; url: string };
 
 // ---------------------------------------------------------------------------
 // Reducer
@@ -86,6 +90,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
 		case "SET_CONFIDENCE":
 			return { ...state, confidenceThreshold: action.value };
+
+		case "SET_MODEL_URL":
+			return { ...state, modelUrl: action.url };
 
 		default:
 			return state;

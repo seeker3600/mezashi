@@ -1,4 +1,4 @@
-import { useReducer } from "react";
+import { useReducer, useState } from "react";
 import { DetectionCanvas } from "./components/DetectionCanvas";
 import { DropZone } from "./components/DropZone";
 import { LoadingSpinner } from "./components/LoadingSpinner";
@@ -9,9 +9,10 @@ import { appReducer, initialState } from "./lib/appState";
 
 function App() {
 	const [state, dispatch] = useReducer(appReducer, initialState);
-	const { currentImage, detectionSets, status, confidenceThreshold } = state;
+	const { currentImage, detectionSets, status, confidenceThreshold, modelUrl } =
+		state;
 
-	const handleFileSelect = useImageDetection(dispatch);
+	const handleFileSelect = useImageDetection(dispatch, modelUrl);
 
 	const { displayDetections, exportDetections, isGeoTIFF, geoMeta, isMerged } =
 		useDetectionResults(detectionSets, confidenceThreshold);
@@ -30,6 +31,12 @@ function App() {
 					画像を読み込むと自動で物体検出を実行します
 				</p>
 			</header>
+
+			<ModelUrlInput
+				value={modelUrl}
+				onChange={(url) => dispatch({ type: "SET_MODEL_URL", url })}
+				disabled={isProcessing}
+			/>
 
 			<div className="grid gap-6 lg:grid-cols-[1fr_300px]">
 				<div className="space-y-4">
@@ -119,6 +126,65 @@ function StatusMessage({
 			>
 				{status.message}
 			</span>
+		</div>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ModelUrlInput – lets the user specify a custom ONNX model URL.
+// ---------------------------------------------------------------------------
+
+function ModelUrlInput({
+	value,
+	onChange,
+	disabled,
+}: {
+	value: string;
+	onChange: (url: string) => void;
+	disabled: boolean;
+}) {
+	const [draft, setDraft] = useState(value);
+
+	const commit = () => {
+		const trimmed = draft.trim();
+		if (trimmed && trimmed !== value) {
+			onChange(trimmed);
+		}
+	};
+
+	return (
+		<div className="mb-4 flex flex-col gap-1">
+			<label
+				htmlFor="model-url"
+				className="text-xs font-medium text-gray-600 dark:text-gray-400"
+			>
+				モデル URL（ONNX ファイル）
+			</label>
+			<div className="flex gap-2">
+				<input
+					id="model-url"
+					type="url"
+					value={draft}
+					onChange={(e) => setDraft(e.target.value)}
+					onBlur={commit}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.currentTarget.blur();
+						}
+					}}
+					disabled={disabled}
+					placeholder="https://example.com/model.onnx"
+					className="min-w-0 flex-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
+				/>
+				<button
+					type="button"
+					onClick={commit}
+					disabled={disabled || draft.trim() === value}
+					className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-blue-500 dark:hover:bg-blue-600"
+				>
+					適用
+				</button>
+			</div>
 		</div>
 	);
 }
