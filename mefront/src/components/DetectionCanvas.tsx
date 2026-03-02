@@ -26,7 +26,7 @@ interface DetectionCanvasProps {
 	detections: Detection[];
 	imageWidth: number;
 	imageHeight: number;
-	onFileSelect?: (file: File) => void;
+	onFileSelect?: (files: File[]) => void;
 	disabled?: boolean;
 }
 
@@ -65,8 +65,8 @@ export function DetectionCanvas({
 			e.preventDefault();
 			setIsDragOver(false);
 			if (disabled || !onFileSelect) return;
-			const file = e.dataTransfer.files[0];
-			if (file) onFileSelect(file);
+			const files = Array.from(e.dataTransfer.files);
+			if (files.length > 0) onFileSelect(files);
 		},
 		[disabled, onFileSelect],
 	);
@@ -80,9 +80,10 @@ export function DetectionCanvas({
 				const input = document.createElement("input");
 				input.type = "file";
 				input.accept = "image/*,.tif,.tiff";
+				input.multiple = true;
 				input.onchange = () => {
-					const file = input.files?.[0];
-					if (file) onFileSelect(file);
+					const files = Array.from(input.files ?? []);
+					if (files.length > 0) onFileSelect(files);
 				};
 				input.click();
 			}
