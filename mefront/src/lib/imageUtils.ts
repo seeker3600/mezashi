@@ -1,3 +1,5 @@
+import { MIN_GSD_METERS } from "./labels";
+
 /**
  * Load an image file (jpg/png) into an HTMLImageElement.
  */
@@ -42,6 +44,65 @@ export function canvasToFloat32CHW(
 		chw[2 * planeSize + i] = data[i * 4 + 2] / 255; // B
 	}
 	return chw;
+}
+
+/**
+ * GeoTIFF 画像を入力制限サイズに収めるための縮小率を計算する。
+ *
+ * - 画像が threshold 以下なら縮小不要 (1.0 を返す)
+ * - threshold を超える場合、threshold に収まる率を算出
+ * - ただし GSD が MIN_GSD_METERS を超えない範囲に制限
+ * - 元画像の GSD が既に MIN_GSD_METERS 以上なら縮小しない (1.0 を返す)
+ *
+ * @param imgWidth  元画像の幅 (px)
+ * @param imgHeight 元画像の高さ (px)
+ * @param pixelScale GeoTIFF の pixelScale (メートル/px)。投影座標系を前提とする。
+ * @param threshold  入力制限サイズ (px)
+ * @returns 0 < scale <= 1.0 の縮小率
+ */
+export function computeGeoTIFFShrinkScale(
+	imgWidth: number,
+	imgHeight: number,
+	pixelScale: { x: number; y: number },
+	threshold: number,
+): number {
+	const maxDim = Math.max(imgWidth, imgHeight);
+	if (maxDim <= threshold) return 1.0;
+
+	// 現在の GSD (大きい方を採用)
+	const currentGSD = Math.max(pixelScale.x, pixelScale.y);
+
+	// 既に 50cm/px 以上なら縮小不可
+	if (currentGSD >= MIN_GSD_METERS) return 1.0;
+
+	// threshold に収めるための縮小率
+	const fitScale = threshold / maxDim;
+
+	// GSD が 50cm を超えないための最小縮小率: currentGSD / scale <= 0.5 → scale >= currentGSD / 0.5
+	const minScale = currentGSD / MIN_GSD_METERS;
+
+	// fitScale と minScale の大きい方を採用 (= より控えめな縮小)
+	return Math.max(fitScale, minScale);
+}
+
+/**
+ * 画像を指定の縮小率で縮小した Canvas を返す。
+ */
+export function createShrunkCanvas(
+	src: HTMLCanvasElement | HTMLImageElement,
+	srcWidth: number,
+	srcHeight: number,
+	scale: number,
+): HTMLCanvasElement {
+	const newWidth = Math.round(srcWidth * scale);
+	const newHeight = Math.round(srcHeight * scale);
+	const canvas = document.createElement("canvas");
+	canvas.width = newWidth;
+	canvas.height = newHeight;
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("Cannot get 2d context");
+	ctx.drawImage(src, 0, 0, srcWidth, srcHeight, 0, 0, newWidth, newHeight);
+	return canvas;
 }
 
 /**

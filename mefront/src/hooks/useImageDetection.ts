@@ -87,6 +87,7 @@ export function useImageDetection(
 								},
 							});
 						},
+						geoMeta,
 					);
 
 					dispatch({
