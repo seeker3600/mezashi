@@ -15,7 +15,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,7 +25,7 @@ const ROOT = join(__dirname, "..");
 // ---------- オーバーライド ----------
 /** @type {Record<string, {license?: string, url?: string}>} */
 const OVERRIDES = JSON.parse(
-  readFileSync(join(__dirname, "license-overrides.json"), "utf-8"),
+	readFileSync(join(__dirname, "license-overrides.json"), "utf-8"),
 );
 
 /**
@@ -33,68 +33,67 @@ const OVERRIDES = JSON.parse(
  * @param {string} raw
  */
 function sanitizeUrl(raw) {
-  if (!raw || raw === "UNKNOWN") return "";
-  try {
-    const u = new URL(raw);
-    return u.protocol === "https:" || u.protocol === "http:" ? raw : "";
-  } catch {
-    return "";
-  }
+	if (!raw || raw === "UNKNOWN") return "";
+	try {
+		const u = new URL(raw);
+		return u.protocol === "https:" || u.protocol === "http:" ? raw : "";
+	} catch {
+		return "";
+	}
 }
 
 // ---------- medetect ----------
 function loadMedetectLicenses() {
-  const raw = readFileSync(
-    join(__dirname, "medetect-licenses.json"),
-    "utf-8",
-  );
-  /** @type {Array<{Name: string, Version: string, License: string, URL: string}>} */
-  const data = JSON.parse(raw);
-  return data
-    .filter((d) => d.Name !== "medetect" && d.Name !== "pip-licenses")
-    .map((d) => {
-      const ov = OVERRIDES[d.Name] ?? {};
-      return {
-        name: d.Name,
-        version: d.Version,
-        license: (d.License === "UNKNOWN" ? ov.license : d.License) ?? "UNKNOWN",
-        url: sanitizeUrl(ov.url ?? d.URL ?? ""),
-      };
-    });
+	const raw = readFileSync(join(__dirname, "medetect-licenses.json"), "utf-8");
+	/** @type {Array<{Name: string, Version: string, License: string, URL: string}>} */
+	const data = JSON.parse(raw);
+	return data
+		.filter((d) => d.Name !== "medetect" && d.Name !== "pip-licenses")
+		.map((d) => {
+			const ov = OVERRIDES[d.Name] ?? {};
+			return {
+				name: d.Name,
+				version: d.Version,
+				license:
+					(d.License === "UNKNOWN" ? ov.license : d.License) ?? "UNKNOWN",
+				url: sanitizeUrl(ov.url ?? d.URL ?? ""),
+			};
+		});
 }
 
 // ---------- mefront ----------
 function loadMefrontLicenses() {
-  const output = execSync("npx --yes license-checker --json --production", {
-    cwd: ROOT,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  /** @type {Record<string, {licenses: string, repository?: string, publisher?: string}>} */
-  const data = JSON.parse(output);
-  return Object.entries(data)
-    .filter(([key]) => !key.startsWith("mefront@"))
-    .map(([key, val]) => {
-      const match = key.match(/^(.+)@([^@]+)$/);
-      const name = match ? match[1] : key;
-      const ov = OVERRIDES[name] ?? {};
-      return {
-        name,
-        version: match ? match[2] : "",
-        license: (val.licenses === "Unknown" ? ov.license : val.licenses) ?? "Unknown",
-        url: sanitizeUrl(ov.url ?? val.repository ?? ""),
-      };
-    });
+	const output = execSync("npx --yes license-checker --json --production", {
+		cwd: ROOT,
+		encoding: "utf-8",
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+	/** @type {Record<string, {licenses: string, repository?: string, publisher?: string}>} */
+	const data = JSON.parse(output);
+	return Object.entries(data)
+		.filter(([key]) => !key.startsWith("mefront@"))
+		.map(([key, val]) => {
+			const match = key.match(/^(.+)@([^@]+)$/);
+			const name = match ? match[1] : key;
+			const ov = OVERRIDES[name] ?? {};
+			return {
+				name,
+				version: match ? match[2] : "",
+				license:
+					(val.licenses === "Unknown" ? ov.license : val.licenses) ?? "Unknown",
+				url: sanitizeUrl(ov.url ?? val.repository ?? ""),
+			};
+		});
 }
 
 // ---------- HTML 生成 ----------
 /** @param {string} s */
 function escapeHtml(s) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+	return s
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }
 
 /**
@@ -102,23 +101,23 @@ function escapeHtml(s) {
  * @param {Array<{name: string, version: string, license: string, url: string}>} deps
  */
 function renderSection(title, deps) {
-  const sorted = [...deps].sort((a, b) =>
-    a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
-  );
-  const rows = sorted
-    .map((d) => {
-      const nameCell = d.url
-        ? `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.name)}</a>`
-        : escapeHtml(d.name);
-      return `        <tr>
+	const sorted = [...deps].sort((a, b) =>
+		a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+	);
+	const rows = sorted
+		.map((d) => {
+			const nameCell = d.url
+				? `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.name)}</a>`
+				: escapeHtml(d.name);
+			return `        <tr>
           <td>${nameCell}</td>
           <td>${escapeHtml(d.version)}</td>
           <td>${escapeHtml(d.license)}</td>
         </tr>`;
-    })
-    .join("\n");
+		})
+		.join("\n");
 
-  return `    <section>
+	return `    <section>
       <h2>${escapeHtml(title)}</h2>
       <table>
         <thead>
@@ -132,7 +131,7 @@ ${rows}
 }
 
 function generateHtml(medetectDeps, mefrontDeps) {
-  return `<!DOCTYPE html>
+	return `<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">

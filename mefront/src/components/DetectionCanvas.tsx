@@ -2,6 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getOBBCorners } from "../lib/obbUtils";
 import type { Detection } from "../lib/types";
 
+/** Convert hex color to rgba string */
+function hexToRgba(hex: string, alpha: number): string {
+	const r = Number.parseInt(hex.slice(1, 3), 16);
+	const g = Number.parseInt(hex.slice(3, 5), 16);
+	const b = Number.parseInt(hex.slice(5, 7), 16);
+	return `rgba(${r},${g},${b},${alpha})`;
+}
+
 /** Palette for different class colors */
 const COLORS = [
 	"#FF3838",
@@ -26,7 +34,7 @@ interface DetectionCanvasProps {
 	detections: Detection[];
 	imageWidth: number;
 	imageHeight: number;
-	onFileSelect?: (file: File) => void;
+	onFileSelect?: (files: File[]) => void;
 	disabled?: boolean;
 }
 
@@ -65,8 +73,8 @@ export function DetectionCanvas({
 			e.preventDefault();
 			setIsDragOver(false);
 			if (disabled || !onFileSelect) return;
-			const file = e.dataTransfer.files[0];
-			if (file) onFileSelect(file);
+			const files = Array.from(e.dataTransfer.files);
+			if (files.length > 0) onFileSelect(files);
 		},
 		[disabled, onFileSelect],
 	);
@@ -80,9 +88,10 @@ export function DetectionCanvas({
 				const input = document.createElement("input");
 				input.type = "file";
 				input.accept = "image/*,.tif,.tiff";
+				input.multiple = true;
 				input.onchange = () => {
-					const file = input.files?.[0];
-					if (file) onFileSelect(file);
+					const files = Array.from(input.files ?? []);
+					if (files.length > 0) onFileSelect(files);
 				};
 				input.click();
 			}
@@ -216,13 +225,17 @@ export function DetectionCanvas({
 				ctx.lineTo(scaledCorners[i][0], scaledCorners[i][1]);
 			}
 			ctx.closePath();
-			ctx.strokeStyle = color;
-			ctx.lineWidth = Math.max(2, Math.min(displayWidth, displayHeight) / 500);
+			ctx.strokeStyle = hexToRgba(color, 0.8);
+			// Divide by scale so line width stays constant on screen when zooming
+			ctx.lineWidth =
+				Math.max(2, Math.min(displayWidth, displayHeight) / 500) / scale;
 			ctx.stroke();
 
 			// Draw label inside OBB with rotation
 			const label = `${det.className} ${(det.confidence * 100).toFixed(0)}%`;
-			const fontSize = Math.max(12, Math.min(displayWidth, displayHeight) / 80);
+			// Divide by scale so font size stays constant on screen when zooming
+			const fontSize =
+				Math.max(12, Math.min(displayWidth, displayHeight) / 80) / scale;
 			ctx.font = `bold ${fontSize}px sans-serif`;
 			const textMetrics = ctx.measureText(label);
 			const textW = textMetrics.width + 6;
@@ -239,10 +252,10 @@ export function DetectionCanvas({
 			ctx.translate(cx, cy);
 			ctx.rotate(det.angle);
 
-			// Draw label background centered at OBB center
-			ctx.fillStyle = color;
+			// Draw label background centered at OBB center (slightly transparent)
+			ctx.fillStyle = hexToRgba(color, 0.75);
 			ctx.fillRect(-textW / 2, -textH / 2, textW, textH);
-			ctx.fillStyle = "#fff";
+			ctx.fillStyle = "rgba(255,255,255,0.95)";
 			ctx.fillText(label, -textW / 2 + 3, textH / 2 - 4);
 
 			// Restore context state
