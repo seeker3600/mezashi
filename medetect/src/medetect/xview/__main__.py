@@ -1,9 +1,16 @@
 import argparse
+import logging
 from pathlib import Path
 from medetect.xview.convert import convert_xview_to_yolo
 from medetect.xview.slice import slice_training_images
 
+
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     parser = argparse.ArgumentParser(description="xView dataset utilities.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 from pathlib import Path
 from typing import NamedTuple
@@ -112,20 +113,50 @@ def _write_yolo_labels(label_path: Path, bboxes: list[_YoloBBox]) -> None:
 
 
 def _get_geotiff_resolution(dataset: rasterio.DatasetReader) -> float:
-    """GeoTIFF のピクセルあたり分解能 (メートル) を返す。
+    """GeoTIFF のピクセルあたり地上分解能 (メートル) を返す。
 
-    transform の pixel size を使用。x, y の平均を取る。
+    CRS が地理座標系（度単位）の場合は中心緯度を使ってメートルへ変換する。
+    投影座標系（メートル単位）の場合はそのまま平均を取る。
     """
     transform = dataset.transform
     res_x = abs(transform.a)
     res_y = abs(transform.e)
+
+    if dataset.crs and dataset.crs.is_geographic:
+        # 度単位 → メートルへ変換
+        bounds = dataset.bounds
+        center_lat = (bounds.top + bounds.bottom) / 2.0
+        meters_per_deg_lat = 111320.0
+        meters_per_deg_lon = 111320.0 * math.cos(math.radians(center_lat))
+        res_x_m = res_x * meters_per_deg_lon
+        res_y_m = res_y * meters_per_deg_lat
+        return (res_x_m + res_y_m) / 2.0
+
     return (res_x + res_y) / 2.0
 
 
-def _choose_resolution(resolution: float | tuple[float, float]) -> float:
-    """分解能を選択する。範囲指定の場合はランダム。"""
+def _choose_resolution(
+    resolution: float | tuple[float, float],
+    *,
+    max_resolution: float | None = None,
+) -> float:
+    """分解能を選択する。範囲指定の場合はランダム。
+
+    Parameters
+    ----------
+    resolution:
+        固定値または (min, max) の範囲。
+    max_resolution:
+        実際に使える上限値。指定時は min(選択値, max_resolution) を返す。
+    """
     if isinstance(resolution, tuple):
-        return random.uniform(resolution[0], resolution[1])
+        low, high = resolution
+        if max_resolution is not None:
+            high = min(high, max_resolution)
+            low = min(low, high)
+        return random.uniform(low, high)
+    if max_resolution is not None:
+        return min(resolution, max_resolution)
     return resolution
 
 
@@ -158,8 +189,8 @@ def slice_training_images(
     dict[str, int]
         ``{"images_processed": N, "tiles_created": N, "labels_created": N}`` の統計情報。
     """
-    input_dir = Path(input_dir)
-    output_dir = Path(output_dir)
+    input_dir = Path(input_dir).resolve()
+    output_dir = Path(output_dir).resolve()
 
     images_in = input_dir / "images" / "train"
     labels_in = input_dir / "labels" / "train"
@@ -182,80 +213,109 @@ def slice_training_images(
 
     logger.info("入力画像数: %d", len(tif_files))
 
-    for tif_path in tif_files:
+    for file_idx, tif_path in enumerate(tif_files):
         stem = tif_path.stem
         label_path = labels_in / f"{stem}.txt"
         bboxes = _read_yolo_labels(label_path)
 
-        target_res = _choose_resolution(resolution)
-
-        with rasterio.open(tif_path) as dataset:
-            native_res = _get_geotiff_resolution(dataset)
-            if native_res <= 0:
-                logger.warning("無効な分解能 (%.6f): %s", native_res, tif_path.name)
-                continue
-
-            scale_factor = native_res / target_res
-
-            # リサンプリング後のサイズ
-            new_width = max(1, int(dataset.width * scale_factor))
-            new_height = max(1, int(dataset.height * scale_factor))
-
-            # 画像データの読み込み・リサンプリング
-            data = dataset.read(
-                out_shape=(dataset.count, new_height, new_width),
-                resampling=Resampling.bilinear,
-            )
-
-        # (bands, height, width) -> (height, width, bands) for PIL
-        if data.shape[0] == 1:
-            img_array = data[0]
-        else:
-            img_array = np.transpose(data, (1, 2, 0))
-
-        # タイルに切り出し
-        tile_idx = 0
-        for y in range(0, new_height, step):
-            for x in range(0, new_width, step):
-                # タイル領域
-                x_end = x + image_size
-                y_end = y + image_size
-
-                if x_end > new_width or y_end > new_height:
+        try:
+            with rasterio.open(tif_path) as dataset:
+                native_res = _get_geotiff_resolution(dataset)
+                if native_res <= 0:
+                    logger.warning("無効な分解能 (%.6f): %s", native_res, tif_path.name)
                     continue
 
-                tile_data = img_array[y:y_end, x:x_end]
+                # image_size 未満にならない最大 target_res を算出
+                min_dim = min(dataset.width, dataset.height)
+                max_target_res = native_res * min_dim / image_size
 
-                # タイル用ラベル計算
-                tile_bboxes: list[_YoloBBox] = []
-                for bbox in bboxes:
-                    clipped = _clip_bbox_to_tile(
-                        bbox, x, y, image_size, new_width, new_height
+                target_res = _choose_resolution(
+                    resolution, max_resolution=max_target_res,
+                )
+                scale_factor = native_res / target_res
+
+                # リサンプリング後のサイズ
+                new_width = max(1, int(dataset.width * scale_factor))
+                new_height = max(1, int(dataset.height * scale_factor))
+
+                logger.debug(
+                    "[%d/%d] %s: native=%.4f m/px, target=%.4f m/px, "
+                    "scale=%.4f, resampled=%dx%d",
+                    file_idx + 1, len(tif_files), tif_path.name,
+                    native_res, target_res, scale_factor,
+                    new_width, new_height,
+                )
+
+                if new_width < image_size or new_height < image_size:
+                    logger.warning(
+                        "リサンプリング後サイズ (%dx%d) が image_size (%d) 未満"
+                        "のためスキップ: %s",
+                        new_width, new_height, image_size, tif_path.name,
                     )
-                    if clipped is not None:
-                        tile_bboxes.append(clipped)
+                    continue
 
-                # ファイル名生成
-                tile_name = f"{stem}_{tile_idx:04d}"
+                # 画像データの読み込み・リサンプリング
+                data = dataset.read(
+                    out_shape=(dataset.count, new_height, new_width),
+                    resampling=Resampling.bilinear,
+                )
 
-                # PNG 保存
-                tile_img = Image.fromarray(tile_data)
-                tile_img.save(images_out / f"{tile_name}.png")
+            # (bands, height, width) -> (height, width, bands) for PIL
+            if data.shape[0] == 1:
+                img_array = data[0]
+            else:
+                img_array = np.transpose(data, (1, 2, 0))
+            del data
 
-                # ラベル保存
-                _write_yolo_labels(labels_out / f"{tile_name}.txt", tile_bboxes)
+            # タイルに切り出し
+            tile_idx = 0
+            for y in range(0, new_height, step):
+                for x in range(0, new_width, step):
+                    # タイル領域
+                    x_end = x + image_size
+                    y_end = y + image_size
 
-                stats_tiles += 1
-                stats_labels += len(tile_bboxes)
-                tile_idx += 1
+                    if x_end > new_width or y_end > new_height:
+                        continue
 
-        stats_images += 1
-        logger.debug(
-            "スライス完了: %s -> %d タイル (分解能: %.3f m/px)",
-            tif_path.name,
-            tile_idx,
-            target_res,
-        )
+                    tile_data = img_array[y:y_end, x:x_end]
+
+                    # タイル用ラベル計算
+                    tile_bboxes: list[_YoloBBox] = []
+                    for bbox in bboxes:
+                        clipped = _clip_bbox_to_tile(
+                            bbox, x, y, image_size, new_width, new_height
+                        )
+                        if clipped is not None:
+                            tile_bboxes.append(clipped)
+
+                    # ファイル名生成
+                    tile_name = f"{stem}_{tile_idx:04d}"
+
+                    # PNG 保存
+                    tile_img = Image.fromarray(tile_data)
+                    tile_img.save(images_out / f"{tile_name}.png")
+
+                    # ラベル保存
+                    _write_yolo_labels(
+                        labels_out / f"{tile_name}.txt", tile_bboxes,
+                    )
+
+                    stats_tiles += 1
+                    stats_labels += len(tile_bboxes)
+                    tile_idx += 1
+
+            del img_array
+            stats_images += 1
+
+            if (file_idx + 1) % 100 == 0 or file_idx + 1 == len(tif_files):
+                logger.info(
+                    "進捗: %d/%d 画像処理済み (タイル: %d)",
+                    file_idx + 1, len(tif_files), stats_tiles,
+                )
+
+        except Exception:
+            logger.exception("画像処理中にエラー: %s", tif_path.name)
 
     summary = {
         "images_processed": stats_images,
