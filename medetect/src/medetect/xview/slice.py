@@ -30,6 +30,7 @@ import numpy as np
 import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
+from ultralytics.data.split import autosplit as _ultralytics_autosplit
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,8 @@ def slice_training_images(
     image_size: int,
     *,
     overlap: float = 0.0,
+    autosplit_weights: tuple[float, float, float] | None = None,
+    autosplit_annotated_only: bool = False,
 ) -> dict[str, int]:
     """トレーニング画像を指定分解能でスライスする。
 
@@ -183,6 +186,13 @@ def slice_training_images(
         出力タイルの一辺のピクセル数。
     overlap:
         タイル間のオーバーラップ率 (0.0〜1.0)。デフォルト 0.0。
+    autosplit_weights:
+        ``ultralytics.data.split.autosplit`` を呼び出す場合の
+        (train, val, test) 比率タプル (例: ``(0.9, 0.1, 0.0)``)。
+        ``None`` の場合は呼び出しを行わない。
+    autosplit_annotated_only:
+        ``autosplit_weights`` 指定時に、対応するラベルファイルが存在する
+        画像のみを対象とするかどうか。デフォルト ``False``。
 
     Returns
     -------
@@ -327,4 +337,19 @@ def slice_training_images(
         "タイル: %(tiles_created)d, ラベル: %(labels_created)d",
         summary,
     )
+
+    if autosplit_weights is not None:
+        logger.info(
+            "autosplit を実行中 (weights=%s, annotated_only=%s): %s",
+            autosplit_weights,
+            autosplit_annotated_only,
+            images_out,
+        )
+        _ultralytics_autosplit(
+            path=images_out,
+            weights=autosplit_weights,
+            annotated_only=autosplit_annotated_only,
+        )
+        logger.info("autosplit 完了: %s", images_out)
+
     return summary
