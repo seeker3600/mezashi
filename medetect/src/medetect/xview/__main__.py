@@ -20,19 +20,6 @@ def main():
     slice_parser.add_argument("--resolution", type=float, nargs="+", required=True, help="Resolution in m/px. One value for fixed, two for range (min max).")
     slice_parser.add_argument("--image_size", type=int, required=True, help="Output tile size in pixels.")
     slice_parser.add_argument("--overlap", type=float, default=0.0, help="Overlap ratio (0.0-1.0). Default: 0.0.")
-    slice_parser.add_argument(
-        "--autosplit_weights",
-        type=float,
-        nargs=3,
-        metavar=("TRAIN", "VAL", "TEST"),
-        default=(0.9, 0.1, 0.0),
-        help="Run ultralytics autosplit with given train/val/test weights (e.g. 0.9 0.1 0.0).",
-    )
-    slice_parser.add_argument(
-        "--autosplit_annotated_only",
-        action="store_true",
-        help="autosplit: only include images that have a corresponding label file.",
-    )
 
     args = parser.parse_args()
 
@@ -51,8 +38,6 @@ def main():
             resolution=resolution,
             image_size=args.image_size,
             overlap=args.overlap,
-            autosplit_weights=tuple(args.autosplit_weights) if args.autosplit_weights is not None else None,
-            autosplit_annotated_only=args.autosplit_annotated_only,
         )
 
 if __name__ == "__main__":

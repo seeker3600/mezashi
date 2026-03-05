@@ -298,11 +298,16 @@ def slice_training_images(
         tmp_base = Path(tmp_base_str)
 
         # yolo-tiling が期待する構造: source/train/images/, source/train/labels/
+        # valid_ratio=0.0 でも valid フォルダが必要
         tmp_source = tmp_base / "source"
         tmp_images = tmp_source / "train" / "images"
         tmp_labels = tmp_source / "train" / "labels"
         tmp_images.mkdir(parents=True, exist_ok=True)
         tmp_labels.mkdir(parents=True, exist_ok=True)
+        (tmp_source / "valid" / "images").mkdir(parents=True, exist_ok=True)
+        (tmp_source / "valid" / "labels").mkdir(parents=True, exist_ok=True)
+        (tmp_source / "test" / "images").mkdir(parents=True, exist_ok=True)
+        (tmp_source / "test" / "labels").mkdir(parents=True, exist_ok=True)
 
         stats_images = _resample_to_tmpdir(
             tif_files, labels_in, tmp_images, tmp_labels,
@@ -317,8 +322,8 @@ def slice_training_images(
         tmp_target = tmp_base / "target"
 
         config = TileConfig(
-            slice_wh=image_size,
-            overlap_wh=overlap,
+            slice_wh=(image_size, image_size),
+            overlap_wh=(overlap, overlap),
             annotation_type="object_detection",
             output_ext=".png",
             train_ratio=1.0,
