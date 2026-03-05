@@ -27,6 +27,11 @@ cuda = "13.0"
 [tool.pixi.pypi-dependencies]
 medetect = { path = ".", editable = true }
 pip-licenses = ">=5.5.1, <6"
+yolo-tiling = ">=0.0.27, <0.1"
+pytest = ">=8,<9"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.pixi.tasks]
 # flatbuffers, ml-dtypes, onnx, onnxruntime-gpu, onnxslim のみ（[project] dependencies の直接指定パッケージ）。
