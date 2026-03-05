@@ -1,7 +1,6 @@
 import argparse
 import logging
 from pathlib import Path
-from medetect.xview.convert import convert_xview_to_yolo
 from medetect.xview.slice import slice_training_images
 
 
@@ -13,12 +12,6 @@ def main():
     )
     parser = argparse.ArgumentParser(description="xView dataset utilities.")
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # convert サブコマンド
-    convert_parser = subparsers.add_parser("convert", help="Convert xView dataset to YOLO format.")
-    convert_parser.add_argument("--geojson_path", type=Path, required=True, help="Path to xView geojson file.")
-    convert_parser.add_argument("--images_dir", type=Path, required=True, help="Directory containing xView images.")
-    convert_parser.add_argument("--output_dir", type=Path, required=True, help="Directory to save YOLO labels.")
 
     # slice サブコマンド
     slice_parser = subparsers.add_parser("slice", help="Slice training images by resolution.")
@@ -43,13 +36,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "convert":
-        convert_xview_to_yolo(
-            geojson_path=args.geojson_path,
-            images_dir=args.images_dir,
-            output_dir=args.output_dir,
-        )
-    elif args.command == "slice":
+    if args.command == "slice":
         resolution_vals = args.resolution
         if len(resolution_vals) == 1:
             resolution = resolution_vals[0]
