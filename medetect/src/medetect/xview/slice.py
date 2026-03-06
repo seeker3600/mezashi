@@ -317,13 +317,10 @@ def slice_training_images(
     images_out = output_dir / "images" / "train"
     labels_out = output_dir / "labels" / "train"
 
-    images_out.mkdir(parents=True, exist_ok=True)
-    labels_out.mkdir(parents=True, exist_ok=True)
-
     tif_files = sorted(images_in.glob("*.tif"))
     if not tif_files:
         logger.warning("GeoTIFF ファイルが見つかりません: %s", images_in)
-        return {"images_processed": 0, "tiles_created": 0, "labels_created": 0}
+        return {"images_processed": 0}
 
     logger.info("入力画像数: %d", len(tif_files))
 
@@ -352,7 +349,7 @@ def slice_training_images(
 
         if stats_images == 0:
             logger.warning("リサンプリングに成功した画像がありません")
-            return {"images_processed": 0, "tiles_created": 0, "labels_created": 0}
+            return {"images_processed": 0}
 
         # ── 2. yolo-tiling でスライス ──
         tmp_target = tmp_base / "target"
@@ -379,9 +376,6 @@ def slice_training_images(
         logger.info("yolo-tiling によるスライス完了")
 
         # ── 3. タイル出力ディレクトリを最終ディレクトリへ移動 ──
-        # mkdir で作成した空ディレクトリを削除してからディレクトリごと rename
-        images_out.rmdir()
-        labels_out.rmdir()
         shutil.move(str(tmp_target / "train" / "images"), str(images_out))
         shutil.move(str(tmp_target / "train" / "labels"), str(labels_out))
 
