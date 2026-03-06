@@ -378,36 +378,12 @@ def slice_training_images(
         tiler.run()
         logger.info("yolo-tiling によるスライス完了")
 
-        # ── 3. タイル出力を最終ディレクトリへコピー ──
-        tiled_images_dir = tmp_target / "train" / "images"
-        tiled_labels_dir = tmp_target / "train" / "labels"
+        # ── 3. タイル出力ディレクトリを最終ディレクトリへ移動 ──
+        # mkdir で作成した空ディレクトリを削除してからディレクトリごと rename
+        images_out.rmdir()
+        labels_out.rmdir()
+        shutil.move(str(tmp_target / "train" / "images"), str(images_out))
+        shutil.move(str(tmp_target / "train" / "labels"), str(labels_out))
 
-        stats_tiles = 0
-        stats_labels = 0
-
-        if tiled_images_dir.exists():
-            for img_file in sorted(tiled_images_dir.iterdir()):
-                if img_file.is_file():
-                    shutil.move(str(img_file), images_out / img_file.name)
-                    stats_tiles += 1
-
-        if tiled_labels_dir.exists():
-            for lbl_file in sorted(tiled_labels_dir.iterdir()):
-                if lbl_file.is_file():
-                    shutil.move(str(lbl_file), labels_out / lbl_file.name)
-                    with lbl_file.open(encoding="utf-8") as f:
-                        stats_labels += sum(
-                            1 for line in f if line.strip()
-                        )
-
-    summary = {
-        "images_processed": stats_images,
-        "tiles_created": stats_tiles,
-        "labels_created": stats_labels,
-    }
-    logger.info(
-        "スライス完了 — 画像: %(images_processed)d, "
-        "タイル: %(tiles_created)d, ラベル: %(labels_created)d",
-        summary,
-    )
-    return summary
+    logger.info("スライス完了 — リサンプリング画像: %d", stats_images)
+    return {"images_processed": stats_images}
