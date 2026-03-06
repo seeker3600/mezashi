@@ -34,7 +34,7 @@ import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
 from tqdm import tqdm
-from yolo_tiler import TileConfig, YoloTiler
+from yolo_tiler import TileConfig, TileProgress, YoloTiler
 
 logger = logging.getLogger(__name__)
 
@@ -373,11 +373,30 @@ def slice_training_images(
             target=str(tmp_target),
             config=config,
             num_viz_samples=0,
-            show_processing_status=True,
+            show_processing_status=False,
         )
 
-        logging.getLogger("YoloTiler").setLevel(logging.WARNING)
-        tiler.run()
+        # YoloTiler の INFO ログを抑止し、2本の tqdm バーで進捗表示
+        _yolo_logger = logging.getLogger("YoloTiler")
+        _yolo_logger.setLevel(logging.WARNING)
+
+        with tqdm(unit="img", dynamic_ncols=True) as pbar, \
+            tqdm(unit="tile", dynamic_ncols=True) as tile_pbar:
+
+            def _progress_callback(p: TileProgress) -> None:
+                nonlocal pbar, tile_pbar
+                pbar.desc = p.current_set_name
+                pbar.total = p.total_images
+                pbar.n = p.current_image_idx
+                pbar.refresh()
+
+                tile_pbar.desc = p.current_image_name
+                tile_pbar.total = p.total_tiles
+                tile_pbar.n = p.current_tile_idx
+                tile_pbar.refresh()
+
+            tiler.progress_callback = _progress_callback
+            tiler.run()
 
         logger.info("yolo-tiling によるスライス完了")
 

@@ -1,0 +1,101 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
+# DIUx xView 2018 Challenge dataset https://challenge.xviewdataset.org by U.S. National Geospatial-Intelligence Agency (NGA)
+# --------  Download and extract data manually to `datasets/xView` before running the train command.  --------
+# Documentation: https://docs.ultralytics.com/datasets/detect/xview/
+# Example usage: yolo train data=xView.yaml && yolo train data=xView_sliced.yaml
+# parent
+# ├── ultralytics
+# └── datasets
+#     └── xView  ← raw data
+#     └── xView_sliced  ← sliced data
+
+# Train/val
+path: xView_sliced # dataset root dir
+train: images/autosplit_train.txt # train images (relative to 'path') 90% of sliced tiles
+val: images/autosplit_val.txt # val images (relative to 'path') 10% of sliced tiles
+
+# Classes
+names:
+  0: Fixed-wing Aircraft
+  1: Small Aircraft
+  2: Cargo Plane
+  3: Helicopter
+  4: Passenger Vehicle
+  5: Small Car
+  6: Bus
+  7: Pickup Truck
+  8: Utility Truck
+  9: Truck
+  10: Cargo Truck
+  11: Truck w/Box
+  12: Truck Tractor
+  13: Trailer
+  14: Truck w/Flatbed
+  15: Truck w/Liquid
+  16: Crane Truck
+  17: Railway Vehicle
+  18: Passenger Car
+  19: Cargo Car
+  20: Flat Car
+  21: Tank car
+  22: Locomotive
+  23: Maritime Vessel
+  24: Motorboat
+  25: Sailboat
+  26: Tugboat
+  27: Barge
+  28: Fishing Vessel
+  29: Ferry
+  30: Yacht
+  31: Container Ship
+  32: Oil Tanker
+  33: Engineering Vehicle
+  34: Tower crane
+  35: Container Crane
+  36: Reach Stacker
+  37: Straddle Carrier
+  38: Mobile Crane
+  39: Dump Truck
+  40: Haul Truck
+  41: Scraper/Tractor
+  42: Front loader/Bulldozer
+  43: Excavator
+  44: Cement Mixer
+  45: Ground Grader
+  46: Hut/Tent
+  47: Shed
+  48: Building
+  49: Aircraft Hangar
+  50: Damaged Building
+  51: Facility
+  52: Construction Site
+  53: Vehicle Lot
+  54: Helipad
+  55: Storage Tank
+  56: Shipping container lot
+  57: Shipping Container
+  58: Pylon
+  59: Tower
+
+# Download script/URL
+download: |
+  from pathlib import Path
+
+  from medetect.xview.slice import slice_training_images
+  from ultralytics.data.split import autosplit
+
+  sliced_dir = Path(yaml["path"])
+  raw_dir = sliced_dir.parent / "xView" # raw data dir
+
+  # Slice
+  slice_training_images(
+      input_dir=raw_dir,
+      output_dir=sliced_dir,
+      resolution=(0.5, 5.0),
+      image_size=640,
+      overlap=0.1,
+  )
+
+  # Split
+  autosplit(sliced_dir / "images" / "train")
