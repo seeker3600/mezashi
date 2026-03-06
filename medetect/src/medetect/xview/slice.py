@@ -245,6 +245,9 @@ def _resample_to_tmpdir(
     """
     if max_workers is None:
         max_workers = os.cpu_count() or 1
+    
+    # デバッグ目的で処理数を制限する場合はここでスライス
+    # tif_files = tif_files[:max_workers]
 
     stats_images = 0
 
@@ -370,9 +373,12 @@ def slice_training_images(
             target=str(tmp_target),
             config=config,
             num_viz_samples=0,
-            show_processing_status=False,
+            show_processing_status=True,
         )
+
+        logging.getLogger("YoloTiler").setLevel(logging.WARNING)
         tiler.run()
+
         logger.info("yolo-tiling によるスライス完了")
 
         # ── 3. タイル出力ディレクトリを最終ディレクトリへ移動 ──
