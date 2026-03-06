@@ -20,8 +20,10 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
+import os
 import random
 import shutil
 import tempfile
@@ -31,6 +33,7 @@ import numpy as np
 import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
+from tqdm import tqdm
 from yolo_tiler import TileConfig, YoloTiler
 
 logger = logging.getLogger(__name__)
@@ -160,6 +163,65 @@ def _choose_resolution(
     return resolution
 
 
+def _resample_single(
+    tif_path: Path,
+    labels_in: Path,
+    tmp_images: Path,
+    tmp_labels: Path,
+    resolution: float | tuple[float, float],
+    image_size: int,
+) -> tuple[str, str | None]:
+    """単一 GeoTIFF をリサンプリングして一時ディレクトリへ保存する。
+
+    Returns
+    -------
+    tuple[str, str | None]
+        ``(stem, エラーメッセージ)``。成功時は ``(stem, None)``。
+    """
+    stem = tif_path.stem
+    label_path = labels_in / f"{stem}.txt"
+
+    try:
+        with rasterio.open(tif_path) as dataset:
+            native_res = _get_geotiff_resolution(dataset)
+            if native_res <= 0:
+                return stem, f"無効な分解能 ({native_res:.6f})"
+
+            params = _compute_resample_params(
+                native_res, dataset.width, dataset.height,
+                image_size, resolution,
+            )
+            if params is None:
+                return stem, f"リサンプリング後サイズが image_size ({image_size}) 未満"
+
+            _target_res, new_width, new_height = params
+
+            data = dataset.read(
+                out_shape=(dataset.count, new_height, new_width),
+                resampling=Resampling.bilinear,
+            )
+
+        # (bands, height, width) -> (height, width, bands) for PIL
+        if data.shape[0] == 1:
+            img_array = data[0]
+        else:
+            img_array = np.transpose(data, (1, 2, 0))
+        del data
+
+        Image.fromarray(img_array).save(tmp_images / f"{stem}.png")
+        del img_array
+
+        if label_path.exists():
+            shutil.copy2(label_path, tmp_labels / f"{stem}.txt")
+        else:
+            (tmp_labels / f"{stem}.txt").touch()
+
+        return stem, None
+
+    except Exception as exc:  # noqa: BLE001
+        return stem, str(exc)
+
+
 def _resample_to_tmpdir(
     tif_files: list[Path],
     labels_in: Path,
@@ -167,81 +229,53 @@ def _resample_to_tmpdir(
     tmp_labels: Path,
     resolution: float | tuple[float, float],
     image_size: int,
+    max_workers: int | None = None,
 ) -> int:
-    """GeoTIFF 群を指定分解能にリサンプリングし一時ディレクトリへ保存する。
+    """GeoTIFF 群を並列リサンプリングし一時ディレクトリへ保存する。
+
+    Parameters
+    ----------
+    max_workers:
+        プロセス数。``None`` の場合は CPU コア数を使用する。
 
     Returns
     -------
     int
         処理に成功した画像数。
     """
+    if max_workers is None:
+        max_workers = os.cpu_count() or 1
+
     stats_images = 0
 
-    for file_idx, tif_path in enumerate(tif_files):
-        stem = tif_path.stem
-        label_path = labels_in / f"{stem}.txt"
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _resample_single,
+                tif_path, labels_in, tmp_images, tmp_labels,
+                resolution, image_size,
+            ): tif_path
+            for tif_path in tif_files
+        }
 
-        try:
-            with rasterio.open(tif_path) as dataset:
-                native_res = _get_geotiff_resolution(dataset)
-                if native_res <= 0:
-                    logger.warning(
-                        "無効な分解能 (%.6f): %s", native_res, tif_path.name,
-                    )
-                    continue
-
-                params = _compute_resample_params(
-                    native_res, dataset.width, dataset.height,
-                    image_size, resolution,
-                )
-                if params is None:
-                    logger.warning(
-                        "リサンプリング後サイズが image_size (%d) 未満のためスキップ: %s",
-                        image_size, tif_path.name,
-                    )
-                    continue
-
-                target_res, new_width, new_height = params
-                logger.debug(
-                    "[%d/%d] %s: native=%.4f m/px, target=%.4f m/px, "
-                    "resampled=%dx%d",
-                    file_idx + 1, len(tif_files), tif_path.name,
-                    native_res, target_res, new_width, new_height,
-                )
-
-                # 画像データの読み込み・リサンプリング
-                data = dataset.read(
-                    out_shape=(dataset.count, new_height, new_width),
-                    resampling=Resampling.bilinear,
-                )
-
-            # (bands, height, width) -> (height, width, bands) for PIL
-            if data.shape[0] == 1:
-                img_array = data[0]
-            else:
-                img_array = np.transpose(data, (1, 2, 0))
-            del data
-
-            # リサンプリング済み画像を PNG で保存
-            Image.fromarray(img_array).save(tmp_images / f"{stem}.png")
-            del img_array
-
-            # ラベルをコピー（存在しない場合は空ファイル作成）
-            if label_path.exists():
-                shutil.copy2(label_path, tmp_labels / f"{stem}.txt")
-            else:
-                (tmp_labels / f"{stem}.txt").touch()
-
-            stats_images += 1
-
-            if (file_idx + 1) % 100 == 0 or file_idx + 1 == len(tif_files):
-                logger.info(
-                    "リサンプリング進捗: %d/%d 画像処理済み",
-                    file_idx + 1, len(tif_files),
-                )
-
-        except Exception:
-            logger.exception("画像処理中にエラー: %s", tif_path.name)
+        with tqdm(
+            total=len(tif_files),
+            desc="リサンプリング",
+            unit="img",
+            dynamic_ncols=True,
+        ) as pbar:
+            for future in concurrent.futures.as_completed(futures):
+                tif_path = futures[future]
+                try:
+                    _stem, error = future.result()
+                    if error is None:
+                        stats_images += 1
+                    else:
+                        logger.warning("スキップ %s: %s", tif_path.name, error)
+                except Exception:
+                    logger.exception("画像処理中にエラー: %s", tif_path.name)
+                finally:
+                    pbar.update(1)
 
     return stats_images
 
@@ -294,7 +328,9 @@ def slice_training_images(
     logger.info("入力画像数: %d", len(tif_files))
 
     # ── 1. rasterio でリサンプリング → 一時ディレクトリへ保存 ──
-    with tempfile.TemporaryDirectory() as tmp_base_str:
+    # output_dir と同じドライブに一時ディレクトリを作成することで move が rename になり高速化
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=output_dir.parent) as tmp_base_str:
         tmp_base = Path(tmp_base_str)
 
         # yolo-tiling が期待する構造: source/train/images/, source/train/labels/
@@ -352,13 +388,13 @@ def slice_training_images(
         if tiled_images_dir.exists():
             for img_file in sorted(tiled_images_dir.iterdir()):
                 if img_file.is_file():
-                    shutil.copy2(img_file, images_out / img_file.name)
+                    shutil.move(str(img_file), images_out / img_file.name)
                     stats_tiles += 1
 
         if tiled_labels_dir.exists():
             for lbl_file in sorted(tiled_labels_dir.iterdir()):
                 if lbl_file.is_file():
-                    shutil.copy2(lbl_file, labels_out / lbl_file.name)
+                    shutil.move(str(lbl_file), labels_out / lbl_file.name)
                     with lbl_file.open(encoding="utf-8") as f:
                         stats_labels += sum(
                             1 for line in f if line.strip()
