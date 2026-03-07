@@ -380,8 +380,8 @@ def slice_training_images(
         _yolo_logger = logging.getLogger("YoloTiler")
         _yolo_logger.setLevel(logging.WARNING)
 
-        with tqdm(unit="img", dynamic_ncols=True) as pbar, \
-            tqdm(unit="tile", dynamic_ncols=True) as tile_pbar:
+        with tqdm(unit="img", unit_scale=False, dynamic_ncols=True) as pbar, \
+            tqdm(unit="tile", unit_scale=False, dynamic_ncols=True) as tile_pbar:
 
             def _progress_callback(p: TileProgress) -> None:
                 nonlocal pbar, tile_pbar
