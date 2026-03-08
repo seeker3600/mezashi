@@ -89,6 +89,7 @@ download: |
   from pathlib import Path
 
   from medetect.xview.slice import slice_training_images
+  from medetect.yolo import relabel_yolo_detect_labels
   from ultralytics.data.split import autosplit
 
   sliced_dir = Path(yaml["path"])
@@ -105,3 +106,10 @@ download: |
 
   # Split
   autosplit(sliced_dir / "images" / "train")
+
+  # Relabel
+  relabel_yolo_detect_labels(
+      dataset_root=sliced_dir,
+      merges=yaml["merges"],
+  )
+  

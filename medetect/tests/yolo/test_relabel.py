@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from medetect.yolo.__main__ import main
-from medetect.yolo.relabel import relabel_yolo_detect_dataset
+from medetect.yolo.relabel import relabel_yolo_detect_dataset, relabel_yolo_detect_labels
 
 
 def _install_fake_ultralytics(monkeypatch: pytest.MonkeyPatch, datasets_dir: Path) -> None:
@@ -93,6 +93,34 @@ def test_relabel_yolo_detect_dataset_supports_absolute_dataset_path(tmp_path: Pa
         "labels_dropped": 1,
     }
     assert (labels_dir / "sample.txt").read_text(encoding="utf-8") == "1 0.5 0.5 0.2 0.2\n"
+
+
+def test_relabel_yolo_detect_labels_accepts_mapping_from_python(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "from-python"
+    labels_dir = dataset_root / "labels" / "train"
+    labels_dir.mkdir(parents=True)
+    (labels_dir / "sample.txt").write_text(
+        "1 0.1 0.2 0.3 0.4\n"
+        "2 0.2 0.3 0.4 0.5\n"
+        "3 0.3 0.4 0.5 0.6\n",
+        encoding="utf-8",
+    )
+
+    stats = relabel_yolo_detect_labels(
+        dataset_root=dataset_root,
+        merges={"1": 0, 2: 0, 3: -1},
+    )
+
+    assert stats == {
+        "files_processed": 1,
+        "files_updated": 1,
+        "labels_reassigned": 2,
+        "labels_dropped": 1,
+    }
+    assert (labels_dir / "sample.txt").read_text(encoding="utf-8") == (
+        "0 0.1 0.2 0.3 0.4\n"
+        "0 0.2 0.3 0.4 0.5\n"
+    )
 
 
 def test_cli_main_invokes_relabel(

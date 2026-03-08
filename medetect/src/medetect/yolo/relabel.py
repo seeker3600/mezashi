@@ -117,9 +117,13 @@ def _relabel_file(label_path: Path, merges: dict[int, int]) -> dict[str, int]:
     }
 
 
-def relabel_yolo_detect_dataset(config_path: str | Path) -> dict[str, int]:
-    """YOLO detect データセット配下の labels を merges に従って再ラベルする。"""
-    dataset_root, merges = _load_relabel_config(config_path)
+def relabel_yolo_detect_labels(
+    dataset_root: str | Path,
+    merges: dict[int, int] | dict[str, int] | dict[int, str] | dict[str, str],
+) -> dict[str, int]:
+    """YOLO detect データセット配下の labels を指定マッピングで再ラベルする。"""
+    dataset_root = Path(dataset_root).resolve()
+    merges = _normalize_merges(merges)
     labels_root = dataset_root / "labels"
 
     if not labels_root.is_dir():
@@ -145,3 +149,9 @@ def relabel_yolo_detect_dataset(config_path: str | Path) -> dict[str, int]:
         labels_root,
     )
     return stats
+
+
+def relabel_yolo_detect_dataset(config_path: str | Path) -> dict[str, int]:
+    """YOLO detect データセット YAML を読み込み、labels を再ラベルする。"""
+    dataset_root, merges = _load_relabel_config(config_path)
+    return relabel_yolo_detect_labels(dataset_root=dataset_root, merges=merges)
