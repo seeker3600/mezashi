@@ -15,68 +15,74 @@ path: xView_sliced # dataset root dir
 train: images/autosplit_train.txt # train images (relative to 'path') 90% of sliced tiles
 val: images/autosplit_val.txt # val images (relative to 'path') 10% of sliced tiles
 
-# Classes
+merges:
+  0: 1   # Fixed-wing Aircraft -> Fixed-wing Aircraft
+  1: 1   # Small Aircraft -> Fixed-wing Aircraft
+  2: 1   # Cargo Plane -> Fixed-wing Aircraft
+  3: 2   # Helicopter -> Helicopter
+  4: -1  # Passenger Vehicle -> drop
+  5: -1  # Small Car -> drop
+  6: -1  # Bus -> drop
+  7: -1  # Pickup Truck -> drop
+  8: -1  # Utility Truck -> drop
+  9: -1  # Truck -> drop
+  10: -1 # Cargo Truck -> drop
+  11: -1 # Truck w/Box -> drop
+  12: -1 # Truck Tractor -> drop
+  13: -1 # Trailer -> drop
+  14: -1 # Truck w/Flatbed -> drop
+  15: -1 # Truck w/Liquid -> drop
+  16: -1 # Crane Truck -> drop
+  17: -1 # Railway Vehicle -> drop
+  18: -1 # Passenger Car -> drop
+  19: -1 # Cargo Car -> drop
+  20: -1 # Flat Car -> drop
+  21: -1 # Tank car -> drop
+  22: -1 # Locomotive -> drop
+  23: 0  # Maritime Vessel -> Ship
+  24: 0  # Motorboat -> Ship
+  25: 0  # Sailboat -> Ship
+  26: 0  # Tugboat -> Ship
+  27: 0  # Barge -> Ship
+  28: 0  # Fishing Vessel -> Ship
+  29: 0  # Ferry -> Ship
+  30: 0  # Yacht -> Ship
+  31: 0  # Container Ship -> Ship
+  32: 0  # Oil Tanker -> Ship
+  33: -1 # Engineering Vehicle -> drop
+  34: -1 # Tower crane -> drop
+  35: -1 # Container Crane -> drop
+  36: -1 # Reach Stacker -> drop
+  37: -1 # Straddle Carrier -> drop
+  38: -1 # Mobile Crane -> drop
+  39: -1 # Dump Truck -> drop
+  40: -1 # Haul Truck -> drop
+  41: -1 # Scraper/Tractor -> drop
+  42: -1 # Front loader/Bulldozer -> drop
+  43: -1 # Excavator -> drop
+  44: -1 # Cement Mixer -> drop
+  45: -1 # Ground Grader -> drop
+  46: -1 # Hut/Tent -> drop
+  47: -1 # Shed -> drop
+  48: -1 # Building -> drop
+  49: 3  # Aircraft Hangar -> Aircraft Hangar
+  50: -1 # Damaged Building -> drop
+  51: -1 # Facility -> drop
+  52: -1 # Construction Site -> drop
+  53: -1 # Vehicle Lot -> drop
+  54: 4  # Helipad -> Helipad
+  55: -1 # Storage Tank -> drop
+  56: -1 # Shipping container lot -> drop
+  57: -1 # Shipping Container -> drop
+  58: -1 # Pylon -> drop
+  59: -1 # Tower -> drop
+
 names:
-  0: Fixed-wing Aircraft
-  1: Small Aircraft
-  2: Cargo Plane
-  3: Helicopter
-  4: Passenger Vehicle
-  5: Small Car
-  6: Bus
-  7: Pickup Truck
-  8: Utility Truck
-  9: Truck
-  10: Cargo Truck
-  11: Truck w/Box
-  12: Truck Tractor
-  13: Trailer
-  14: Truck w/Flatbed
-  15: Truck w/Liquid
-  16: Crane Truck
-  17: Railway Vehicle
-  18: Passenger Car
-  19: Cargo Car
-  20: Flat Car
-  21: Tank car
-  22: Locomotive
-  23: Maritime Vessel
-  24: Motorboat
-  25: Sailboat
-  26: Tugboat
-  27: Barge
-  28: Fishing Vessel
-  29: Ferry
-  30: Yacht
-  31: Container Ship
-  32: Oil Tanker
-  33: Engineering Vehicle
-  34: Tower crane
-  35: Container Crane
-  36: Reach Stacker
-  37: Straddle Carrier
-  38: Mobile Crane
-  39: Dump Truck
-  40: Haul Truck
-  41: Scraper/Tractor
-  42: Front loader/Bulldozer
-  43: Excavator
-  44: Cement Mixer
-  45: Ground Grader
-  46: Hut/Tent
-  47: Shed
-  48: Building
-  49: Aircraft Hangar
-  50: Damaged Building
-  51: Facility
-  52: Construction Site
-  53: Vehicle Lot
-  54: Helipad
-  55: Storage Tank
-  56: Shipping container lot
-  57: Shipping Container
-  58: Pylon
-  59: Tower
+  0: Ship
+  1: Fixed-wing Aircraft
+  2: Helicopter
+  3: Aircraft Hangar
+  4: Helipad
 
 # Download script/URL
 download: |
