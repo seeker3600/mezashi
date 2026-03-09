@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import sys
 import types
 from pathlib import Path
@@ -55,6 +56,8 @@ def test_relabel_yolo_detect_dataset_resolves_relative_path_with_ultralytics_set
         "files_updated": 2,
         "labels_reassigned": 2,
         "labels_dropped": 1,
+        "empty_labels": 0,
+        "images_removed": 0,
     }
     assert (labels_dir / "83.txt").read_text(encoding="utf-8") == (
         "5 0.013770 0.086740 0.004442 0.003315\n"
@@ -91,6 +94,8 @@ def test_relabel_yolo_detect_dataset_supports_absolute_dataset_path(tmp_path: Pa
         "files_updated": 1,
         "labels_reassigned": 0,
         "labels_dropped": 1,
+        "empty_labels": 0,
+        "images_removed": 0,
     }
     assert (labels_dir / "sample.txt").read_text(encoding="utf-8") == "1 0.5 0.5 0.2 0.2\n"
 
@@ -116,11 +121,105 @@ def test_relabel_yolo_detect_labels_accepts_mapping_from_python(tmp_path: Path) 
         "files_updated": 1,
         "labels_reassigned": 2,
         "labels_dropped": 1,
+        "empty_labels": 0,
+        "images_removed": 0,
     }
     assert (labels_dir / "sample.txt").read_text(encoding="utf-8") == (
         "0 0.1 0.2 0.3 0.4\n"
         "0 0.2 0.3 0.4 0.5\n"
     )
+
+
+def test_relabel_yolo_detect_labels_removes_empty_images_when_keep_prob_zero(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "drop-empty"
+    labels_dir = dataset_root / "labels" / "train"
+    images_dir = dataset_root / "images" / "train"
+    labels_dir.mkdir(parents=True)
+    images_dir.mkdir(parents=True)
+    (labels_dir / "empty.txt").write_text("5 0.1 0.2 0.3 0.4\n", encoding="utf-8")
+    (images_dir / "empty.jpg").write_text("image", encoding="utf-8")
+
+    stats = relabel_yolo_detect_labels(
+        dataset_root=dataset_root,
+        merges={5: -1},
+        empty_image_keep_prob=0.0,
+    )
+
+    assert stats == {
+        "files_processed": 1,
+        "files_updated": 1,
+        "labels_reassigned": 0,
+        "labels_dropped": 1,
+        "empty_labels": 1,
+        "images_removed": 1,
+    }
+    assert not (labels_dir / "empty.txt").exists()
+    assert not (images_dir / "empty.jpg").exists()
+
+
+def test_relabel_yolo_detect_labels_keeps_empty_images_when_keep_prob_one(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "keep-empty"
+    labels_dir = dataset_root / "labels" / "train"
+    images_dir = dataset_root / "images" / "train"
+    labels_dir.mkdir(parents=True)
+    images_dir.mkdir(parents=True)
+    (labels_dir / "empty.txt").write_text("5 0.1 0.2 0.3 0.4\n", encoding="utf-8")
+    (images_dir / "empty.png").write_text("image", encoding="utf-8")
+
+    stats = relabel_yolo_detect_labels(
+        dataset_root=dataset_root,
+        merges={5: -1},
+        empty_image_keep_prob=1.0,
+    )
+
+    assert stats == {
+        "files_processed": 1,
+        "files_updated": 1,
+        "labels_reassigned": 0,
+        "labels_dropped": 1,
+        "empty_labels": 1,
+        "images_removed": 0,
+    }
+    assert (labels_dir / "empty.txt").read_text(encoding="utf-8") == ""
+    assert (images_dir / "empty.png").exists()
+
+
+def test_relabel_yolo_detect_dataset_reads_keep_prob_from_yaml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    datasets_dir = tmp_path / "datasets"
+    dataset_root = datasets_dir / "toy"
+    labels_dir = dataset_root / "labels" / "train"
+    images_dir = dataset_root / "images" / "train"
+    labels_dir.mkdir(parents=True)
+    images_dir.mkdir(parents=True)
+    (labels_dir / "empty.txt").write_text("13 0.1 0.2 0.3 0.4\n", encoding="utf-8")
+    (images_dir / "empty.jpg").write_text("image", encoding="utf-8")
+    config_path = tmp_path / "toy.yaml"
+    config_path.write_text(
+        "path: toy\n"
+        "empty_image_keep_prob: 0.0\n"
+        "merges:\n"
+        "  13: -1\n",
+        encoding="utf-8",
+    )
+    _install_fake_ultralytics(monkeypatch, datasets_dir)
+
+    monkeypatch.setattr(random, "random", lambda: 0.5)
+
+    stats = relabel_yolo_detect_dataset(config_path)
+
+    assert stats == {
+        "files_processed": 1,
+        "files_updated": 1,
+        "labels_reassigned": 0,
+        "labels_dropped": 1,
+        "empty_labels": 1,
+        "images_removed": 1,
+    }
+    assert not (labels_dir / "empty.txt").exists()
+    assert not (images_dir / "empty.jpg").exists()
 
 
 def test_cli_main_invokes_relabel(

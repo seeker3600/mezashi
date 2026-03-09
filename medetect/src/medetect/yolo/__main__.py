@@ -26,19 +26,20 @@ def main() -> None:
         required=True,
         help="Dataset YAML path containing path and merges.",
     )
+    relabel_parser.add_argument(
+        "--empty-image-keep-prob",
+        type=float,
+        default=None,
+        help="Probability of keeping samples whose labels become empty after relabeling (0.0-1.0).",
+    )
 
     args = parser.parse_args()
 
     if args.command == "relabel":
-        stats = relabel_yolo_detect_dataset(args.config)
-        logging.getLogger(__name__).info(
-            "relabel complete: files=%d updated=%d relabeled=%d dropped=%d",
-            stats["files_processed"],
-            stats["files_updated"],
-            stats["labels_reassigned"],
-            stats["labels_dropped"],
+        relabel_yolo_detect_dataset(
+            args.config,
+            empty_image_keep_prob=args.empty_image_keep_prob,
         )
-
 
 if __name__ == "__main__":
     main()

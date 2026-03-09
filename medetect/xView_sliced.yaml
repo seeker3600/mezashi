@@ -104,12 +104,12 @@ download: |
       overlap=0.1,
   )
 
-  # Split
-  autosplit(sliced_dir / "images" / "train")
-
   # Relabel
   relabel_yolo_detect_labels(
       dataset_root=sliced_dir,
       merges=yaml["merges"],
+      empty_image_keep_prob=0.2,
   )
   
+  # Split
+  autosplit(sliced_dir / "images" / "train")

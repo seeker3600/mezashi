@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
 
 
 def _normalize_merges(raw_merges: object) -> dict[int, int]:
@@ -23,8 +26,8 @@ def _normalize_merges(raw_merges: object) -> dict[int, int]:
     return merges
 
 
-def _load_relabel_config(config_path: str | Path) -> tuple[Path, dict[int, int]]:
-    """relabel 用 YAML を読み込み、データセット root と merges を返す。"""
+def _load_relabel_config(config_path: str | Path) -> tuple[Path, dict[int, int], float]:
+    """relabel 用 YAML を読み込み、データセット root と merges と確率を返す。"""
     config_file = Path(config_path).resolve()
     with config_file.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
@@ -36,7 +39,8 @@ def _load_relabel_config(config_path: str | Path) -> tuple[Path, dict[int, int]]
 
     dataset_root = _resolve_dataset_root(config["path"], config_file)
     merges = _normalize_merges(config.get("merges"))
-    return dataset_root, merges
+    empty_image_keep_prob = _normalize_probability(config.get("empty_image_keep_prob", 1.0))
+    return dataset_root, merges, empty_image_keep_prob
 
 
 def _resolve_dataset_root(path_value: object, config_path: Path) -> Path:
@@ -63,6 +67,14 @@ def _resolve_dataset_root(path_value: object, config_path: Path) -> Path:
         return ultralytics_relative
 
     return ultralytics_relative
+
+
+def _normalize_probability(value: object) -> float:
+    """0.0 から 1.0 の保持確率へ正規化する。"""
+    probability = float(value)
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError("empty_image_keep_prob must be between 0.0 and 1.0.")
+    return probability
 
 
 def _relabel_line(line: str, merges: dict[int, int]) -> tuple[str | None, bool, bool]:
@@ -114,16 +126,41 @@ def _relabel_file(label_path: Path, merges: dict[int, int]) -> dict[str, int]:
         "updated": int(old_text != new_text),
         "labels_reassigned": labels_reassigned,
         "labels_dropped": labels_dropped,
+        "is_empty": int(not output_lines),
     }
+
+
+def _remove_image_and_label(label_path: Path, dataset_root: Path) -> int:
+    """空ラベルになったサンプルのラベルと対応画像を削除する。"""
+    removed_images = 0
+    label_path.unlink(missing_ok=True)
+
+    try:
+        relative_label = label_path.relative_to(dataset_root / "labels")
+    except ValueError:
+        relative_label = Path(label_path.name)
+
+    image_dir = dataset_root / "images" / relative_label.parent
+    stem = label_path.stem
+    for extension in _IMAGE_EXTENSIONS:
+        image_path = image_dir / f"{stem}{extension}"
+        if image_path.exists():
+            image_path.unlink()
+            removed_images += 1
+
+    return removed_images
 
 
 def relabel_yolo_detect_labels(
     dataset_root: str | Path,
     merges: dict[int, int] | dict[str, int] | dict[int, str] | dict[str, str],
+    *,
+    empty_image_keep_prob: float = 1.0,
 ) -> dict[str, int]:
     """YOLO detect データセット配下の labels を指定マッピングで再ラベルする。"""
     dataset_root = Path(dataset_root).resolve()
     merges = _normalize_merges(merges)
+    empty_image_keep_prob = _normalize_probability(empty_image_keep_prob)
     labels_root = dataset_root / "labels"
 
     if not labels_root.is_dir():
@@ -134,6 +171,8 @@ def relabel_yolo_detect_labels(
         "files_updated": 0,
         "labels_reassigned": 0,
         "labels_dropped": 0,
+        "empty_labels": 0,
+        "images_removed": 0,
     }
 
     for label_path in sorted(labels_root.rglob("*.txt")):
@@ -142,16 +181,39 @@ def relabel_yolo_detect_labels(
         stats["files_updated"] += file_stats["updated"]
         stats["labels_reassigned"] += file_stats["labels_reassigned"]
         stats["labels_dropped"] += file_stats["labels_dropped"]
+        stats["empty_labels"] += file_stats["is_empty"]
+
+        if file_stats["is_empty"]:
+            keep_empty = empty_image_keep_prob >= 1.0
+            if not keep_empty:
+                keep_empty = empty_image_keep_prob > 0.0 and random.random() < empty_image_keep_prob
+            if not keep_empty:
+                stats["images_removed"] += _remove_image_and_label(label_path, dataset_root)
 
     logger.info(
-        "relabelled %d files under %s",
+        "relabel complete: files=%d updated=%d relabeled=%d dropped=%d empty=%d images_removed=%d",
         stats["files_processed"],
-        labels_root,
+        stats["files_updated"],
+        stats["labels_reassigned"],
+        stats["labels_dropped"],
+        stats["empty_labels"],
+        stats["images_removed"],
     )
+
     return stats
 
 
-def relabel_yolo_detect_dataset(config_path: str | Path) -> dict[str, int]:
+def relabel_yolo_detect_dataset(
+    config_path: str | Path,
+    *,
+    empty_image_keep_prob: float | None = None,
+) -> dict[str, int]:
     """YOLO detect データセット YAML を読み込み、labels を再ラベルする。"""
-    dataset_root, merges = _load_relabel_config(config_path)
-    return relabel_yolo_detect_labels(dataset_root=dataset_root, merges=merges)
+    dataset_root, merges, config_keep_prob = _load_relabel_config(config_path)
+    if empty_image_keep_prob is None:
+        empty_image_keep_prob = config_keep_prob
+    return relabel_yolo_detect_labels(
+        dataset_root=dataset_root,
+        merges=merges,
+        empty_image_keep_prob=empty_image_keep_prob,
+    )
