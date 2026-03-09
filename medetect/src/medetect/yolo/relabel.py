@@ -157,10 +157,16 @@ def relabel_yolo_detect_labels(
     *,
     empty_image_keep_prob: float = 1.0,
 ) -> dict[str, int]:
-    """YOLO detect データセット配下の labels を指定マッピングで再ラベルする。"""
+    """YOLO detect データセット配下の labels を指定マッピングで再ラベルする。
+
+    empty_image_keep_prob は全画像に対するラベル無し画像の目標比率。
+    再ラベル後の比率が目標を超えている場合、目標比率になるまでランダムに削除する。
+    すでに目標以下であれば何も削除しない。
+    0.0: ラベル無し画像をすべて削除 / 1.0: 削除しない
+    """
     dataset_root = Path(dataset_root).resolve()
     merges = _normalize_merges(merges)
-    empty_image_keep_prob = _normalize_probability(empty_image_keep_prob)
+    empty_ratio = _normalize_probability(empty_image_keep_prob)
     labels_root = dataset_root / "labels"
 
     if not labels_root.is_dir():
@@ -175,6 +181,8 @@ def relabel_yolo_detect_labels(
         "images_removed": 0,
     }
 
+    empty_label_paths: list[Path] = []
+
     for label_path in sorted(labels_root.rglob("*.txt")):
         file_stats = _relabel_file(label_path, merges)
         stats["files_processed"] += 1
@@ -184,11 +192,25 @@ def relabel_yolo_detect_labels(
         stats["empty_labels"] += file_stats["is_empty"]
 
         if file_stats["is_empty"]:
-            keep_empty = empty_image_keep_prob >= 1.0
-            if not keep_empty:
-                keep_empty = empty_image_keep_prob > 0.0 and random.random() < empty_image_keep_prob
-            if not keep_empty:
-                stats["images_removed"] += _remove_image_and_label(label_path, dataset_root)
+            empty_label_paths.append(label_path)
+
+    # 目標比率に合わせて残すラベル無し画像数を計算する。
+    # 目標: E_kept / (n_labeled + E_kept) = empty_ratio
+    # => E_kept = empty_ratio * n_labeled / (1 - empty_ratio)
+    n_empty = len(empty_label_paths)
+    n_labeled = stats["files_processed"] - n_empty
+
+    if empty_ratio >= 1.0:
+        keep_count = n_empty
+    elif empty_ratio <= 0.0:
+        keep_count = 0
+    else:
+        keep_count = min(n_empty, int(empty_ratio * n_labeled / (1.0 - empty_ratio)))
+
+    n_to_remove = n_empty - keep_count
+    if n_to_remove > 0:
+        for label_path in random.sample(empty_label_paths, n_to_remove):
+            stats["images_removed"] += _remove_image_and_label(label_path, dataset_root)
 
     logger.info(
         "relabel complete: files=%d updated=%d relabeled=%d dropped=%d empty=%d images_removed=%d",

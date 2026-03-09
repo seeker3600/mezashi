@@ -30,7 +30,12 @@ def main() -> None:
         "--empty-image-keep-prob",
         type=float,
         default=None,
-        help="Probability of keeping samples whose labels become empty after relabeling (0.0-1.0).",
+        help=(
+            "Target ratio of empty-label images to total images after relabeling (0.0-1.0). "
+            "Images are randomly removed until the ratio reaches this value. "
+            "0.0 removes all empty-label images; 1.0 keeps all; 0.5 keeps at most as many "
+            "empty-label images as labeled ones. Has no effect if the ratio is already below the target."
+        ),
     )
 
     args = parser.parse_args()

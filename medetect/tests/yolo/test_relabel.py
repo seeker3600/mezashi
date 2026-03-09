@@ -206,8 +206,6 @@ def test_relabel_yolo_detect_dataset_reads_keep_prob_from_yaml(
     )
     _install_fake_ultralytics(monkeypatch, datasets_dir)
 
-    monkeypatch.setattr(random, "random", lambda: 0.5)
-
     stats = relabel_yolo_detect_dataset(config_path)
 
     assert stats == {
@@ -220,6 +218,61 @@ def test_relabel_yolo_detect_dataset_reads_keep_prob_from_yaml(
     }
     assert not (labels_dir / "empty.txt").exists()
     assert not (images_dir / "empty.jpg").exists()
+
+
+def test_relabel_yolo_detect_labels_keeps_target_ratio_of_empty_images(tmp_path: Path) -> None:
+    """empty_image_keep_prob=0.5 のとき、ラベル有り画像と同数のラベル無し画像を残す。"""
+    dataset_root = tmp_path / "ratio-half"
+    labels_dir = dataset_root / "labels" / "train"
+    images_dir = dataset_root / "images" / "train"
+    labels_dir.mkdir(parents=True)
+    images_dir.mkdir(parents=True)
+
+    # ラベル有り: 2枚
+    (labels_dir / "labeled1.txt").write_text("0 0.1 0.2 0.3 0.4\n", encoding="utf-8")
+    (labels_dir / "labeled2.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    # ラベル無し (merges で削除): 4枚
+    for i in range(1, 5):
+        (labels_dir / f"empty{i}.txt").write_text(f"5 0.{i} 0.{i} 0.1 0.1\n", encoding="utf-8")
+        (images_dir / f"empty{i}.jpg").write_text("image", encoding="utf-8")
+
+    stats = relabel_yolo_detect_labels(
+        dataset_root=dataset_root,
+        merges={5: -1},
+        empty_image_keep_prob=0.5,
+    )
+
+    # target=0.5, n_labeled=2 → keep_count=2, remove=2
+    assert stats["empty_labels"] == 4
+    assert stats["images_removed"] == 2
+    remaining = sum(1 for i in range(1, 5) if (images_dir / f"empty{i}.jpg").exists())
+    assert remaining == 2
+
+
+def test_relabel_yolo_detect_labels_no_removal_when_ratio_already_below_target(
+    tmp_path: Path,
+) -> None:
+    """現在の比率が目標以下の場合は削除しない。"""
+    dataset_root = tmp_path / "below-target"
+    labels_dir = dataset_root / "labels" / "train"
+    images_dir = dataset_root / "images" / "train"
+    labels_dir.mkdir(parents=True)
+    images_dir.mkdir(parents=True)
+
+    # ラベル有り: 4枚、ラベル無し: 1枚 → 現在の比率 = 1/5 = 0.2
+    for i in range(1, 5):
+        (labels_dir / f"labeled{i}.txt").write_text(f"0 0.{i} 0.{i} 0.1 0.1\n", encoding="utf-8")
+    (labels_dir / "empty.txt").write_text("5 0.1 0.2 0.3 0.4\n", encoding="utf-8")
+    (images_dir / "empty.jpg").write_text("image", encoding="utf-8")
+
+    stats = relabel_yolo_detect_labels(
+        dataset_root=dataset_root,
+        merges={5: -1},
+        empty_image_keep_prob=0.3,  # 目標 0.3 > 現在 0.2 → 削除不要
+    )
+
+    assert stats["images_removed"] == 0
+    assert (images_dir / "empty.jpg").exists()
 
 
 def test_cli_main_invokes_relabel(
