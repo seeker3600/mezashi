@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 from pathlib import Path
 import shutil
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 from ultralytics.utils import DATASETS_DIR
 
 import fiftyone as fo
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
     logger = logging.getLogger(__name__)
 
     parser = argparse.ArgumentParser(

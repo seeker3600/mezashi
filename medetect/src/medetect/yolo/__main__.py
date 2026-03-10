@@ -4,15 +4,17 @@ import argparse
 import logging
 from pathlib import Path
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 from medetect.yolo.relabel import relabel_yolo_detect_dataset
+from medetect.yolo.train import train_yolo_model
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
     parser = argparse.ArgumentParser(description="YOLO dataset utilities.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
