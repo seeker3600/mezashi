@@ -20,6 +20,7 @@ def main():
     slice_parser.add_argument("--resolution", type=float, nargs="+", required=True, help="Resolution in m/px. One value for fixed, two for range (min max).")
     slice_parser.add_argument("--image_size", type=int, required=True, help="Output tile size in pixels.")
     slice_parser.add_argument("--overlap", type=float, default=0.0, help="Overlap ratio (0.0-1.0). Default: 0.0.")
+    slice_parser.add_argument("--max_images", type=int, default=None, help="Max number of images to process (debug).")
 
     args = parser.parse_args()
 
@@ -38,6 +39,7 @@ def main():
             resolution=resolution,
             image_size=args.image_size,
             overlap=args.overlap,
+            max_images=args.max_images,
         )
 
 if __name__ == "__main__":

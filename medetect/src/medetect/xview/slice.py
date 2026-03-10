@@ -230,6 +230,7 @@ def _resample_to_tmpdir(
     resolution: float | tuple[float, float],
     image_size: int,
     max_workers: int | None = None,
+    max_images: int | None = None,
 ) -> int:
     """GeoTIFF 群を並列リサンプリングし一時ディレクトリへ保存する。
 
@@ -237,6 +238,8 @@ def _resample_to_tmpdir(
     ----------
     max_workers:
         プロセス数。``None`` の場合は CPU コア数を使用する。
+    max_images:
+        処理する最大画像数。デバッグ用。``None`` の場合は全件処理する。
 
     Returns
     -------
@@ -245,9 +248,8 @@ def _resample_to_tmpdir(
     """
     if max_workers is None:
         max_workers = os.cpu_count() or 1
-    
-    # デバッグ目的で処理数を制限する場合はここでスライス
-    # tif_files = tif_files[:max_workers]
+    if max_images is not None:
+        tif_files = tif_files[:max_images]
 
     stats_images = 0
 
@@ -290,6 +292,7 @@ def slice_training_images(
     image_size: int,
     *,
     overlap: float = 0.0,
+    max_images: int | None = None,
 ) -> dict[str, int]:
     """トレーニング画像を指定分解能でスライスする。
 
@@ -306,6 +309,8 @@ def slice_training_images(
         出力タイルの一辺のピクセル数。
     overlap:
         タイル間のオーバーラップ率 (0.0〜1.0)。デフォルト 0.0。
+    max_images:
+        処理する最大画像数。デバッグ用。``None`` の場合は全件処理する。
 
     Returns
     -------
@@ -348,6 +353,7 @@ def slice_training_images(
         stats_images = _resample_to_tmpdir(
             tif_files, labels_in, tmp_images, tmp_labels,
             resolution, image_size,
+            max_images=max_images,
         )
 
         if stats_images == 0:
