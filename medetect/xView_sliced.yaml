@@ -19,7 +19,7 @@ merges:
   0: 1   # Fixed-wing Aircraft -> Fixed-wing Aircraft
   1: 1   # Small Aircraft -> Fixed-wing Aircraft
   2: 1   # Cargo Plane -> Fixed-wing Aircraft
-  3: 2   # Helicopter -> Helicopter
+  3: -1   # Helicopter -> Helicopter
   4: -1  # Passenger Vehicle -> drop
   5: -1  # Small Car -> drop
   6: -1  # Bus -> drop
@@ -65,12 +65,12 @@ merges:
   46: -1 # Hut/Tent -> drop
   47: -1 # Shed -> drop
   48: -1 # Building -> drop
-  49: 3  # Aircraft Hangar -> Aircraft Hangar
+  49: -1  # Aircraft Hangar -> Aircraft Hangar
   50: -1 # Damaged Building -> drop
   51: -1 # Facility -> drop
   52: -1 # Construction Site -> drop
   53: -1 # Vehicle Lot -> drop
-  54: 4  # Helipad -> Helipad
+  54: -1  # Helipad -> Helipad
   55: -1 # Storage Tank -> drop
   56: -1 # Shipping container lot -> drop
   57: -1 # Shipping Container -> drop
@@ -80,9 +80,6 @@ merges:
 names:
   0: Ship
   1: Fixed-wing Aircraft
-  2: Helicopter
-  3: Aircraft Hangar
-  4: Helipad
 
 # Download script/URL
 download: |
@@ -99,7 +96,7 @@ download: |
   slice_training_images(
       input_dir=raw_dir,
       output_dir=sliced_dir,
-      resolution=(0.5, 5.0),
+      resolution=0.3,  # (0.5, 5.0),
       image_size=640,
       overlap=0.1,
   )
@@ -108,7 +105,7 @@ download: |
   relabel_yolo_detect_labels(
       dataset_root=sliced_dir,
       merges=yaml["merges"],
-      empty_image_keep_prob=0.2,
+      empty_image_keep_prob=0.1,
   )
   
   # Split
