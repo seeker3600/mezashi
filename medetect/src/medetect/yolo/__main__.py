@@ -40,6 +40,8 @@ def main() -> None:
         ),
     )
 
+    train_parser = subparsers.add_parser("train", help="Train a YOLO model.")
+
     args = parser.parse_args()
 
     if args.command == "relabel":
@@ -47,6 +49,8 @@ def main() -> None:
             args.config,
             empty_image_keep_prob=args.empty_image_keep_prob,
         )
+    elif args.command == "train":
+        train_yolo_model()
 
 if __name__ == "__main__":
     main()
