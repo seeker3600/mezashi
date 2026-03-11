@@ -2,7 +2,7 @@
 
 処理概要:
   - 入力: GeoTIFF 画像 (入力フォルダ/images/train) + YOLO ラベル (入力フォルダ/labels/train)
-  - 各画像を rasterio で指定の分解能にリサンプリングし、yolo-tiling でタイルに切り出す
+  - 各画像を rasterio でウィンドウ単位で読み出し、指定分解能にリサンプリングしてタイル化
   - 出力: PNG 画像 (出力フォルダ/images/train) + YOLO ラベル (出力フォルダ/labels/train)
 
 使い方::
@@ -25,16 +25,14 @@ import logging
 import math
 import os
 import random
-import shutil
-import tempfile
 from pathlib import Path
 
 import numpy as np
 import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
+from rasterio.windows import Window
 from tqdm import tqdm
-from yolo_tiler import TileConfig, TileProgress, YoloTiler
 
 logger = logging.getLogger(__name__)
 
@@ -71,16 +69,17 @@ def _compute_geo_resolution(
     return (res_x + res_y) / 2.0
 
 
-def _compute_resample_params(
+def _compute_native_tile_size(
     native_res: float,
     src_width: int,
     src_height: int,
     image_size: int,
     resolution: float | tuple[float, float],
-) -> tuple[float, int, int] | None:
-    """リサンプリング後の ``(target_res, new_width, new_height)`` を計算する。
+) -> tuple[float, float] | None:
+    """タイルウィンドウの ``(target_res, native_tile_size)`` を計算する。
 
-    スライス後のサイズが ``image_size`` 未満になる場合は ``None`` を返す。
+    1 タイルが元画像のネイティブピクセルで何ピクセルに相当するかを返す。
+    画像が小さすぎて 1 タイルも取れない場合は ``None`` を返す。
 
     Parameters
     ----------
@@ -99,15 +98,168 @@ def _compute_resample_params(
     max_target_res = native_res * min_dim / image_size
 
     target_res = _choose_resolution(resolution, max_resolution=max_target_res)
-    scale_factor = native_res / target_res
+    native_tile_size = image_size * target_res / native_res
 
-    new_width = max(1, int(src_width * scale_factor))
-    new_height = max(1, int(src_height * scale_factor))
-
-    if new_width < image_size or new_height < image_size:
+    if native_tile_size > min_dim:
         return None
 
-    return target_res, new_width, new_height
+    return target_res, native_tile_size
+
+
+def _iter_tile_windows(
+    src_width: int,
+    src_height: int,
+    native_tile_size: float,
+    overlap: float,
+) -> list[tuple[int, int, float, float]]:
+    """タイルウィンドウの位置を列挙する。
+
+    Parameters
+    ----------
+    src_width:
+        元画像の幅 (ピクセル)。
+    src_height:
+        元画像の高さ (ピクセル)。
+    native_tile_size:
+        1 タイルの一辺 (ネイティブピクセル)。
+    overlap:
+        タイル間のオーバーラップ率 (0.0〜1.0)。
+
+    Returns
+    -------
+    list[tuple[int, int, float, float]]
+        ``(tile_row, tile_col, col_off, row_off)`` のリスト。
+    """
+    if native_tile_size > src_width or native_tile_size > src_height:
+        return []
+
+    stride = native_tile_size * (1.0 - overlap)
+    if stride <= 0:
+        stride = native_tile_size  # fallback: overlap=1.0 → no overlap
+
+    n_cols = max(1, math.ceil((src_width - native_tile_size) / stride) + 1)
+    n_rows = max(1, math.ceil((src_height - native_tile_size) / stride) + 1)
+
+    tiles: list[tuple[int, int, float, float]] = []
+    for row in range(n_rows):
+        for col in range(n_cols):
+            col_off = col * stride
+            row_off = row * stride
+            # Clamp so the tile does not exceed image bounds
+            col_off = min(col_off, max(0.0, src_width - native_tile_size))
+            row_off = min(row_off, max(0.0, src_height - native_tile_size))
+            tiles.append((row, col, col_off, row_off))
+
+    return tiles
+
+
+def _parse_yolo_labels(
+    label_path: Path,
+) -> list[tuple[int, float, float, float, float]]:
+    """YOLO 形式のラベルファイルを解析する。
+
+    Returns
+    -------
+    list[tuple[int, float, float, float, float]]
+        ``(class_id, x_center, y_center, width, height)`` のリスト。
+        座標は画像サイズで正規化済み (0‑1)。
+    """
+    labels: list[tuple[int, float, float, float, float]] = []
+    if not label_path.exists():
+        return labels
+    for line in label_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        cls_id = int(parts[0])
+        xc, yc, w, h = (
+            float(parts[1]),
+            float(parts[2]),
+            float(parts[3]),
+            float(parts[4]),
+        )
+        labels.append((cls_id, xc, yc, w, h))
+    return labels
+
+
+def _clip_labels_to_window(
+    labels: list[tuple[int, float, float, float, float]],
+    col_off: float,
+    row_off: float,
+    native_tile_size: float,
+    img_width: int,
+    img_height: int,
+    *,
+    min_area_ratio: float = 0.1,
+) -> list[tuple[int, float, float, float, float]]:
+    """ラベルをタイルウィンドウに合わせてクリッピング・変換する。
+
+    Parameters
+    ----------
+    labels:
+        ``(class_id, x_center, y_center, width, height)`` のリスト。
+        座標は元画像サイズで正規化済み (0‑1)。
+    col_off:
+        タイルウィンドウの X オフセット (ネイティブピクセル)。
+    row_off:
+        タイルウィンドウの Y オフセット (ネイティブピクセル)。
+    native_tile_size:
+        タイルウィンドウの一辺 (ネイティブピクセル)。
+    img_width:
+        元画像の幅 (ピクセル)。
+    img_height:
+        元画像の高さ (ピクセル)。
+    min_area_ratio:
+        クリッピング後の面積が元面積のこの比率未満なら除外する。
+
+    Returns
+    -------
+    list[tuple[int, float, float, float, float]]
+        タイル座標系で正規化 (0‑1) したラベル。
+    """
+    result: list[tuple[int, float, float, float, float]] = []
+
+    tile_x2 = col_off + native_tile_size
+    tile_y2 = row_off + native_tile_size
+
+    for cls_id, xc, yc, w, h in labels:
+        # Absolute pixel coords in native image
+        abs_cx = xc * img_width
+        abs_cy = yc * img_height
+        abs_w = w * img_width
+        abs_h = h * img_height
+
+        abs_x1 = abs_cx - abs_w / 2.0
+        abs_y1 = abs_cy - abs_h / 2.0
+        abs_x2 = abs_cx + abs_w / 2.0
+        abs_y2 = abs_cy + abs_h / 2.0
+
+        # Intersection with tile window
+        ix1 = max(abs_x1, col_off)
+        iy1 = max(abs_y1, row_off)
+        ix2 = min(abs_x2, tile_x2)
+        iy2 = min(abs_y2, tile_y2)
+
+        if ix1 >= ix2 or iy1 >= iy2:
+            continue
+
+        orig_area = abs_w * abs_h
+        clip_area = (ix2 - ix1) * (iy2 - iy1)
+        if orig_area > 0 and clip_area / orig_area < min_area_ratio:
+            continue
+
+        # Tile-relative normalised coords
+        tile_cx = ((ix1 + ix2) / 2.0 - col_off) / native_tile_size
+        tile_cy = ((iy1 + iy2) / 2.0 - row_off) / native_tile_size
+        tile_w = (ix2 - ix1) / native_tile_size
+        tile_h = (iy2 - iy1) / native_tile_size
+
+        result.append((cls_id, tile_cx, tile_cy, tile_w, tile_h))
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -163,20 +315,24 @@ def _choose_resolution(
     return resolution
 
 
-def _resample_single(
+def _slice_single_geotiff(
     tif_path: Path,
     labels_in: Path,
-    tmp_images: Path,
-    tmp_labels: Path,
+    out_images: Path,
+    out_labels: Path,
     resolution: float | tuple[float, float],
     image_size: int,
-) -> tuple[str, str | None]:
-    """単一 GeoTIFF をリサンプリングして一時ディレクトリへ保存する。
+    overlap: float,
+) -> tuple[str, int, str | None]:
+    """単一 GeoTIFF を指定解像度でタイルに切り出す。
+
+    GeoTIFF をウィンドウ単位で読み出し、各ウィンドウを ``image_size`` に
+    リサンプリングして PNG として保存する。ラベルは同時にクリッピング・変換する。
 
     Returns
     -------
-    tuple[str, str | None]
-        ``(stem, エラーメッセージ)``。成功時は ``(stem, None)``。
+    tuple[str, int, str | None]
+        ``(stem, タイル数, エラーメッセージ)``。成功時は ``(stem, N, None)``。
     """
     stem = tif_path.stem
     label_path = labels_in / f"{stem}.txt"
@@ -185,54 +341,77 @@ def _resample_single(
         with rasterio.open(tif_path) as dataset:
             native_res = _get_geotiff_resolution(dataset)
             if native_res <= 0:
-                return stem, f"無効な分解能 ({native_res:.6f})"
+                return stem, 0, f"無効な分解能 ({native_res:.6f})"
 
-            params = _compute_resample_params(
+            params = _compute_native_tile_size(
                 native_res, dataset.width, dataset.height,
                 image_size, resolution,
             )
             if params is None:
-                return stem, f"リサンプリング後サイズが image_size ({image_size}) 未満"
+                return stem, 0, f"タイルサイズが画像サイズを超過"
 
-            _target_res, new_width, new_height = params
+            _target_res, native_tile_size = params
 
-            data = dataset.read(
-                out_shape=(dataset.count, new_height, new_width),
-                resampling=Resampling.bilinear,
+            labels = _parse_yolo_labels(label_path)
+
+            tiles = _iter_tile_windows(
+                dataset.width, dataset.height,
+                native_tile_size, overlap,
             )
 
-        # (bands, height, width) -> (height, width, bands) for PIL
-        if data.shape[0] == 1:
-            img_array = data[0]
-        else:
-            img_array = np.transpose(data, (1, 2, 0))
-        del data
+            tile_count = 0
+            for row, col, col_off, row_off in tiles:
+                window = Window(col_off, row_off,
+                                native_tile_size, native_tile_size)
+                data = dataset.read(
+                    window=window,
+                    out_shape=(dataset.count, image_size, image_size),
+                    resampling=Resampling.bilinear,
+                )
 
-        Image.fromarray(img_array).save(tmp_images / f"{stem}.png")
-        del img_array
+                # (bands, height, width) -> (height, width, bands) for PIL
+                if data.shape[0] == 1:
+                    img_array = data[0]
+                else:
+                    img_array = np.transpose(data, (1, 2, 0))
 
-        if label_path.exists():
-            shutil.copy2(label_path, tmp_labels / f"{stem}.txt")
-        else:
-            (tmp_labels / f"{stem}.txt").touch()
+                tile_name = f"{stem}_{row}_{col}"
+                Image.fromarray(img_array).save(
+                    out_images / f"{tile_name}.png",
+                )
 
-        return stem, None
+                tile_labels = _clip_labels_to_window(
+                    labels,
+                    col_off, row_off,
+                    native_tile_size,
+                    dataset.width, dataset.height,
+                )
+                with (out_labels / f"{tile_name}.txt").open("w") as f:
+                    for cls_id, xc, yc, w, h in tile_labels:
+                        f.write(
+                            f"{cls_id} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}\n",
+                        )
+
+                tile_count += 1
+
+        return stem, tile_count, None
 
     except Exception as exc:  # noqa: BLE001
-        return stem, str(exc)
+        return stem, 0, str(exc)
 
 
-def _resample_to_tmpdir(
+def _slice_all_geotiffs(
     tif_files: list[Path],
     labels_in: Path,
-    tmp_images: Path,
-    tmp_labels: Path,
+    out_images: Path,
+    out_labels: Path,
     resolution: float | tuple[float, float],
     image_size: int,
+    overlap: float,
     max_workers: int | None = None,
     max_images: int | None = None,
-) -> int:
-    """GeoTIFF 群を並列リサンプリングし一時ディレクトリへ保存する。
+) -> tuple[int, int]:
+    """GeoTIFF 群を並列処理でタイルに切り出す。
 
     Parameters
     ----------
@@ -243,8 +422,8 @@ def _resample_to_tmpdir(
 
     Returns
     -------
-    int
-        処理に成功した画像数。
+    tuple[int, int]
+        ``(処理画像数, 生成タイル数)``。
     """
     if max_workers is None:
         max_workers = os.cpu_count() or 1
@@ -252,29 +431,31 @@ def _resample_to_tmpdir(
         tif_files = tif_files[:max_images]
 
     stats_images = 0
+    stats_tiles = 0
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
-                _resample_single,
-                tif_path, labels_in, tmp_images, tmp_labels,
-                resolution, image_size,
+                _slice_single_geotiff,
+                tif_path, labels_in, out_images, out_labels,
+                resolution, image_size, overlap,
             ): tif_path
             for tif_path in tif_files
         }
 
         with tqdm(
             total=len(tif_files),
-            desc="リサンプリング",
+            desc="スライス",
             unit="img",
             dynamic_ncols=True,
         ) as pbar:
             for future in concurrent.futures.as_completed(futures):
                 tif_path = futures[future]
                 try:
-                    _stem, error = future.result()
+                    _stem, tiles, error = future.result()
                     if error is None:
                         stats_images += 1
+                        stats_tiles += tiles
                     else:
                         logger.warning("スキップ %s: %s", tif_path.name, error)
                 except Exception:
@@ -282,7 +463,7 @@ def _resample_to_tmpdir(
                 finally:
                     pbar.update(1)
 
-    return stats_images
+    return stats_images, stats_tiles
 
 
 def slice_training_images(
@@ -295,6 +476,9 @@ def slice_training_images(
     max_images: int | None = None,
 ) -> dict[str, int]:
     """トレーニング画像を指定分解能でスライスする。
+
+    GeoTIFF 毎にウィンドウ読み出し + リサンプリングを行い、各タイルを
+    直接 ``output_dir`` へ書き出す。
 
     Parameters
     ----------
@@ -315,7 +499,7 @@ def slice_training_images(
     Returns
     -------
     dict[str, int]
-        ``{"images_processed": N, "tiles_created": N, "labels_created": N}`` の統計情報。
+        ``{"images_processed": N, "tiles_created": N}`` の統計情報。
     """
     input_dir = Path(input_dir).resolve()
     output_dir = Path(output_dir).resolve()
@@ -328,87 +512,24 @@ def slice_training_images(
     tif_files = sorted(images_in.glob("*.tif"))
     if not tif_files:
         logger.warning("GeoTIFF ファイルが見つかりません: %s", images_in)
-        return {"images_processed": 0}
+        return {"images_processed": 0, "tiles_created": 0}
 
     logger.info("入力画像数: %d", len(tif_files))
 
-    # ── 1. rasterio でリサンプリング → 一時ディレクトリへ保存 ──
-    # output_dir と同じドライブに一時ディレクトリを作成することで move が rename になり高速化
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=output_dir.parent) as tmp_base_str:
-        tmp_base = Path(tmp_base_str)
+    images_out.mkdir(parents=True, exist_ok=True)
+    labels_out.mkdir(parents=True, exist_ok=True)
 
-        # yolo-tiling が期待する構造: source/train/images/, source/train/labels/
-        # valid_ratio=0.0 でも valid フォルダが必要
-        tmp_source = tmp_base / "source"
-        tmp_images = tmp_source / "train" / "images"
-        tmp_labels = tmp_source / "train" / "labels"
-        tmp_images.mkdir(parents=True, exist_ok=True)
-        tmp_labels.mkdir(parents=True, exist_ok=True)
-        (tmp_source / "valid" / "images").mkdir(parents=True, exist_ok=True)
-        (tmp_source / "valid" / "labels").mkdir(parents=True, exist_ok=True)
-        (tmp_source / "test" / "images").mkdir(parents=True, exist_ok=True)
-        (tmp_source / "test" / "labels").mkdir(parents=True, exist_ok=True)
+    stats_images, stats_tiles = _slice_all_geotiffs(
+        tif_files, labels_in, images_out, labels_out,
+        resolution, image_size, overlap,
+        max_images=max_images,
+    )
 
-        stats_images = _resample_to_tmpdir(
-            tif_files, labels_in, tmp_images, tmp_labels,
-            resolution, image_size,
-            max_images=max_images,
-        )
+    if stats_images == 0:
+        logger.warning("処理に成功した画像がありません")
 
-        if stats_images == 0:
-            logger.warning("リサンプリングに成功した画像がありません")
-            return {"images_processed": 0}
-
-        # ── 2. yolo-tiling でスライス ──
-        tmp_target = tmp_base / "target"
-
-        config = TileConfig(
-            slice_wh=(image_size, image_size),
-            overlap_wh=(overlap, overlap),
-            annotation_type="object_detection",
-            output_ext=".png",
-            train_ratio=1.0,
-            valid_ratio=0.0,
-            test_ratio=0.0,
-            include_negative_samples=True,
-        )
-
-        tiler = YoloTiler(
-            source=str(tmp_source),
-            target=str(tmp_target),
-            config=config,
-            num_viz_samples=0,
-            show_processing_status=False,
-        )
-
-        # YoloTiler の INFO ログを抑止し、2本の tqdm バーで進捗表示
-        _yolo_logger = logging.getLogger("YoloTiler")
-        _yolo_logger.setLevel(logging.WARNING)
-
-        with tqdm(unit="img", unit_scale=False, dynamic_ncols=True) as pbar, \
-            tqdm(unit="tile", unit_scale=False, dynamic_ncols=True) as tile_pbar:
-
-            def _progress_callback(p: TileProgress) -> None:
-                nonlocal pbar, tile_pbar
-                pbar.desc = p.current_set_name
-                pbar.total = p.total_images
-                pbar.n = p.current_image_idx
-                pbar.refresh()
-
-                tile_pbar.desc = p.current_image_name
-                tile_pbar.total = p.total_tiles
-                tile_pbar.n = p.current_tile_idx
-                tile_pbar.refresh()
-
-            tiler.progress_callback = _progress_callback
-            tiler.run()
-
-        logger.info("yolo-tiling によるスライス完了")
-
-        # ── 3. タイル出力ディレクトリを最終ディレクトリへ移動 ──
-        shutil.move(str(tmp_target / "train" / "images"), str(images_out))
-        shutil.move(str(tmp_target / "train" / "labels"), str(labels_out))
-
-    logger.info("スライス完了 — リサンプリング画像: %d", stats_images)
-    return {"images_processed": stats_images}
+    logger.info(
+        "スライス完了 — 処理画像: %d, 生成タイル: %d",
+        stats_images, stats_tiles,
+    )
+    return {"images_processed": stats_images, "tiles_created": stats_tiles}

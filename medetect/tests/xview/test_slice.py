@@ -9,8 +9,11 @@ import pytest
 import medetect.xview.slice as _m
 from medetect.xview.slice import (
     _choose_resolution,
+    _clip_labels_to_window,
     _compute_geo_resolution,
-    _compute_resample_params,
+    _compute_native_tile_size,
+    _iter_tile_windows,
+    _parse_yolo_labels,
 )
 
 
@@ -103,69 +106,60 @@ class TestChooseResolution:
 
 
 # ---------------------------------------------------------------------------
-# _compute_resample_params
+# _compute_native_tile_size
 # ---------------------------------------------------------------------------
 
-class TestComputeResampleParams:
-    """_compute_resample_params のテスト。"""
+class TestComputeNativeTileSize:
+    """_compute_native_tile_size のテスト。"""
 
     def test_same_scale(self) -> None:
-        """target_res == native_res のとき scale=1 → サイズ変化なし。"""
-        result = _compute_resample_params(
+        """target_res == native_res → native_tile_size == image_size。"""
+        result = _compute_native_tile_size(
             native_res=1.0, src_width=1280, src_height=1280,
             image_size=640, resolution=1.0,
         )
         assert result is not None
-        target_res, new_w, new_h = result
+        target_res, tile_size = result
         assert target_res == pytest.approx(1.0)
-        assert new_w == 1280
-        assert new_h == 1280
+        assert tile_size == pytest.approx(640.0)
 
-    def test_finer_resolution_doubles_size(self) -> None:
-        """target_res が native_res の半分 → 幅・高さが 2 倍になる。"""
-        result = _compute_resample_params(
+    def test_finer_resolution_smaller_window(self) -> None:
+        """target_res が native_res の半分 → ウィンドウは image_size の半分。"""
+        result = _compute_native_tile_size(
             native_res=1.0, src_width=800, src_height=800,
             image_size=640, resolution=0.5,
         )
         assert result is not None
-        _, new_w, new_h = result
-        assert new_w == 1600
-        assert new_h == 1600
+        _, tile_size = result
+        assert tile_size == pytest.approx(320.0)
 
     def test_coarser_resolution_capped_by_max(self) -> None:
-        """指定 resolution が粗すぎる場合は max_target_res に切り詰められる。
-        640x640 画像, image_size=640 → max_target=native_res → scale=1。
-        """
-        result = _compute_resample_params(
+        """resolution が粗すぎる場合は max_target_res に切り詰められる。"""
+        result = _compute_native_tile_size(
             native_res=1.0, src_width=640, src_height=640,
             image_size=640, resolution=99.0,
         )
         assert result is not None
-        target_res, new_w, new_h = result
+        target_res, tile_size = result
         assert target_res == pytest.approx(1.0)
-        assert new_w == 640
-        assert new_h == 640
+        assert tile_size == pytest.approx(640.0)
 
     def test_non_square_src(self) -> None:
-        """非正方形画像でも min_dim を基準に計算し両辺とも image_size 以上になる。"""
-        # native=0.3, src=2000x1280, image_size=640
-        # min_dim=1280, max_target=0.3*1280/640=0.6
-        # resolution=0.3 < 0.6 → target=0.3, scale=1.0
-        result = _compute_resample_params(
+        """非正方形画像でも min_dim を基準にタイルサイズが決まる。"""
+        result = _compute_native_tile_size(
             native_res=0.3, src_width=2000, src_height=1280,
             image_size=640, resolution=0.3,
         )
         assert result is not None
-        _, new_w, new_h = result
-        assert new_w >= 640
-        assert new_h >= 640
+        _, tile_size = result
+        assert tile_size == pytest.approx(640.0)
 
-    def test_returns_none_when_scale_too_small(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """_choose_resolution が強制的に大きな値を返す場合、None になる。
-        scale<1 → リサンプリング後サイズが image_size 未満 → None。
-        """
+    def test_returns_none_when_scale_too_small(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_choose_resolution が大きな値を返す場合、None になる。"""
         monkeypatch.setattr(_m, "_choose_resolution", lambda *a, **kw: 100.0)
-        result = _compute_resample_params(
+        result = _compute_native_tile_size(
             native_res=0.1, src_width=100, src_height=100,
             image_size=640, resolution=100.0,
         )
@@ -173,24 +167,200 @@ class TestComputeResampleParams:
 
     def test_tuple_resolution_stays_in_expected_range(self) -> None:
         """範囲指定 resolution を渡しても結果が合理的な範囲に収まる。"""
-        # native=1.0, src=2000x2000, resolution=(0.5, 1.0)
-        # scale ∈ [1.0, 2.0] → new_dim ∈ [2000, 4000]
         for _ in range(30):
-            result = _compute_resample_params(
+            result = _compute_native_tile_size(
                 native_res=1.0, src_width=2000, src_height=2000,
                 image_size=640, resolution=(0.5, 1.0),
             )
             assert result is not None
-            _, new_w, new_h = result
-            assert 2000 <= new_w <= 4001
-            assert 2000 <= new_h <= 4001
+            _, tile_size = result
+            # tile = image_size * target_res / native_res
+            # target_res ∈ [0.5, 1.0] → tile ∈ [320, 640]
+            assert 320.0 <= tile_size <= 640.0 + 1e-9
 
     def test_target_res_in_result(self) -> None:
         """戻り値の target_res が指定 resolution と一致する（固定値の場合）。"""
-        result = _compute_resample_params(
+        result = _compute_native_tile_size(
             native_res=0.5, src_width=1280, src_height=1280,
             image_size=640, resolution=0.25,
         )
         assert result is not None
-        target_res, _, _ = result
+        target_res, _ = result
         assert target_res == pytest.approx(0.25)
+
+
+# ---------------------------------------------------------------------------
+# _iter_tile_windows
+# ---------------------------------------------------------------------------
+
+class TestIterTileWindows:
+    """_iter_tile_windows のテスト。"""
+
+    def test_single_tile_exact_fit(self) -> None:
+        """画像がタイルと同じサイズ → 1 タイル。"""
+        tiles = _iter_tile_windows(640, 640, 640.0, 0.0)
+        assert len(tiles) == 1
+        row, col, col_off, row_off = tiles[0]
+        assert (row, col) == (0, 0)
+        assert col_off == pytest.approx(0.0)
+        assert row_off == pytest.approx(0.0)
+
+    def test_two_by_two_no_overlap(self) -> None:
+        """画像がタイル 2×2 にぴったり → 4 タイル。"""
+        tiles = _iter_tile_windows(1280, 1280, 640.0, 0.0)
+        assert len(tiles) == 4
+        offsets = [(t[2], t[3]) for t in tiles]
+        assert any(c == pytest.approx(0.0) and r == pytest.approx(0.0) for c, r in offsets)
+        assert any(c == pytest.approx(640.0) for c, _ in offsets)
+        assert any(r == pytest.approx(640.0) for _, r in offsets)
+
+    def test_overlap_generates_more_tiles(self) -> None:
+        """overlap > 0 ではタイル数が増える。"""
+        tiles_no = _iter_tile_windows(1280, 1280, 640.0, 0.0)
+        tiles_ov = _iter_tile_windows(1280, 1280, 640.0, 0.5)
+        assert len(tiles_ov) > len(tiles_no)
+
+    def test_edge_clamping(self) -> None:
+        """端のタイルは画像境界からはみ出さないようにクランプされる。"""
+        tiles = _iter_tile_windows(1000, 1000, 640.0, 0.0)
+        for _row, _col, col_off, row_off in tiles:
+            assert col_off + 640.0 <= 1000.0 + 1e-9
+            assert row_off + 640.0 <= 1000.0 + 1e-9
+
+    def test_tile_too_large_returns_empty(self) -> None:
+        """タイルサイズが画像より大きい → 空リスト。"""
+        tiles = _iter_tile_windows(500, 500, 640.0, 0.0)
+        assert tiles == []
+
+    def test_non_square_image(self) -> None:
+        """横長画像でも正しくタイルが生成される。"""
+        tiles = _iter_tile_windows(2000, 800, 640.0, 0.0)
+        assert len(tiles) >= 2  # at least 2 columns
+        for _row, _col, col_off, row_off in tiles:
+            assert col_off >= 0.0
+            assert row_off >= 0.0
+            assert col_off + 640.0 <= 2000.0 + 1e-9
+            assert row_off + 640.0 <= 800.0 + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# _parse_yolo_labels
+# ---------------------------------------------------------------------------
+
+class TestParseYoloLabels:
+    """_parse_yolo_labels のテスト。"""
+
+    def test_basic(self, tmp_path: Path) -> None:
+        """正常なラベルファイルを解析する。"""
+        from pathlib import Path  # noqa: F811
+
+        p = tmp_path / "labels.txt"
+        p.write_text("0 0.5 0.5 0.1 0.2\n1 0.3 0.7 0.05 0.05\n")
+        labels = _parse_yolo_labels(p)
+        assert len(labels) == 2
+        assert labels[0] == (0, 0.5, 0.5, 0.1, 0.2)
+        assert labels[1] == (1, 0.3, 0.7, 0.05, 0.05)
+
+    def test_nonexistent_returns_empty(self, tmp_path: Path) -> None:
+        """存在しないファイル → 空リスト。"""
+        from pathlib import Path  # noqa: F811
+
+        labels = _parse_yolo_labels(tmp_path / "missing.txt")
+        assert labels == []
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        """空ファイル → 空リスト。"""
+        from pathlib import Path  # noqa: F811
+
+        p = tmp_path / "empty.txt"
+        p.write_text("")
+        labels = _parse_yolo_labels(p)
+        assert labels == []
+
+
+# ---------------------------------------------------------------------------
+# _clip_labels_to_window
+# ---------------------------------------------------------------------------
+
+class TestClipLabelsToWindow:
+    """_clip_labels_to_window のテスト。"""
+
+    def test_label_fully_inside(self) -> None:
+        """タイル内に完全に収まるラベル → タイル座標に変換される。"""
+        # Label: center (100, 100), size 50x50 in 1000x1000 image
+        labels = [(0, 0.1, 0.1, 0.05, 0.05)]
+        result = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+        )
+        assert len(result) == 1
+        cls_id, xc, yc, w, h = result[0]
+        assert cls_id == 0
+        assert xc == pytest.approx(0.2)
+        assert yc == pytest.approx(0.2)
+        assert w == pytest.approx(0.1)
+        assert h == pytest.approx(0.1)
+
+    def test_label_outside(self) -> None:
+        """タイル外のラベル → 除外される。"""
+        labels = [(0, 0.9, 0.9, 0.05, 0.05)]
+        result = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+        )
+        assert len(result) == 0
+
+    def test_label_partially_clipped(self) -> None:
+        """タイル境界をまたぐラベル → クリッピングされる。"""
+        # Label center at (450, 250) with size (200, 100) in 1000x1000
+        # Abs box: x=[350, 550], y=[200, 300]
+        # Tile: [0, 500] x [0, 500]
+        # Clipped: x=[350, 500], y=[200, 300]
+        labels = [(0, 0.45, 0.25, 0.2, 0.1)]
+        result = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+        )
+        assert len(result) == 1
+        cls_id, xc, yc, w, h = result[0]
+        assert cls_id == 0
+        assert xc == pytest.approx(0.85)
+        assert yc == pytest.approx(0.5)
+        assert w == pytest.approx(0.3)
+        assert h == pytest.approx(0.2)
+
+    def test_min_area_ratio_filters(self) -> None:
+        """クリッピング後の面積比が閾値未満のラベルは除外される。"""
+        # Label at edge: only 5% inside the tile
+        # center (490, 250), size (200, 100) → box x=[390, 590], y=[200, 300]
+        # Tile [0, 500], clip x=[390, 500]=110, y=[200, 300]=100
+        # area_ratio = (110*100) / (200*100) = 0.55
+        labels = [(0, 0.49, 0.25, 0.2, 0.1)]
+        # With min_area_ratio=0.6 → excluded
+        result = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            min_area_ratio=0.6,
+        )
+        assert len(result) == 0
+        # With min_area_ratio=0.5 → included
+        result = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            min_area_ratio=0.5,
+        )
+        assert len(result) == 1
+
+    def test_non_origin_window(self) -> None:
+        """原点以外のウィンドウでもラベルが正しく変換される。"""
+        # Label center at (600, 600), size (100, 100) in 1000x1000
+        # Tile window: col_off=500, row_off=500, size=500
+        # Abs box: x=[550, 650], y=[550, 650]
+        # Clip to [500, 1000]: no clipping needed
+        # Tile coords: cx = (600-500)/500 = 0.2, cy = 0.2, w = 0.2, h = 0.2
+        labels = [(1, 0.6, 0.6, 0.1, 0.1)]
+        result = _clip_labels_to_window(
+            labels, 500.0, 500.0, 500.0, 1000, 1000,
+        )
+        assert len(result) == 1
+        cls_id, xc, yc, w, h = result[0]
+        assert cls_id == 1
+        assert xc == pytest.approx(0.2)
+        assert yc == pytest.approx(0.2)
+        assert w == pytest.approx(0.2)
+        assert h == pytest.approx(0.2)
