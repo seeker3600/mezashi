@@ -22,6 +22,7 @@ def main():
     slice_parser.add_argument("--resolution", type=float, nargs="+", required=True, help="Resolution in m/px. One value for fixed, two for range (min max).")
     slice_parser.add_argument("--image_size", type=int, required=True, help="Output tile size in pixels.")
     slice_parser.add_argument("--overlap", type=float, default=0.0, help="Overlap ratio (0.0-1.0). Default: 0.0.")
+    slice_parser.add_argument("--min_area_ratio", type=float, default=0.1, help="Min area ratio for bbox clipping (0.0-1.0). 0.0: include all, 1.0: fully inside only. Default: 0.1.")
     slice_parser.add_argument("--max_images", type=int, default=None, help="Max number of images to process (debug).")
 
     args = parser.parse_args()
@@ -41,6 +42,7 @@ def main():
             resolution=resolution,
             image_size=args.image_size,
             overlap=args.overlap,
+            min_area_ratio=args.min_area_ratio,
             max_images=args.max_images,
         )
 

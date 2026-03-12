@@ -323,11 +323,19 @@ def _slice_single_geotiff(
     resolution: float | tuple[float, float],
     image_size: int,
     overlap: float,
+    min_area_ratio: float = 0.1,
 ) -> tuple[str, int, str | None]:
     """単一 GeoTIFF を指定解像度でタイルに切り出す。
 
     GeoTIFF をウィンドウ単位で読み出し、各ウィンドウを ``image_size`` に
     リサンプリングして PNG として保存する。ラベルは同時にクリッピング・変換する。
+
+    Parameters
+    ----------
+    min_area_ratio:
+        タイル境界をまたぐ bbox のうち、クリッピング後の面積が元の面積の
+        この比率以上であれば含める。0.0 で全て含める、1.0 で完全に収まる
+        もののみ含める。デフォルト 0.1。
 
     Returns
     -------
@@ -385,6 +393,7 @@ def _slice_single_geotiff(
                     col_off, row_off,
                     native_tile_size,
                     dataset.width, dataset.height,
+                    min_area_ratio=min_area_ratio,
                 )
                 with (out_labels / f"{tile_name}.txt").open("w") as f:
                     for cls_id, xc, yc, w, h in tile_labels:
@@ -408,6 +417,7 @@ def _slice_all_geotiffs(
     resolution: float | tuple[float, float],
     image_size: int,
     overlap: float,
+    min_area_ratio: float = 0.1,
     max_workers: int | None = None,
     max_images: int | None = None,
 ) -> tuple[int, int]:
@@ -438,7 +448,7 @@ def _slice_all_geotiffs(
             executor.submit(
                 _slice_single_geotiff,
                 tif_path, labels_in, out_images, out_labels,
-                resolution, image_size, overlap,
+                resolution, image_size, overlap, min_area_ratio,
             ): tif_path
             for tif_path in tif_files
         }
@@ -473,6 +483,7 @@ def slice_training_images(
     image_size: int,
     *,
     overlap: float = 0.0,
+    min_area_ratio: float = 0.1,
     max_images: int | None = None,
 ) -> dict[str, int]:
     """トレーニング画像を指定分解能でスライスする。
@@ -493,6 +504,10 @@ def slice_training_images(
         出力タイルの一辺のピクセル数。
     overlap:
         タイル間のオーバーラップ率 (0.0〜1.0)。デフォルト 0.0。
+    min_area_ratio:
+        タイル境界をまたぐ bbox のうち、クリッピング後の面積が元の面積の
+        この比率以上であれば含める (0.0〜1.0)。0.0 で全て含める、1.0 で
+        完全にタイル内に収まるもののみ含める。デフォルト 0.1。
     max_images:
         処理する最大画像数。デバッグ用。``None`` の場合は全件処理する。
 
@@ -522,6 +537,7 @@ def slice_training_images(
     stats_images, stats_tiles = _slice_all_geotiffs(
         tif_files, labels_in, images_out, labels_out,
         resolution, image_size, overlap,
+        min_area_ratio=min_area_ratio,
         max_images=max_images,
     )
 
