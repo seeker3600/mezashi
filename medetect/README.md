@@ -40,3 +40,10 @@ yolo detect predict \
     conf=0.05 \
     save=True
 ```
+
+## python定義コマンド
+```powershell
+python -m medetect.xview slice --input_dir datasets\xView --output_dir datasets\xView_sliced --resolution 0.3 --image_size 640 --overlap 0.1 --max_images 200 --min_area_ratio 0.75
+python -m medetect.yolo relabel --config xView_sliced.yaml --empty-image-keep-prob 0.1
+python -m medetect.viewer .\xView_sliced.yaml
+```
