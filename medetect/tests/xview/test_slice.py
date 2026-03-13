@@ -365,3 +365,78 @@ class TestClipLabelsToWindow:
         assert yc == pytest.approx(0.2)
         assert w == pytest.approx(0.2)
         assert h == pytest.approx(0.2)
+
+    def test_min_bbox_size_disabled_by_default(self) -> None:
+        """min_bbox_size 未指定（デフォルト無効）では小さい bbox も残る。"""
+        # Label: center (100, 100), size 10x10 px in 1000x1000 image
+        # native_res=1.0 → 10m × 10m
+        labels = [(0, 0.1, 0.1, 0.01, 0.01)]
+        result = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            native_res=1.0,
+        )
+        assert len(result) == 1
+
+    def test_min_bbox_size_excludes_small_bbox(self) -> None:
+        """bbox の長辺がメートル閾値未満なら除外される。"""
+        # Label: center (100, 100), size 10x10 px in 1000x1000 image
+        # native_res=1.0 → clipped 10x10 px → 10m × 10m
+        # max(10, 10) = 10m < 15m → excluded
+        labels = [(0, 0.1, 0.1, 0.01, 0.01)]
+        result = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            native_res=1.0,
+            min_bbox_size=15.0,
+        )
+        assert len(result) == 0
+
+    def test_min_bbox_size_includes_large_enough_bbox(self) -> None:
+        """bbox の長辺がメートル閾値以上なら含まれる。"""
+        # Label: center (100, 100), size 50x20 px in 1000x1000 image
+        # native_res=1.0 → 50m × 20m
+        # max(50, 20) = 50m >= 30m → included
+        labels = [(0, 0.1, 0.1, 0.05, 0.02)]
+        result = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            native_res=1.0,
+            min_bbox_size=30.0,
+        )
+        assert len(result) == 1
+
+    def test_min_bbox_size_uses_longer_side(self) -> None:
+        """長辺（幅か高さの大きい方）で判定される。"""
+        # Label: 20x60 px → max(20, 60)=60m at native_res=1.0
+        # With min_bbox_size=50 → included (60 >= 50)
+        # With min_bbox_size=70 → excluded (60 < 70)
+        labels = [(0, 0.1, 0.1, 0.02, 0.06)]
+        result_in = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            native_res=1.0,
+            min_bbox_size=50.0,
+        )
+        assert len(result_in) == 1
+        result_out = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            native_res=1.0,
+            min_bbox_size=70.0,
+        )
+        assert len(result_out) == 0
+
+    def test_min_bbox_size_with_native_res_scaling(self) -> None:
+        """native_res を変えるとメートル換算値が変わる。"""
+        # Label: 50x50 px in 1000x1000 image
+        # native_res=0.5 → 25m × 25m → max=25m
+        # min_bbox_size=20 → included; min_bbox_size=30 → excluded
+        labels = [(0, 0.1, 0.1, 0.05, 0.05)]
+        result_in = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            native_res=0.5,
+            min_bbox_size=20.0,
+        )
+        assert len(result_in) == 1
+        result_out = _clip_labels_to_window(
+            labels, 0.0, 0.0, 500.0, 1000, 1000,
+            native_res=0.5,
+            min_bbox_size=30.0,
+        )
+        assert len(result_out) == 0
