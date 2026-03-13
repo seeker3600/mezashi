@@ -41,6 +41,15 @@ def main() -> None:
     )
 
     train_parser = subparsers.add_parser("train", help="Train a YOLO model.")
+    train_parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=0,
+        help=(
+            "Maximum number of times to retry training after a CUDA out-of-memory error. "
+            "Each retry resumes from the latest checkpoint. Default: 0 (no retry)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -50,7 +59,7 @@ def main() -> None:
             empty_image_keep_prob=args.empty_image_keep_prob,
         )
     elif args.command == "train":
-        train_yolo_model()
+        train_yolo_model(max_retries=args.max_retries)
 
 if __name__ == "__main__":
     main()
