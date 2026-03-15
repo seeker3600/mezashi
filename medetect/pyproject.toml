@@ -42,6 +42,14 @@ PYTHONUTF8 = "1"
 licenses = "pip-licenses --format=json --with-urls --packages flatbuffers ml-dtypes onnx onnxruntime-gpu onnxslim --output-file=../mefront/scripts/medetect-licenses.json"
 autosplit = "python -c \"from ultralytics.data.split import autosplit; autosplit('datasets/xView_sliced/images/train')\""
 
+[tool.pixi.tasks.tiff2png]
+args = ["dir"]
+cmd = '''
+for f in "{{dir}}"/*.tif "{{dir}}"/*.tiff; do
+  gdal_translate -of PNG "$f" "${f%.*}.png"
+done
+'''
+
 [tool.pixi.dependencies]
 python = "3.13.*"
 ipykernel = ">=7.2.0,<8"
