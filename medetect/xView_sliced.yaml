@@ -101,6 +101,7 @@ download: |
       image_size=640,
       overlap=0.05,
       min_area_ratio=0.5,
+      output_geotiff=True,
       # min_bbox_size=8.0,
   )
 
