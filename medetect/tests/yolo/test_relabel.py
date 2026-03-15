@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from medetect.yolo.__main__ import main
-from medetect.yolo.relabel import relabel_yolo_detect_dataset, relabel_yolo_detect_labels
+from medetect.yolo.relabel import (
+    _normalize_merges,
+    _relabel_line,
+    relabel_yolo_detect_dataset,
+    relabel_yolo_detect_labels,
+)
 
 
 def _install_fake_ultralytics(monkeypatch: pytest.MonkeyPatch, datasets_dir: Path) -> None:
@@ -302,3 +307,240 @@ def test_cli_main_invokes_relabel(
 
     main()
     assert (labels_dir / "one.txt").read_text(encoding="utf-8") == "1 0.1 0.2 0.3 0.4\n"
+
+
+# ---------------------------------------------------------------------------
+# _normalize_merges のサイズベースルール対応テスト
+# ---------------------------------------------------------------------------
+
+class TestNormalizeMergesWithSizeRules:
+    """_normalize_merges のサイズベースルール対応テスト。"""
+
+    def test_int_value_unchanged(self) -> None:
+        """整数値はシンプルなクラス再マッピングとして正規化する。"""
+        result = _normalize_merges({0: 1, "5": "-1"})
+        assert result == {0: 1, 5: -1}
+
+    def test_dict_value_normalized(self) -> None:
+        """辞書値はサイズベースルールとして正規化する。"""
+        raw = {"23": {"threshold": "50.0", "below": "0", "above": "2"}}
+        result = _normalize_merges(raw)
+        assert result == {23: {"threshold": 50.0, "below": 0, "above": 2}}
+
+    def test_mixed_values(self) -> None:
+        """整数値と辞書値を混在させられる。"""
+        raw = {0: 1, 23: {"threshold": 50.0, "below": 0, "above": 2}}
+        result = _normalize_merges(raw)
+        assert result[0] == 1
+        assert result[23] == {"threshold": 50.0, "below": 0, "above": 2}
+
+    def test_missing_dict_key_raises(self) -> None:
+        """辞書値に必須キーが欠けている場合は KeyError。"""
+        with pytest.raises(KeyError, match="threshold"):
+            _normalize_merges({23: {"below": 0, "above": 2}})
+
+
+# ---------------------------------------------------------------------------
+# _relabel_line with size_merges
+# ---------------------------------------------------------------------------
+
+class TestRelabelLineWithSizeMerges:
+    """_relabel_line のサイズベースリマッピングのテスト。"""
+
+    def test_below_threshold(self) -> None:
+        """長辺が閾値未満 → below クラスへリマップ。"""
+        # w=0.01*1000*1.0=10m, h=0.005*1000*1.0=5m → longest=10m < 50 → below=1
+        line = "0 0.5 0.5 0.01 0.005"
+        result, changed, dropped = _relabel_line(
+            line,
+            {0: {"threshold": 50.0, "below": 1, "above": 2}},
+            img_width=1000, img_height=1000, resolution=1.0,
+        )
+        assert result == "1 0.5 0.5 0.01 0.005"
+        assert changed is True
+        assert dropped is False
+
+    def test_above_threshold(self) -> None:
+        """長辺が閾値以上 → above クラスへリマップ。"""
+        # w=0.1*1000*1.0=100m, h=0.05*1000*1.0=50m → longest=100m >= 50 → above=2
+        line = "0 0.5 0.5 0.1 0.05"
+        result, changed, dropped = _relabel_line(
+            line,
+            {0: {"threshold": 50.0, "below": 1, "above": 2}},
+            img_width=1000, img_height=1000, resolution=1.0,
+        )
+        assert result == "2 0.5 0.5 0.1 0.05"
+        assert changed is True
+        assert dropped is False
+
+    def test_at_exact_threshold(self) -> None:
+        """長辺がちょうど閾値 → above (以上)。"""
+        # w=0.1*1000*1.0=100m → longest=100m >= 100 → above
+        line = "0 0.5 0.5 0.1 0.05"
+        result, changed, dropped = _relabel_line(
+            line,
+            {0: {"threshold": 100.0, "below": 1, "above": 2}},
+            img_width=1000, img_height=1000, resolution=1.0,
+        )
+        assert result == "2 0.5 0.5 0.1 0.05"
+
+    def test_size_rule_on_source_class(self) -> None:
+        """source クラスに直接サイズルールを設定できる。"""
+        # class 5 has size rule: 10m < 50 → below=1
+        line = "5 0.5 0.5 0.01 0.005"
+        result, changed, dropped = _relabel_line(
+            line,
+            {5: {"threshold": 50.0, "below": 1, "above": 2}},
+            img_width=1000, img_height=1000, resolution=1.0,
+        )
+        assert result == "1 0.5 0.5 0.01 0.005"
+        assert changed is True
+
+    def test_size_rule_drop(self) -> None:
+        """サイズルールで -1 を指定するとドロップされる。"""
+        # 10m < 50 → below=-1 → drop
+        line = "0 0.5 0.5 0.01 0.005"
+        result, changed, dropped = _relabel_line(
+            line,
+            {0: {"threshold": 50.0, "below": -1, "above": 0}},
+            img_width=1000, img_height=1000, resolution=1.0,
+        )
+        assert result is None
+        assert dropped is True
+
+    def test_no_matching_rule(self) -> None:
+        """マッチするルールがない場合はそのまま。"""
+        line = "0 0.5 0.5 0.1 0.05"
+        result, changed, dropped = _relabel_line(
+            line,
+            {9: {"threshold": 50.0, "below": 1, "above": 2}},
+            img_width=1000, img_height=1000, resolution=1.0,
+        )
+        assert result == "0 0.5 0.5 0.1 0.05"
+        assert changed is False
+
+    def test_no_geo_info_skips_size_rule(self) -> None:
+        """画像情報がない場合はサイズルールをスキップする。"""
+        line = "0 0.5 0.5 0.01 0.005"
+        result, changed, dropped = _relabel_line(
+            line,
+            {0: {"threshold": 50.0, "below": 1, "above": 2}},
+            img_width=0, img_height=0, resolution=0.0,
+        )
+        assert result == "0 0.5 0.5 0.01 0.005"
+        assert changed is False
+
+
+# ---------------------------------------------------------------------------
+# relabel_yolo_detect_labels with size rules (integration with GeoTIFF)
+# ---------------------------------------------------------------------------
+
+def _create_test_geotiff(
+    path: Path, width: int, height: int, resolution: float,
+) -> None:
+    """テスト用の GeoTIFF を作成する (投影座標系・メートル単位)。"""
+    import numpy as np
+    import rasterio
+    from rasterio.transform import Affine
+
+    transform = Affine(resolution, 0, 0, 0, -resolution, 0)
+    data = np.zeros((1, height, width), dtype=np.uint8)
+    with rasterio.open(
+        path, "w", driver="GTiff",
+        height=height, width=width, count=1,
+        dtype=np.uint8, crs="EPSG:32610",
+        transform=transform,
+    ) as ds:
+        ds.write(data)
+
+
+class TestRelabelWithSizeMerges:
+    """size ルール付き relabel_yolo_detect_labels の統合テスト。"""
+
+    def test_size_based_split(self, tmp_path: Path) -> None:
+        """サイズに基づいてクラスを分割できる。"""
+        dataset_root = tmp_path / "ds"
+        labels_dir = dataset_root / "labels" / "train"
+        images_dir = dataset_root / "images" / "train"
+        labels_dir.mkdir(parents=True)
+        images_dir.mkdir(parents=True)
+
+        # Resolution=1.0 m/px, image=1000x1000
+        _create_test_geotiff(images_dir / "img.tif", 1000, 1000, 1.0)
+
+        # bbox1: w=0.02, h=0.01 → 20m x 10m → longest=20m (< 50 → below=1)
+        # bbox2: w=0.1, h=0.08 → 100m x 80m → longest=100m (>= 50 → above=2)
+        (labels_dir / "img.txt").write_text(
+            "0 0.5 0.5 0.02 0.01\n"
+            "0 0.3 0.3 0.1 0.08\n",
+            encoding="utf-8",
+        )
+
+        stats = relabel_yolo_detect_labels(
+            dataset_root=dataset_root,
+            merges={0: {"threshold": 50.0, "below": 1, "above": 2}},
+        )
+
+        assert stats["labels_reassigned"] == 2
+        content = (labels_dir / "img.txt").read_text(encoding="utf-8")
+        assert content == (
+            "1 0.5 0.5 0.02 0.01\n"
+            "2 0.3 0.3 0.1 0.08\n"
+        )
+
+    def test_mixed_int_and_size_rule(self, tmp_path: Path) -> None:
+        """整数値の merge とサイズルールを混在できる。"""
+        dataset_root = tmp_path / "ds"
+        labels_dir = dataset_root / "labels" / "train"
+        images_dir = dataset_root / "images" / "train"
+        labels_dir.mkdir(parents=True)
+        images_dir.mkdir(parents=True)
+
+        # Resolution=0.5 m/px, image=2000x2000
+        _create_test_geotiff(images_dir / "img.tif", 2000, 2000, 0.5)
+
+        # class 1 → simple remap to 0
+        # class 5 → size rule: w=0.01*2000*0.5=10m < 30 → below=1
+        (labels_dir / "img.txt").write_text(
+            "1 0.5 0.5 0.1 0.1\n"
+            "5 0.5 0.5 0.01 0.005\n",
+            encoding="utf-8",
+        )
+
+        stats = relabel_yolo_detect_labels(
+            dataset_root=dataset_root,
+            merges={1: 0, 5: {"threshold": 30.0, "below": 1, "above": 2}},
+        )
+
+        assert stats["labels_reassigned"] == 2
+        content = (labels_dir / "img.txt").read_text(encoding="utf-8")
+        assert content == (
+            "0 0.5 0.5 0.1 0.1\n"
+            "1 0.5 0.5 0.01 0.005\n"
+        )
+
+    def test_no_geotiff_skips_size_rule(self, tmp_path: Path) -> None:
+        """GeoTIFF がない場合はサイズルールをスキップし通常の merges のみ適用。"""
+        dataset_root = tmp_path / "ds"
+        labels_dir = dataset_root / "labels" / "train"
+        images_dir = dataset_root / "images" / "train"
+        labels_dir.mkdir(parents=True)
+        images_dir.mkdir(parents=True)
+
+        # PNG image (not GeoTIFF) — size rule cannot be applied
+        (images_dir / "img.png").write_text("fake", encoding="utf-8")
+
+        (labels_dir / "img.txt").write_text(
+            "0 0.5 0.5 0.02 0.01\n",
+            encoding="utf-8",
+        )
+
+        stats = relabel_yolo_detect_labels(
+            dataset_root=dataset_root,
+            merges={0: {"threshold": 50.0, "below": 1, "above": 2}},
+        )
+
+        # GeoTIFF なし → サイズルールスキップ → 変更なし
+        assert stats["labels_reassigned"] == 0
+        content = (labels_dir / "img.txt").read_text(encoding="utf-8")
+        assert content == "0 0.5 0.5 0.02 0.01\n"

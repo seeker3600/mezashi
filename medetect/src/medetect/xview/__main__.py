@@ -24,6 +24,7 @@ def main():
     slice_parser.add_argument("--overlap", type=float, default=0.0, help="Overlap ratio (0.0-1.0). Default: 0.0.")
     slice_parser.add_argument("--min_area_ratio", type=float, default=0.1, help="Min area ratio for bbox clipping (0.0-1.0). 0.0: include all, 1.0: fully inside only. Default: 0.1.")
     slice_parser.add_argument("--max_images", type=int, default=None, help="Max number of images to process (debug).")
+    slice_parser.add_argument("--output_geotiff", action="store_true", help="Output GeoTIFF files for sliced images.")
 
     args = parser.parse_args()
 
@@ -44,6 +45,7 @@ def main():
             overlap=args.overlap,
             min_area_ratio=args.min_area_ratio,
             max_images=args.max_images,
+            output_geotiff=args.output_geotiff,
         )
 
 if __name__ == "__main__":

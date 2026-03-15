@@ -13,6 +13,7 @@ from medetect.xview.slice import (
     _clip_labels_to_window,
     _compute_geo_resolution,
     _compute_native_tile_size,
+    _compute_tile_transform,
     _iter_tile_windows,
     _parse_yolo_labels,
 )
@@ -365,3 +366,57 @@ class TestClipLabelsToWindow:
         assert yc == pytest.approx(0.2)
         assert w == pytest.approx(0.2)
         assert h == pytest.approx(0.2)
+
+
+# ---------------------------------------------------------------------------
+# _compute_tile_transform
+# ---------------------------------------------------------------------------
+
+class TestComputeTileTransform:
+    """_compute_tile_transform のテスト。"""
+
+    def test_identity_at_origin(self) -> None:
+        """原点タイル・等倍ではソース変換と一致する。"""
+        from rasterio.transform import Affine
+
+        src = Affine(1.0, 0.0, 100.0, 0.0, -1.0, 200.0)
+        result = _compute_tile_transform(src, 0.0, 0.0, 640.0, 640)
+        assert result.a == pytest.approx(1.0)
+        assert result.e == pytest.approx(-1.0)
+        assert result.c == pytest.approx(100.0)
+        assert result.f == pytest.approx(200.0)
+
+    def test_offset_tile(self) -> None:
+        """オフセットされたタイルの原点が正しく計算される。"""
+        from rasterio.transform import Affine
+
+        src = Affine(0.5, 0.0, 100.0, 0.0, -0.5, 200.0)
+        result = _compute_tile_transform(src, 100.0, 200.0, 640.0, 640)
+        assert result.c == pytest.approx(100.0 + 100 * 0.5)  # 150.0
+        assert result.f == pytest.approx(200.0 + 200 * (-0.5))  # 100.0
+
+    def test_resampling_scale(self) -> None:
+        """リサンプリングでピクセルサイズが適切にスケールされる。"""
+        from rasterio.transform import Affine
+
+        src = Affine(1.0, 0.0, 0.0, 0.0, -1.0, 0.0)
+        # native_tile_size=1280 → image_size=640: 2x downsampling
+        result = _compute_tile_transform(src, 0.0, 0.0, 1280.0, 640)
+        assert result.a == pytest.approx(2.0)
+        assert result.e == pytest.approx(-2.0)
+
+    def test_non_zero_rotation(self) -> None:
+        """回転係数がある場合でも正しく計算される。"""
+        from rasterio.transform import Affine
+
+        src = Affine(0.5, 0.1, 1000.0, 0.1, -0.5, 2000.0)
+        result = _compute_tile_transform(src, 100.0, 50.0, 320.0, 640)
+        scale = 320.0 / 640
+        expected_c = 1000.0 + 100.0 * 0.5 + 50.0 * 0.1
+        expected_f = 2000.0 + 100.0 * 0.1 + 50.0 * (-0.5)
+        assert result.a == pytest.approx(0.5 * scale)
+        assert result.b == pytest.approx(0.1 * scale)
+        assert result.c == pytest.approx(expected_c)
+        assert result.d == pytest.approx(0.1 * scale)
+        assert result.e == pytest.approx(-0.5 * scale)
+        assert result.f == pytest.approx(expected_f)

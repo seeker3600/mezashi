@@ -31,6 +31,7 @@ import numpy as np
 import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
+from rasterio.transform import Affine
 from rasterio.windows import Window
 from tqdm import tqdm
 
@@ -151,6 +152,39 @@ def _iter_tile_windows(
             tiles.append((row, col, col_off, row_off))
 
     return tiles
+
+
+def _compute_tile_transform(
+    src_transform: Affine,
+    col_off: float,
+    row_off: float,
+    native_tile_size: float,
+    image_size: int,
+) -> Affine:
+    """タイルの Affine transform を計算する。
+
+    ソース画像から切り出した (col_off, row_off) 位置のタイルが
+    image_size ピクセルにリサンプリングされた場合の地理参照を返す。
+    """
+    scale = native_tile_size / image_size
+    tile_x = (
+        src_transform.c
+        + col_off * src_transform.a
+        + row_off * src_transform.b
+    )
+    tile_y = (
+        src_transform.f
+        + col_off * src_transform.d
+        + row_off * src_transform.e
+    )
+    return Affine(
+        src_transform.a * scale,
+        src_transform.b * scale,
+        tile_x,
+        src_transform.d * scale,
+        src_transform.e * scale,
+        tile_y,
+    )
 
 
 def _parse_yolo_labels(
@@ -324,11 +358,12 @@ def _slice_single_geotiff(
     image_size: int,
     overlap: float,
     min_area_ratio: float = 0.1,
+    output_geotiff: bool = False,
 ) -> tuple[str, int, str | None]:
     """単一 GeoTIFF を指定解像度でタイルに切り出す。
 
     GeoTIFF をウィンドウ単位で読み出し、各ウィンドウを ``image_size`` に
-    リサンプリングして PNG として保存する。ラベルは同時にクリッピング・変換する。
+    リサンプリングして保存する。ラベルは同時にクリッピング・変換する。
 
     Parameters
     ----------
@@ -336,6 +371,9 @@ def _slice_single_geotiff(
         タイル境界をまたぐ bbox のうち、クリッピング後の面積が元の面積の
         この比率以上であれば含める。0.0 で全て含める、1.0 で完全に収まる
         もののみ含める。デフォルト 0.1。
+    output_geotiff:
+        ``True`` の場合、タイルを GeoTIFF (CRS・transform 付き) で出力する。
+        ``False`` の場合は PNG で出力する。デフォルト ``False``。
 
     Returns
     -------
@@ -377,16 +415,35 @@ def _slice_single_geotiff(
                     resampling=Resampling.bilinear,
                 )
 
-                # (bands, height, width) -> (height, width, bands) for PIL
-                if data.shape[0] == 1:
-                    img_array = data[0]
-                else:
-                    img_array = np.transpose(data, (1, 2, 0))
-
                 tile_name = f"{stem}_{row}_{col}"
-                Image.fromarray(img_array).save(
-                    out_images / f"{tile_name}.png",
-                )
+
+                if output_geotiff:
+                    tile_transform = _compute_tile_transform(
+                        dataset.transform, col_off, row_off,
+                        native_tile_size, image_size,
+                    )
+                    profile = {
+                        "driver": "GTiff",
+                        "height": image_size,
+                        "width": image_size,
+                        "count": dataset.count,
+                        "dtype": data.dtype,
+                        "crs": dataset.crs,
+                        "transform": tile_transform,
+                    }
+                    with rasterio.open(
+                        out_images / f"{tile_name}.tif", "w", **profile,
+                    ) as dst:
+                        dst.write(data)
+                else:
+                    # (bands, height, width) -> (height, width, bands) for PIL
+                    if data.shape[0] == 1:
+                        img_array = data[0]
+                    else:
+                        img_array = np.transpose(data, (1, 2, 0))
+                    Image.fromarray(img_array).save(
+                        out_images / f"{tile_name}.png",
+                    )
 
                 tile_labels = _clip_labels_to_window(
                     labels,
@@ -420,6 +477,7 @@ def _slice_all_geotiffs(
     min_area_ratio: float = 0.1,
     max_workers: int | None = None,
     max_images: int | None = None,
+    output_geotiff: bool = False,
 ) -> tuple[int, int]:
     """GeoTIFF 群を並列処理でタイルに切り出す。
 
@@ -449,6 +507,7 @@ def _slice_all_geotiffs(
                 _slice_single_geotiff,
                 tif_path, labels_in, out_images, out_labels,
                 resolution, image_size, overlap, min_area_ratio,
+                output_geotiff,
             ): tif_path
             for tif_path in tif_files
         }
@@ -485,6 +544,7 @@ def slice_training_images(
     overlap: float = 0.0,
     min_area_ratio: float = 0.1,
     max_images: int | None = None,
+    output_geotiff: bool = False,
 ) -> dict[str, int]:
     """トレーニング画像を指定分解能でスライスする。
 
@@ -510,6 +570,9 @@ def slice_training_images(
         完全にタイル内に収まるもののみ含める。デフォルト 0.1。
     max_images:
         処理する最大画像数。デバッグ用。``None`` の場合は全件処理する。
+    output_geotiff:
+        ``True`` の場合、タイルを GeoTIFF (CRS・transform 付き) で出力する。
+        ``False`` の場合は PNG で出力する。デフォルト ``False``。
 
     Returns
     -------
@@ -539,6 +602,7 @@ def slice_training_images(
         resolution, image_size, overlap,
         min_area_ratio=min_area_ratio,
         max_images=max_images,
+        output_geotiff=output_geotiff,
     )
 
     if stats_images == 0:

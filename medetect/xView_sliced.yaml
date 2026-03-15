@@ -39,16 +39,16 @@ merges:
   20: -1 # Flat Car -> drop
   21: -1 # Tank car -> drop
   22: -1 # Locomotive -> drop
-  23: 0  # Maritime Vessel -> Ship
-  24: 0  # Motorboat -> Ship
-  25: 0  # Sailboat -> Ship
-  26: 0  # Tugboat -> Ship
-  27: 0  # Barge -> Ship
-  28: 0  # Fishing Vessel -> Ship
-  29: 0  # Ferry -> Ship
-  30: 0  # Yacht -> Ship
-  31: 0  # Container Ship -> Ship
-  32: 0  # Oil Tanker -> Ship
+  23: {"threshold": 15.0, "below": 0, "above": 2}   # Maritime Vessel -> Small Boat or Large Vessel
+  24: {"threshold": 15.0, "below": 0, "above": 2}   # Motorboat -> Small Boat or Large Vessel
+  25: {"threshold": 15.0, "below": 0, "above": 2}   # Sailboat -> Small Boat or Large Vessel
+  26: {"threshold": 15.0, "below": 0, "above": 2}   # Tugboat -> Small Boat or Large Vessel
+  27: {"threshold": 15.0, "below": 0, "above": 2}   # Barge -> Small Boat or Large Vessel
+  28: {"threshold": 15.0, "below": 0, "above": 2}   # Fishing Vessel -> Small Boat or Large Vessel
+  29: {"threshold": 15.0, "below": 0, "above": 2}   # Ferry -> Small Boat or Large Vessel
+  30: {"threshold": 15.0, "below": 0, "above": 2}   # Yacht -> Small Boat or Large Vessel
+  31: {"threshold": 15.0, "below": 0, "above": 2}   # Container Ship -> Small Boat or Large Vessel
+  32: {"threshold": 15.0, "below": 0, "above": 2}   # Oil Tanker -> Small Boat or Large Vessel
   33: -1 # Engineering Vehicle -> drop
   34: -1 # Tower crane -> drop
   35: -1 # Container Crane -> drop
@@ -78,8 +78,9 @@ merges:
   59: -1 # Tower -> drop
 
 names:
-  0: Ship
+  0: Small Ship
   1: Fixed-wing Aircraft
+  2: Large Vessel
 
 # Download script/URL
 download: |
@@ -98,14 +99,16 @@ download: |
       output_dir=sliced_dir,
       resolution=0.3,  # (0.5, 5.0),
       image_size=640,
-      overlap=0.1,
+      overlap=0.05,
+      min_area_ratio=0.5,
+      # min_bbox_size=8.0,
   )
 
   # Relabel
   relabel_yolo_detect_labels(
       dataset_root=sliced_dir,
       merges=yaml["merges"],
-      empty_image_keep_prob=0.1,
+      empty_image_keep_prob=0.05,
   )
   
   # Split
