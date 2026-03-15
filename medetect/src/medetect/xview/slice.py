@@ -228,6 +228,8 @@ def _clip_labels_to_window(
     img_height: int,
     *,
     min_area_ratio: float = 0.1,
+    native_res: float = 1.0,
+    min_bbox_size: float | None = None,
 ) -> list[tuple[int, float, float, float, float]]:
     """ラベルをタイルウィンドウに合わせてクリッピング・変換する。
 
@@ -248,6 +250,12 @@ def _clip_labels_to_window(
         元画像の高さ (ピクセル)。
     min_area_ratio:
         クリッピング後の面積が元面積のこの比率未満なら除外する。
+    native_res:
+        元画像のピクセルあたり地上分解能 (メートル)。``min_bbox_size`` を
+        使う場合に bbox サイズをメートルへ変換するために用いる。
+    min_bbox_size:
+        クリッピング後の bbox の幅・高さの長い方がこの値 (メートル) 未満
+        なら除外する。``None`` の場合は無効 (デフォルト)。
 
     Returns
     -------
@@ -284,6 +292,12 @@ def _clip_labels_to_window(
         clip_area = (ix2 - ix1) * (iy2 - iy1)
         if orig_area > 0 and clip_area / orig_area < min_area_ratio:
             continue
+
+        if min_bbox_size is not None:
+            w_m = (ix2 - ix1) * native_res
+            h_m = (iy2 - iy1) * native_res
+            if max(w_m, h_m) < min_bbox_size:
+                continue
 
         # Tile-relative normalised coords
         tile_cx = ((ix1 + ix2) / 2.0 - col_off) / native_tile_size
@@ -358,6 +372,7 @@ def _slice_single_geotiff(
     image_size: int,
     overlap: float,
     min_area_ratio: float = 0.1,
+    min_bbox_size: float | None = None,
     output_geotiff: bool = False,
 ) -> tuple[str, int, str | None]:
     """単一 GeoTIFF を指定解像度でタイルに切り出す。
@@ -371,6 +386,9 @@ def _slice_single_geotiff(
         タイル境界をまたぐ bbox のうち、クリッピング後の面積が元の面積の
         この比率以上であれば含める。0.0 で全て含める、1.0 で完全に収まる
         もののみ含める。デフォルト 0.1。
+    min_bbox_size:
+        クリッピング後の bbox の幅・高さの長い方がこの値 (メートル) 未満
+        なら除外する。``None`` の場合は無効 (デフォルト)。
     output_geotiff:
         ``True`` の場合、タイルを GeoTIFF (CRS・transform 付き) で出力する。
         ``False`` の場合は PNG で出力する。デフォルト ``False``。
@@ -451,6 +469,8 @@ def _slice_single_geotiff(
                     native_tile_size,
                     dataset.width, dataset.height,
                     min_area_ratio=min_area_ratio,
+                    native_res=native_res,
+                    min_bbox_size=min_bbox_size,
                 )
                 with (out_labels / f"{tile_name}.txt").open("w") as f:
                     for cls_id, xc, yc, w, h in tile_labels:
@@ -475,6 +495,7 @@ def _slice_all_geotiffs(
     image_size: int,
     overlap: float,
     min_area_ratio: float = 0.1,
+    min_bbox_size: float | None = None,
     max_workers: int | None = None,
     max_images: int | None = None,
     output_geotiff: bool = False,
@@ -506,8 +527,7 @@ def _slice_all_geotiffs(
             executor.submit(
                 _slice_single_geotiff,
                 tif_path, labels_in, out_images, out_labels,
-                resolution, image_size, overlap, min_area_ratio,
-                output_geotiff,
+                resolution, image_size, overlap, min_area_ratio, min_bbox_size, output_geotiff,
             ): tif_path
             for tif_path in tif_files
         }
@@ -543,6 +563,7 @@ def slice_training_images(
     *,
     overlap: float = 0.0,
     min_area_ratio: float = 0.1,
+    min_bbox_size: float | None = None,
     max_images: int | None = None,
     output_geotiff: bool = False,
 ) -> dict[str, int]:
@@ -568,6 +589,9 @@ def slice_training_images(
         タイル境界をまたぐ bbox のうち、クリッピング後の面積が元の面積の
         この比率以上であれば含める (0.0〜1.0)。0.0 で全て含める、1.0 で
         完全にタイル内に収まるもののみ含める。デフォルト 0.1。
+    min_bbox_size:
+        クリッピング後の bbox の幅・高さの長い方がこの値 (メートル) 未満
+        なら除外する。``None`` の場合は無効 (デフォルト)。
     max_images:
         処理する最大画像数。デバッグ用。``None`` の場合は全件処理する。
     output_geotiff:
@@ -601,6 +625,7 @@ def slice_training_images(
         tif_files, labels_in, images_out, labels_out,
         resolution, image_size, overlap,
         min_area_ratio=min_area_ratio,
+        min_bbox_size=min_bbox_size,
         max_images=max_images,
         output_geotiff=output_geotiff,
     )
