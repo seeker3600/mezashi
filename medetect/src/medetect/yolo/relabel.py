@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
+import os
 import random
 from pathlib import Path
 
 import yaml
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +274,7 @@ def relabel_yolo_detect_labels(
     merges: dict,
     *,
     empty_image_keep_prob: float = 1.0,
+    max_workers: int | None = None,
 ) -> dict[str, int]:
     """YOLO detect データセット配下の labels を指定マッピングで再ラベルする。
 
@@ -290,6 +294,9 @@ def relabel_yolo_detect_labels(
     empty_ratio = _normalize_probability(empty_image_keep_prob)
     labels_root = dataset_root / "labels"
 
+    if max_workers is None:
+        max_workers = os.cpu_count() or 1
+
     if not labels_root.is_dir():
         raise FileNotFoundError(f"labels directory not found: {labels_root}")
 
@@ -303,17 +310,33 @@ def relabel_yolo_detect_labels(
     }
 
     empty_label_paths: list[Path] = []
+    label_paths = sorted(labels_root.rglob("*.txt"))
 
-    for label_path in sorted(labels_root.rglob("*.txt")):
-        file_stats = _relabel_file(label_path, merges, dataset_root)
-        stats["files_processed"] += 1
-        stats["files_updated"] += file_stats["updated"]
-        stats["labels_reassigned"] += file_stats["labels_reassigned"]
-        stats["labels_dropped"] += file_stats["labels_dropped"]
-        stats["empty_labels"] += file_stats["is_empty"]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_relabel_file, lp, merges, dataset_root): lp
+            for lp in label_paths
+        }
 
-        if file_stats["is_empty"]:
-            empty_label_paths.append(label_path)
+        with tqdm(
+            total=len(label_paths),
+            desc="relabel",
+            unit="file",
+            dynamic_ncols=True,
+        ) as pbar:
+            for future in concurrent.futures.as_completed(futures):
+                label_path = futures[future]
+                file_stats = future.result()
+                stats["files_processed"] += 1
+                stats["files_updated"] += file_stats["updated"]
+                stats["labels_reassigned"] += file_stats["labels_reassigned"]
+                stats["labels_dropped"] += file_stats["labels_dropped"]
+                stats["empty_labels"] += file_stats["is_empty"]
+
+                if file_stats["is_empty"]:
+                    empty_label_paths.append(label_path)
+
+                pbar.update(1)
 
     # 目標比率に合わせて残すラベル無し画像数を計算する。
     # 目標: E_kept / (n_labeled + E_kept) = empty_ratio
@@ -350,6 +373,7 @@ def relabel_yolo_detect_dataset(
     config_path: str | Path,
     *,
     empty_image_keep_prob: float | None = None,
+    max_workers: int | None = None,
 ) -> dict[str, int]:
     """YOLO detect データセット YAML を読み込み、labels を再ラベルする。"""
     dataset_root, merges, config_keep_prob = _load_relabel_config(config_path)
@@ -359,4 +383,5 @@ def relabel_yolo_detect_dataset(
         dataset_root=dataset_root,
         merges=merges,
         empty_image_keep_prob=empty_image_keep_prob,
+        max_workers=max_workers,
     )

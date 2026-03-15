@@ -102,6 +102,7 @@ download: |
       overlap=0.05,
       min_area_ratio=0.5,
       output_geotiff=True,
+      # max_images=30,
       # min_bbox_size=8.0,
   )
 

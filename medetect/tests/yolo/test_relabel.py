@@ -544,3 +544,53 @@ class TestRelabelWithSizeMerges:
         assert stats["labels_reassigned"] == 0
         content = (labels_dir / "img.txt").read_text(encoding="utf-8")
         assert content == "0 0.5 0.5 0.02 0.01\n"
+
+
+class TestRelabelParallel:
+    """並列処理で結果が直列と一致することを確認するテスト。"""
+
+    def test_parallel_produces_same_results(self, tmp_path: Path) -> None:
+        """max_workers=2 でも直列と同じ結果を返す。"""
+        dataset_root = tmp_path / "parallel"
+        labels_dir = dataset_root / "labels" / "train"
+        labels_dir.mkdir(parents=True)
+
+        for i in range(10):
+            (labels_dir / f"file{i:02d}.txt").write_text(
+                f"5 0.{i} 0.{i} 0.1 0.1\n"
+                f"10 0.{i} 0.{i} 0.2 0.2\n",
+                encoding="utf-8",
+            )
+
+        stats = relabel_yolo_detect_labels(
+            dataset_root=dataset_root,
+            merges={5: 0, 10: -1},
+            max_workers=2,
+        )
+
+        assert stats["files_processed"] == 10
+        assert stats["files_updated"] == 10
+        assert stats["labels_reassigned"] == 10
+        assert stats["labels_dropped"] == 10
+
+        for i in range(10):
+            content = (labels_dir / f"file{i:02d}.txt").read_text(encoding="utf-8")
+            assert content == f"0 0.{i} 0.{i} 0.1 0.1\n"
+
+    def test_serial_with_max_workers_one(self, tmp_path: Path) -> None:
+        """max_workers=1 で直列実行しても正常に動作する。"""
+        dataset_root = tmp_path / "serial"
+        labels_dir = dataset_root / "labels" / "train"
+        labels_dir.mkdir(parents=True)
+
+        (labels_dir / "a.txt").write_text("1 0.5 0.5 0.1 0.1\n", encoding="utf-8")
+        (labels_dir / "b.txt").write_text("2 0.5 0.5 0.1 0.1\n", encoding="utf-8")
+
+        stats = relabel_yolo_detect_labels(
+            dataset_root=dataset_root,
+            merges={1: 0, 2: 0},
+            max_workers=1,
+        )
+
+        assert stats["files_processed"] == 2
+        assert stats["labels_reassigned"] == 2
