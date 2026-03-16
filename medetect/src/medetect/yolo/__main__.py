@@ -11,12 +11,35 @@ logging.basicConfig(
 )
 
 from medetect.yolo.relabel import relabel_yolo_detect_dataset
+from medetect.yolo.tiff2png import convert_tiffs_to_png
 from medetect.yolo.train import train_yolo_model
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="YOLO dataset utilities.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    tiff2png_parser = subparsers.add_parser(
+        "tiff2png",
+        help="Recursively convert TIFF/GeoTIFF files to PNG under a directory.",
+    )
+    tiff2png_parser.add_argument(
+        "dir",
+        type=Path,
+        help="Root directory to search for TIFF files.",
+    )
+    tiff2png_parser.add_argument(
+        "--keep-source",
+        action="store_true",
+        help="Keep the original TIFF files after conversion (default: delete them).",
+    )
+    tiff2png_parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of worker threads (default: CPU count).",
+    )
 
     relabel_parser = subparsers.add_parser(
         "relabel",
@@ -53,7 +76,13 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "relabel":
+    if args.command == "tiff2png":
+        convert_tiffs_to_png(
+            args.dir,
+            delete_source=not args.keep_source,
+            max_workers=args.workers,
+        )
+    elif args.command == "relabel":
         relabel_yolo_detect_dataset(
             args.config,
             empty_image_keep_prob=args.empty_image_keep_prob,

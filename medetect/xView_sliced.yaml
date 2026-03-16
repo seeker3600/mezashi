@@ -88,6 +88,7 @@ download: |
 
   from medetect.xview.slice import slice_training_images
   from medetect.yolo import relabel_yolo_detect_labels
+  from medetect.yolo.tiff2png import convert_tiffs_to_png
   from ultralytics.data.split import autosplit
 
   sliced_dir = Path(yaml["path"])
@@ -112,6 +113,9 @@ download: |
       merges=yaml["merges"],
       empty_image_keep_prob=0.05,
   )
+
+  # Convert TIFF to PNG
+  convert_tiffs_to_png(sliced_dir)
   
   # Split
   autosplit(sliced_dir / "images" / "train")
