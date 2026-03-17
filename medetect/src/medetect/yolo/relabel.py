@@ -341,6 +341,7 @@ def relabel_yolo_detect_labels(
     # 目標比率に合わせて残すラベル無し画像数を計算する。
     # 目標: E_kept / (n_labeled + E_kept) = empty_ratio
     # => E_kept = empty_ratio * n_labeled / (1 - empty_ratio)
+    empty_label_paths.sort()
     n_empty = len(empty_label_paths)
     n_labeled = stats["files_processed"] - n_empty
 
