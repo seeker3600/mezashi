@@ -138,8 +138,8 @@ def _iter_tile_windows(
     if stride <= 0:
         stride = native_tile_size  # fallback: overlap=1.0 → no overlap
 
-    n_cols = max(1, math.ceil((src_width - native_tile_size) / stride) + 1)
-    n_rows = max(1, math.ceil((src_height - native_tile_size) / stride) + 1)
+    n_cols = max(1, math.floor((src_width - native_tile_size) / stride) + 1)
+    n_rows = max(1, math.floor((src_height - native_tile_size) / stride) + 1)
 
     tiles: list[tuple[int, int, float, float]] = []
     for row in range(n_rows):

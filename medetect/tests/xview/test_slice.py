@@ -244,6 +244,28 @@ class TestIterTileWindows:
             assert col_off + 640.0 <= 2000.0 + 1e-9
             assert row_off + 640.0 <= 800.0 + 1e-9
 
+    def test_no_extra_edge_tile(self) -> None:
+        """端に高重複の余分タイルが生成されない (xView 相当サイズ)。"""
+        # 3328x2560, tile=640, overlap=0.05 → stride=608
+        # floor((3328-640)/608)+1 = floor(4.42)+1 = 5 cols
+        # floor((2560-640)/608)+1 = floor(3.16)+1 = 4 rows → 20 tiles
+        tiles = _iter_tile_windows(3328, 2560, 640.0, 0.05)
+        assert len(tiles) == 20
+
+    def test_overlap_ratio_consistency(self) -> None:
+        """隣接タイル間の実際のオーバーラップが指定値に近い。"""
+        tile_size = 640.0
+        overlap = 0.2
+        tiles = _iter_tile_windows(3000, 3000, tile_size, overlap)
+        # Sort by (row, col) and check column-wise overlap
+        expected_overlap_px = tile_size * overlap  # 128
+        for i in range(len(tiles) - 1):
+            r1, c1, x1, y1 = tiles[i]
+            r2, c2, x2, y2 = tiles[i + 1]
+            if r1 == r2 and c2 == c1 + 1:
+                actual_overlap = tile_size - (x2 - x1)
+                assert actual_overlap == pytest.approx(expected_overlap_px, abs=1.0)
+
 
 # ---------------------------------------------------------------------------
 # _parse_yolo_labels
