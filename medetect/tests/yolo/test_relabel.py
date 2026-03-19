@@ -147,7 +147,7 @@ def test_relabel_yolo_detect_labels_removes_empty_images_when_keep_prob_zero(tmp
     stats = relabel_yolo_detect_labels(
         dataset_root=dataset_root,
         merges={5: -1},
-        empty_image_keep_prob=0.0,
+        empty_image_ratio=0.0,
     )
 
     assert stats == {
@@ -174,7 +174,7 @@ def test_relabel_yolo_detect_labels_keeps_empty_images_when_keep_prob_one(tmp_pa
     stats = relabel_yolo_detect_labels(
         dataset_root=dataset_root,
         merges={5: -1},
-        empty_image_keep_prob=1.0,
+        empty_image_ratio=1.0,
     )
 
     assert stats == {
@@ -204,7 +204,7 @@ def test_relabel_yolo_detect_dataset_reads_keep_prob_from_yaml(
     config_path = tmp_path / "toy.yaml"
     config_path.write_text(
         "path: toy\n"
-        "empty_image_keep_prob: 0.0\n"
+        "empty_image_ratio: 0.0\n"
         "merges:\n"
         "  13: -1\n",
         encoding="utf-8",
@@ -226,7 +226,7 @@ def test_relabel_yolo_detect_dataset_reads_keep_prob_from_yaml(
 
 
 def test_relabel_yolo_detect_labels_keeps_target_ratio_of_empty_images(tmp_path: Path) -> None:
-    """empty_image_keep_prob=0.5 のとき、ラベル有り画像と同数のラベル無し画像を残す。"""
+    """empty_image_ratio=0.5 のとき、ラベル有り画像と同数のラベル無し画像を残す。"""
     dataset_root = tmp_path / "ratio-half"
     labels_dir = dataset_root / "labels" / "train"
     images_dir = dataset_root / "images" / "train"
@@ -244,7 +244,7 @@ def test_relabel_yolo_detect_labels_keeps_target_ratio_of_empty_images(tmp_path:
     stats = relabel_yolo_detect_labels(
         dataset_root=dataset_root,
         merges={5: -1},
-        empty_image_keep_prob=0.5,
+        empty_image_ratio=0.5,
     )
 
     # target=0.5, n_labeled=2 → keep_count=2, remove=2
@@ -273,7 +273,7 @@ def test_relabel_yolo_detect_labels_no_removal_when_ratio_already_below_target(
     stats = relabel_yolo_detect_labels(
         dataset_root=dataset_root,
         merges={5: -1},
-        empty_image_keep_prob=0.3,  # 目標 0.3 > 現在 0.2 → 削除不要
+        empty_image_ratio=0.3,  # 目標 0.3 > 現在 0.2 → 削除不要
     )
 
     assert stats["images_removed"] == 0

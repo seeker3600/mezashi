@@ -111,7 +111,7 @@ download: |
   relabel_yolo_detect_labels(
       dataset_root=sliced_dir,
       merges=yaml["merges"],
-      empty_image_keep_prob=0.05,
+      empty_image_ratio=0.05,
   )
 
   # Convert TIFF to PNG

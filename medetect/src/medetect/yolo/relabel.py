@@ -51,7 +51,7 @@ def _normalize_merges(
 def _load_relabel_config(
     config_path: str | Path,
 ) -> tuple[Path, dict[int, int | dict[str, int | float]], float]:
-    """relabel 用 YAML を読み込み、データセット root と merges と確率を返す。"""
+    """relabel 用 YAML を読み込み、データセット root と merges と目標比率を返す。"""
     config_file = Path(config_path).resolve()
     with config_file.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
@@ -63,8 +63,8 @@ def _load_relabel_config(
 
     dataset_root = _resolve_dataset_root(config["path"], config_file)
     merges = _normalize_merges(config.get("merges"))
-    empty_image_keep_prob = _normalize_probability(config.get("empty_image_keep_prob", 1.0))
-    return dataset_root, merges, empty_image_keep_prob
+    empty_image_ratio = _normalize_probability(config.get("empty_image_ratio", 1.0))
+    return dataset_root, merges, empty_image_ratio
 
 
 def _resolve_dataset_root(path_value: object, config_path: Path) -> Path:
@@ -97,7 +97,7 @@ def _normalize_probability(value: object) -> float:
     """0.0 から 1.0 の保持確率へ正規化する。"""
     probability = float(value)
     if not 0.0 <= probability <= 1.0:
-        raise ValueError("empty_image_keep_prob must be between 0.0 and 1.0.")
+        raise ValueError("empty_image_ratio must be between 0.0 and 1.0.")
     return probability
 
 
@@ -217,28 +217,28 @@ def _relabel_file(
         if geo_info is not None:
             img_width, img_height, resolution = geo_info
 
-    with label_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            new_line, changed, dropped = _relabel_line(
-                line, merges,
-                img_width=img_width, img_height=img_height,
-                resolution=resolution,
-            )
-            if dropped:
-                labels_dropped += 1
-                continue
-            if new_line is None:
-                continue
-            if changed:
-                labels_reassigned += 1
-            output_lines.append(new_line)
+    old_text = label_path.read_text(encoding="utf-8")
+    for line in old_text.splitlines():
+        new_line, changed, dropped = _relabel_line(
+            line, merges,
+            img_width=img_width, img_height=img_height,
+            resolution=resolution,
+        )
+        if dropped:
+            labels_dropped += 1
+            continue
+        if new_line is None:
+            continue
+        if changed:
+            labels_reassigned += 1
+        output_lines.append(new_line)
 
     new_text = "\n".join(output_lines)
     if output_lines:
         new_text += "\n"
 
-    old_text = label_path.read_text(encoding="utf-8")
-    label_path.write_text(new_text, encoding="utf-8")
+    if old_text != new_text:
+        label_path.write_text(new_text, encoding="utf-8")
 
     return {
         "updated": int(old_text != new_text),
@@ -273,12 +273,12 @@ def relabel_yolo_detect_labels(
     dataset_root: str | Path,
     merges: dict,
     *,
-    empty_image_keep_prob: float = 1.0,
+    empty_image_ratio: float = 1.0,
     max_workers: int | None = None,
 ) -> dict[str, int]:
     """YOLO detect データセット配下の labels を指定マッピングで再ラベルする。
 
-    empty_image_keep_prob は全画像に対するラベル無し画像の目標比率。
+    empty_image_ratio は全画像に対するラベル無し画像の目標比率。
     再ラベル後の比率が目標を超えている場合、目標比率になるまでランダムに削除する。
     すでに目標以下であれば何も削除しない。
     0.0: ラベル無し画像をすべて削除 / 1.0: 削除しない
@@ -291,7 +291,7 @@ def relabel_yolo_detect_labels(
     """
     dataset_root = Path(dataset_root).resolve()
     merges = _normalize_merges(merges)
-    empty_ratio = _normalize_probability(empty_image_keep_prob)
+    empty_ratio = _normalize_probability(empty_image_ratio)
     labels_root = dataset_root / "labels"
 
     if max_workers is None:
@@ -373,16 +373,16 @@ def relabel_yolo_detect_labels(
 def relabel_yolo_detect_dataset(
     config_path: str | Path,
     *,
-    empty_image_keep_prob: float | None = None,
+    empty_image_ratio: float | None = None,
     max_workers: int | None = None,
 ) -> dict[str, int]:
     """YOLO detect データセット YAML を読み込み、labels を再ラベルする。"""
-    dataset_root, merges, config_keep_prob = _load_relabel_config(config_path)
-    if empty_image_keep_prob is None:
-        empty_image_keep_prob = config_keep_prob
+    dataset_root, merges, config_ratio = _load_relabel_config(config_path)
+    if empty_image_ratio is None:
+        empty_image_ratio = config_ratio
     return relabel_yolo_detect_labels(
         dataset_root=dataset_root,
         merges=merges,
-        empty_image_keep_prob=empty_image_keep_prob,
+        empty_image_ratio=empty_image_ratio,
         max_workers=max_workers,
     )

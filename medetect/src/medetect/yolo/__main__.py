@@ -52,7 +52,7 @@ def main() -> None:
         help="Dataset YAML path containing path and merges.",
     )
     relabel_parser.add_argument(
-        "--empty-image-keep-prob",
+        "--empty-image-ratio",
         type=float,
         default=None,
         help=(
@@ -61,6 +61,13 @@ def main() -> None:
             "0.0 removes all empty-label images; 1.0 keeps all; 0.5 keeps at most as many "
             "empty-label images as labeled ones. Has no effect if the ratio is already below the target."
         ),
+    )
+    relabel_parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of worker threads (default: CPU count).",
     )
 
     train_parser = subparsers.add_parser("train", help="Train a YOLO model.")
@@ -85,7 +92,8 @@ def main() -> None:
     elif args.command == "relabel":
         relabel_yolo_detect_dataset(
             args.config,
-            empty_image_keep_prob=args.empty_image_keep_prob,
+            empty_image_ratio=args.empty_image_ratio,
+            max_workers=args.workers,
         )
     elif args.command == "train":
         train_yolo_model(max_retries=args.max_retries)
