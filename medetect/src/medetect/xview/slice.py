@@ -454,6 +454,14 @@ def _slice_single_geotiff(
                     ) as dst:
                         dst.write(data)
                 else:
+                    # Normalize to uint8 for PIL
+                    if data.dtype != np.uint8:
+                        info = np.iinfo(data.dtype) if np.issubdtype(data.dtype, np.integer) else None
+                        max_val = info.max if info is not None else data.max()
+                        if max_val > 0:
+                            data = (data.astype(np.float32) / max_val * 255).astype(np.uint8)
+                        else:
+                            data = data.astype(np.uint8)
                     # (bands, height, width) -> (height, width, bands) for PIL
                     if data.shape[0] == 1:
                         img_array = data[0]
@@ -505,7 +513,7 @@ def _slice_all_geotiffs(
     Parameters
     ----------
     max_workers:
-        プロセス数。``None`` の場合は CPU コア数を使用する。
+        スレッド数。``None`` の場合は CPU コア数を使用する。
     max_images:
         処理する最大画像数。デバッグ用。``None`` の場合は全件処理する。
 
@@ -522,7 +530,7 @@ def _slice_all_geotiffs(
     stats_images = 0
     stats_tiles = 0
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
                 _slice_single_geotiff,
