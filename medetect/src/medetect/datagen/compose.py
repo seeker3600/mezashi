@@ -459,6 +459,11 @@ def _place_cluster(
     cluster_buf = np.zeros((image_size, image_size, 4), dtype=np.uint8)
     placed: list[tuple[int, int, int, int, float]] = []  # (cx, cy, bw, lh, angle_rad)
 
+    # Snapshot of occupancy BEFORE this cluster starts.
+    # Each ship checks against this to avoid landing on OTHER clusters/ships,
+    # while still allowing intra-cluster side-by-side proximity.
+    pre_occupancy = occupancy.copy()
+
     for i in range(n_ships):
         # Small angle jitter within the cluster
         angle_deg = base_angle + rng.uniform(-10, 10)
@@ -501,9 +506,8 @@ def _place_cluster(
                 or cy - rh // 2 < 0 or cy + rh // 2 >= image_size):
             break  # cluster has fallen off the edge — stop here
 
-        # Water check only — within-cluster proximity is intentional
-        # (cursor already offsets by bw each step, so hulls don't overlap).
-        # Occupancy is stamped below so future ships/clusters still avoid us.
+        # Water check + occupancy check against OTHER events (not this cluster).
+        # Intra-cluster adjacency is intentional; inter-cluster overlap is not.
         half_bw = max(1, bw // 2)
         half_lh = max(1, lh // 2)
         cy0 = max(0, cy - half_lh)
@@ -511,6 +515,8 @@ def _place_cluster(
         cx0 = max(0, cx - half_bw)
         cx1 = min(image_size, cx + half_bw)
         if not water_mask[cy0:cy1, cx0:cx1].any():
+            continue
+        if pre_occupancy[cy0:cy1, cx0:cx1].any():
             continue
 
         # Porter-Duff source-over onto cluster buffer (no background yet)
