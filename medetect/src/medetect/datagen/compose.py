@@ -291,6 +291,53 @@ def _scl_path_for(visual_path: Path) -> Path:
 # ── Ship rendering pipeline ──────────────────────────────────────────────
 
 
+def _composite_rgba(
+    dst: NDArray[np.uint8],
+    src: NDArray[np.uint8],
+    x0: int,
+    y0: int,
+) -> None:
+    """Porter-Duff source-over composite *src* onto *dst* at ``(x0, y0)``.
+
+    Both arrays are RGBA uint8.  *dst* is modified in place.
+    """
+    sh, sw = src.shape[:2]
+    dh, dw = dst.shape[:2]
+
+    sx0, sy0 = max(0, -x0), max(0, -y0)
+    dx0, dy0 = max(0, x0), max(0, y0)
+    cw = min(sw - sx0, dw - dx0)
+    ch = min(sh - sy0, dh - dy0)
+    if cw <= 0 or ch <= 0:
+        return
+
+    s = src[sy0 : sy0 + ch, sx0 : sx0 + cw].astype(np.float32)
+    d = dst[dy0 : dy0 + ch, dx0 : dx0 + cw].astype(np.float32)
+
+    sa = s[:, :, 3:4] / 255.0
+    da = d[:, :, 3:4] / 255.0
+
+    out_a = sa + da * (1.0 - sa)
+    safe = np.where(out_a > 0, out_a, 1.0)
+    out_rgb = (s[:, :, :3] * sa + d[:, :, :3] * da * (1.0 - sa)) / safe
+
+    dst[dy0 : dy0 + ch, dx0 : dx0 + cw, :3] = out_rgb.clip(0, 255).astype(np.uint8)
+    dst[dy0 : dy0 + ch, dx0 : dx0 + cw, 3:4] = (out_a * 255.0).clip(0, 255).astype(np.uint8)
+
+
+def _blend_rgba_layer(
+    background: NDArray[np.uint8],
+    layer: NDArray[np.uint8],
+    alpha_factor: float,
+    water_tint: NDArray[np.float32],
+) -> None:
+    """Alpha-composite an RGBA *layer* onto an RGB *background* in place."""
+    alpha = (layer[:, :, 3:4].astype(np.float32) / 255.0) * alpha_factor
+    ship_rgb = layer[:, :, :3].astype(np.float32) * 0.82 + water_tint * 0.18
+    blended = background.astype(np.float32) * (1.0 - alpha) + ship_rgb * alpha
+    background[:] = blended.clip(0, 255).astype(np.uint8)
+
+
 def _render_ship(
     svg_text: str,
     resolution_m: float,
@@ -312,15 +359,6 @@ def _render_ship(
         img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
         rgba = np.array(img)
 
-    # Feather alpha edges so the ship contour blends naturally with the
-    # background.  A small extra blur on the alpha channel creates a soft
-    # semi-transparent fringe without affecting the interior.
-    if min(beam_px, length_px) > 4:
-        feather_r = max(0.5, min(beam_px, length_px) * 0.08)
-        alpha_ch = Image.fromarray(rgba[:, :, 3])
-        alpha_ch = alpha_ch.filter(ImageFilter.GaussianBlur(radius=feather_r))
-        rgba[:, :, 3] = np.array(alpha_ch)
-
     return rgba, ship_class, beam_px, length_px, lb_ratio
 
 
@@ -330,7 +368,7 @@ def _rotate_ship(
 ) -> NDArray[np.uint8]:
     """Rotate ship RGBA image by *angle_deg* with transparent background."""
     img = Image.fromarray(rgba)
-    rotated = img.rotate(-angle_deg, resample=Image.BILINEAR, expand=True)
+    rotated = img.rotate(-angle_deg, resample=Image.BICUBIC, expand=True)
     return np.array(rotated)
 
 
@@ -397,6 +435,16 @@ def _place_cluster(
     # Running perpendicular cursor: starts at 0, advances by each ship's beam
     cursor = 0
 
+    # Unified cluster alpha and water tint — ships in the same cluster
+    # share environmental conditions.
+    cluster_alpha = rng.uniform(*alpha_range)
+    water_tint = _sample_water_tint(background, base_cx, base_cy)
+
+    # Accumulate all cluster ships into an RGBA buffer, then blend once.
+    # This avoids double-blending artefacts in the gaps between hulls.
+    cluster_buf = np.zeros((image_size, image_size, 4), dtype=np.uint8)
+    placed: list[tuple[int, int, int, int, float]] = []  # (cx, cy, bw, lh, angle_rad)
+
     for i in range(n_ships):
         if i == 0:
             rgba, cls_name, bw, lh, lb = rgba0, cls0, bw0, lh0, lb0
@@ -413,11 +461,6 @@ def _place_cluster(
                 img = Image.fromarray(rgba)
                 img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
                 rgba = np.array(img)
-            if min(jit_bw, jit_lh) > 4:
-                feather_r = max(0.5, min(jit_bw, jit_lh) * 0.08)
-                alpha_ch = Image.fromarray(rgba[:, :, 3])
-                alpha_ch = alpha_ch.filter(ImageFilter.GaussianBlur(radius=feather_r))
-                rgba[:, :, 3] = np.array(alpha_ch)
             cls_name, bw, lh = cls0, jit_bw, jit_lh
         # Small angle jitter within the cluster
         angle_deg = base_angle + rng.uniform(-10, 10)
@@ -426,8 +469,6 @@ def _place_cluster(
         rotated = _rotate_ship(rgba, angle_deg)
 
         # Offset across the beam (side-by-side / hull-to-hull).
-        # PIL image coords: bow direction = (sin θ, -cos θ),
-        # so beam direction = (cos θ, sin θ).  Use angle_rad directly.
         offset = cursor + bw // 2
         cx = base_cx + int(offset * math.cos(angle_rad))
         cy = base_cy + int(offset * math.sin(angle_rad))
@@ -439,7 +480,7 @@ def _place_cluster(
                 or cy - rh // 2 < 0 or cy + rh // 2 >= image_size):
             break  # cluster has fallen off the edge — stop here
 
-        # Water check at target position (handle pixel offset from rotation)
+        # Water check at target position
         half_bw = max(1, bw // 2)
         half_lh = max(1, lh // 2)
         cy0 = max(0, cy - half_lh)
@@ -449,13 +490,19 @@ def _place_cluster(
         if not water_mask[cy0:cy1, cx0:cx1].any():
             continue
 
-        alpha = rng.uniform(*alpha_range)
-        water_tint = _sample_water_tint(background, cx, cy)
-        blend_ship(background, rotated, cx, cy, alpha, water_tint)
-        _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
+        # Porter-Duff source-over onto cluster buffer (no background yet)
+        _composite_rgba(cluster_buf, rotated, cx - rw // 2, cy - rh // 2)
+        placed.append((cx, cy, bw, lh, angle_rad))
 
-        corners = compute_obb_corners(float(cx), float(cy), float(bw), float(lh), angle_rad)
-        labels.append(format_obb_label(class_id, corners, image_size, image_size))
+    # Blend the combined cluster layer onto the background once.
+    if placed:
+        _blend_rgba_layer(background, cluster_buf, cluster_alpha, water_tint)
+        for cx, cy, bw, lh, angle_rad in placed:
+            _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
+            corners = compute_obb_corners(
+                float(cx), float(cy), float(bw), float(lh), angle_rad,
+            )
+            labels.append(format_obb_label(class_id, corners, image_size, image_size))
 
     return labels
 

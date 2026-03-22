@@ -7,7 +7,9 @@ import numpy as np
 import pytest
 
 from medetect.datagen.compose import (
+    _blend_rgba_layer,
     _compose_one,
+    _composite_rgba,
     _stamp_occupancy,
     blend_ship,
     compute_obb_corners,
@@ -371,15 +373,69 @@ class TestShipSizeDistribution:
         assert max(lengths) > 250, "No large ships generated"
 
 
-class TestEdgeFeathering:
-    """_render_ship で生成されるアルファ輪郭のフェザリング。"""
+class TestCompositeRgba:
+    """_composite_rgba (Porter-Duff source-over) のテスト。"""
+
+    def test_opaque_over_transparent(self) -> None:
+        """透明背景に不透明船を重ねると船の色がそのまま出る。"""
+        dst = np.zeros((20, 20, 4), dtype=np.uint8)
+        src = np.full((10, 10, 4), 200, dtype=np.uint8)
+        src[:, :, 3] = 255
+        _composite_rgba(dst, src, 5, 5)
+        assert dst[10, 10, 0] == 200
+        assert dst[10, 10, 3] == 255
+
+    def test_transparent_src_no_change(self) -> None:
+        """透明なsrcを重ねてもdstは変わらない。"""
+        dst = np.full((20, 20, 4), 100, dtype=np.uint8)
+        src = np.zeros((10, 10, 4), dtype=np.uint8)
+        _composite_rgba(dst, src, 5, 5)
+        assert dst[10, 10, 0] == 100
+
+    def test_two_ships_gap_shows_through(self) -> None:
+        """並んだ船の隣接ピクセルの間に透明部分が残る。"""
+        buf = np.zeros((50, 50, 4), dtype=np.uint8)
+        # Ship A: columns 5-14
+        ship_a = np.zeros((40, 10, 4), dtype=np.uint8)
+        ship_a[:, :, :3] = 180
+        ship_a[:, :, 3] = 255
+        # Ship B: columns 16-25 (1px gap at column 15)
+        ship_b = np.zeros((40, 10, 4), dtype=np.uint8)
+        ship_b[:, :, :3] = 160
+        ship_b[:, :, 3] = 255
+
+        _composite_rgba(buf, ship_a, 5, 5)
+        _composite_rgba(buf, ship_b, 16, 5)
+        # The gap column (15) should remain transparent
+        assert buf[20, 15, 3] == 0
+
+
+class TestBlendRgbaLayer:
+    """_blend_rgba_layer のテスト。"""
+
+    def test_blends_with_alpha_factor(self) -> None:
+        """アルファファクターが混合結果に影響する。"""
+        bg = np.full((10, 10, 3), 100, dtype=np.uint8)
+        layer = np.zeros((10, 10, 4), dtype=np.uint8)
+        layer[3:7, 3:7, :3] = 200
+        layer[3:7, 3:7, 3] = 255
+        water_tint = np.array([40.0, 50.0, 60.0], dtype=np.float32)
+
+        _blend_rgba_layer(bg, layer, 1.0, water_tint)
+        # Interior pixel should be changed from 100
+        assert bg[5, 5, 0] != 100
+        # Pixel outside the layer alpha should remain 100
+        assert bg[0, 0, 0] == 100
+
+
+class TestAntiAliasedEdges:
+    """スーパーサンプリング + PSF ブラーでエッジが滑らかになる確認。"""
 
     def test_alpha_edges_are_soft(self) -> None:
         """生成された船のアルファチャンネル端部に中間値(0<a<255)が存在する。"""
         from medetect.datagen.compose import _render_ship
 
         rng = random.Random(7)
-        # Generate a big enough ship so feathering is applied (min dim > 4)
         svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 5"'
             ' data-ship-class="destroyer" data-lb-ratio="5.0">'
@@ -387,6 +443,26 @@ class TestEdgeFeathering:
         )
         rgba, *_ = _render_ship(svg, 5.0, rng, 0.8, length_range=(80.0, 100.0))
         alpha = rgba[:, :, 3]
-        # There should be pixels with partial transparency (feathered edges)
+        # 4x supersample + PSF blur should produce anti-aliased edges
         partial = (alpha > 0) & (alpha < 255)
-        assert partial.sum() > 0, "No feathered edge pixels found"
+        assert partial.sum() > 0, "No anti-aliased edge pixels found"
+
+    def test_interior_remains_opaque(self) -> None:
+        """内部ピクセルが半透明にならない。"""
+        from medetect.datagen.compose import _render_ship
+
+        rng = random.Random(7)
+        # Large ship so interior is well defined
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 5"'
+            ' data-ship-class="destroyer" data-lb-ratio="5.0">'
+            '<polygon points="0.5,0 0,5 1,5" fill="#888"/></svg>'
+        )
+        rgba, *_ = _render_ship(svg, 2.0, rng, 0.5, length_range=(80.0, 100.0))
+        h, w = rgba.shape[:2]
+        # Grab a central strip of the hull
+        interior = rgba[h // 3 : 2 * h // 3, w // 3 : 2 * w // 3, 3]
+        if interior.size > 0:
+            assert interior.min() > 200, (
+                f"Interior alpha too low (min={interior.min()})"
+            )

@@ -152,11 +152,16 @@ def rasterize_ship_svg(
     svg_text: str,
     width_px: int,
     height_px: int,
+    *,
+    supersample: int = 4,
 ) -> NDArray[np.uint8]:
     """Render an SVG ship to an RGBA numpy array.
 
     Only handles the element types produced by :mod:`medetect.shipgen`:
     ``<polygon>``, ``<rect>``, ``<circle>``, ``<line>``.
+
+    Internally renders at *supersample*\u00d7 resolution and downscales with
+    Lanczos filtering to produce smooth, anti-aliased edges.
 
     Parameters
     ----------
@@ -166,6 +171,8 @@ def rasterize_ship_svg(
         Output width in pixels (beam direction).
     height_px
         Output height in pixels (length direction).
+    supersample
+        Internal rendering scale factor (default 4).
 
     Returns
     -------
@@ -177,16 +184,23 @@ def rasterize_ship_svg(
     vb_x, vb_y = float(vb[0]), float(vb[1])
     vb_w, vb_h = float(vb[2]), float(vb[3])
 
-    img = Image.new("RGBA", (width_px, height_px), (0, 0, 0, 0))
+    ss = max(1, supersample)
+    render_w = width_px * ss
+    render_h = height_px * ss
+
+    img = Image.new("RGBA", (render_w, render_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    sx = width_px / vb_w
-    sy = height_px / vb_h
+    sx = render_w / vb_w
+    sy = render_h / vb_h
 
     for el in root:
         tag = el.tag.split("}")[-1]  # strip XML namespace
         drawer = _DRAWER.get(tag)
         if drawer is not None:
             drawer(draw, el, sx, sy, vb_x, vb_y)
+
+    if ss > 1:
+        img = img.resize((width_px, height_px), Image.LANCZOS)
 
     return np.array(img)
