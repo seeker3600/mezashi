@@ -44,7 +44,15 @@ def make_water_mask_from_rgb(
         Pixels with mean brightness below this value are classified as water.
     """
     brightness: NDArray = rgb.mean(axis=2)
-    return brightness < brightness_threshold
+    # Water is dark AND blue-shifted (or neutral-dark).
+    # Dark land shadows tend to be brownish/greenish, so reject pixels
+    # where blue falls well below the dominant channel.
+    b = rgb[:, :, 2].astype(np.int16)
+    rg_max = np.maximum(
+        rgb[:, :, 0].astype(np.int16),
+        rgb[:, :, 1].astype(np.int16),
+    )
+    return (brightness < brightness_threshold) & (b >= rg_max - 10)
 
 
 def erode_mask(

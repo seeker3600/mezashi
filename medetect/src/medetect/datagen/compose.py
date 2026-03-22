@@ -67,6 +67,7 @@ def compute_ship_pixel_size(
     resolution_m: float,
     rng: random.Random,
     length_range: tuple[float, float] | None = None,
+    length_exponent: float = 1.0,
 ) -> tuple[int, int]:
     """Compute ship raster size ``(beam_px, length_px)`` for the tile resolution.
 
@@ -78,6 +79,11 @@ def compute_ship_pixel_size(
     length_range
         Global ``(min_m, max_m)`` clamp applied on top of the per-class range.
         When *None*, only the per-class range is used.
+    length_exponent
+        Controls the size-frequency distribution.  ``1.0`` = log-uniform
+        (default, equal probability per multiplicative factor).  ``> 1.0``
+        produces more small ships; ``< 1.0`` (towards 0) gives a more
+        uniform distribution.
     """
     lo, hi = SHIP_LENGTHS_M.get(ship_class, _DEFAULT_LENGTH_M)
     if length_range is not None:
@@ -85,11 +91,14 @@ def compute_ship_pixel_size(
         hi = min(hi, length_range[1])
         if lo > hi:
             lo, hi = length_range[0], length_range[1]
-    # Log-uniform: equal probability per multiplicative factor.
-    # E.g. 10-30 m and 30-90 m each get ~same probability mass,
-    # naturally producing more small ships than large ones.
+    # Generalized log-power distribution:
+    #   exponent=1.0 → log-uniform (equal probability per multiplicative factor)
+    #   exponent>1.0 → more small ships
+    #   exponent<1.0 → more uniform (less small-biased)
     lo = max(lo, 1.0)  # guard against log(0)
-    length_m = math.exp(rng.uniform(math.log(lo), math.log(hi)))
+    u = rng.random()
+    t = u ** length_exponent
+    length_m = lo * (hi / lo) ** t
     beam_m = length_m / lb_ratio
 
     length_px = max(3, round(length_m / resolution_m))
@@ -345,6 +354,7 @@ def _render_ship(
     blur_sigma: float,
     length_range: tuple[float, float] | None = None,
     angle_deg: float = 0.0,
+    length_exponent: float = 1.0,
 ) -> tuple[NDArray[np.uint8], str, int, int, float]:
     """Render one ship and return ``(rgba, class_name, beam_px, length_px, lb_ratio)``.
 
@@ -352,7 +362,7 @@ def _render_ship(
     """
     ship_class, lb_ratio = parse_svg_metadata(svg_text)
     beam_px, length_px = compute_ship_pixel_size(
-        ship_class, lb_ratio, resolution_m, rng, length_range,
+        ship_class, lb_ratio, resolution_m, rng, length_range, length_exponent,
     )
 
     # Rasterize with rotation applied during SVG rendering
@@ -407,6 +417,7 @@ def _place_cluster(
     image_size: int,
     background: NDArray[np.uint8],
     length_range: tuple[float, float] | None = None,
+    length_exponent: float = 1.0,
 ) -> list[str]:
     """Place a cluster of ships side-by-side.  Returns label lines.
 
@@ -422,7 +433,10 @@ def _place_cluster(
     # but we need to determine size for base-position search)
     svg_text = _pick_svg(svg_files, rng)
     # Render without rotation just to get the size
-    rgba0, cls0, bw0, lh0, lb0 = _render_ship(svg_text, resolution_m, rng, blur_sigma, length_range)
+    rgba0, cls0, bw0, lh0, lb0 = _render_ship(
+        svg_text, resolution_m, rng, blur_sigma, length_range,
+        length_exponent=length_exponent,
+    )
     angle0_rad = math.radians(base_angle)
 
     # Find a base position on available (water & unoccupied) area
@@ -454,7 +468,8 @@ def _place_cluster(
             # First ship: already rendered, apply jitter angle
             angle0_deg = angle_deg
             rotated, cls_name, bw, lh, lb = _render_ship(
-                svg_text, resolution_m, rng, blur_sigma, length_range, angle_deg=angle0_deg
+                svg_text, resolution_m, rng, blur_sigma, length_range,
+                angle_deg=angle0_deg, length_exponent=length_exponent,
             )
         else:
             # Pick a different SVG but render at ~same size as the first ship
@@ -486,7 +501,9 @@ def _place_cluster(
                 or cy - rh // 2 < 0 or cy + rh // 2 >= image_size):
             break  # cluster has fallen off the edge — stop here
 
-        # Water check at target position
+        # Water check only — within-cluster proximity is intentional
+        # (cursor already offsets by bw each step, so hulls don't overlap).
+        # Occupancy is stamped below so future ships/clusters still avoid us.
         half_bw = max(1, bw // 2)
         half_lh = max(1, lh // 2)
         cy0 = max(0, cy - half_lh)
@@ -499,12 +516,13 @@ def _place_cluster(
         # Porter-Duff source-over onto cluster buffer (no background yet)
         _composite_rgba(cluster_buf, rotated, cx - rw // 2, cy - rh // 2)
         placed.append((cx, cy, bw, lh, angle_rad))
+        # Update occupancy immediately to prevent within-cluster overlap
+        _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
 
     # Blend the combined cluster layer onto the background once.
     if placed:
         _blend_rgba_layer(background, cluster_buf, cluster_alpha, water_tint)
         for cx, cy, bw, lh, angle_rad in placed:
-            _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
             corners = compute_obb_corners(
                 float(cx), float(cy), float(bw), float(lh), angle_rad,
             )
@@ -552,6 +570,7 @@ def generate_dataset(
     ship_blur_sigma: float = 0.8,
     ship_alpha: tuple[float, float] = (0.7, 0.95),
     ship_length_range: tuple[float, float] | None = None,
+    length_exponent: float = 1.0,
     seed: int | None = None,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format.
@@ -599,6 +618,9 @@ def generate_dataset(
     ship_length_range
         Global ``(min_m, max_m)`` constraint on ship length in metres.
         Applied on top of the per-class range.  *None* = no global limit.
+    length_exponent
+        Controls the size-frequency distribution.  ``1.0`` = log-uniform
+        (default), ``> 1.0`` = more small ships, ``< 1.0`` = more uniform.
     seed
         Random seed for reproducibility.
 
@@ -653,6 +675,7 @@ def generate_dataset(
                 ship_blur_sigma=ship_blur_sigma,
                 ship_alpha=ship_alpha,
                 ship_length_range=ship_length_range,
+                length_exponent=length_exponent,
                 rng=rng,
             )
         except Exception:
@@ -712,6 +735,7 @@ def _compose_one(
     ship_blur_sigma: float,
     ship_alpha: tuple[float, float],
     ship_length_range: tuple[float, float] | None,
+    length_exponent: float,
     rng: random.Random,
     max_crop_attempts: int = 20,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
@@ -773,7 +797,11 @@ def _compose_one(
             if water_ratio >= min_water_ratio:
                 break
         else:
-            return None
+            # Land-only tile — output as negative example (no ships)
+            try:
+                return tile, [], 0  # type: ignore[possibly-undefined]
+            except NameError:
+                return None
 
     # Place ships
     # ships_per_image は「配置イベント数」= 単独船1隻またはクラスタ1グループ を何回行うか。
@@ -790,6 +818,7 @@ def _compose_one(
                 water_mask, occupancy, svg_files, ship_resolution, rng,
                 cluster_size, ship_blur_sigma, ship_alpha,
                 class_id, image_size, tile, ship_length_range,
+                length_exponent,
             )
             labels.extend(new_labels)
             if new_labels:
@@ -801,7 +830,7 @@ def _compose_one(
             # Render ship with rotation applied during SVG rasterization
             rotated, cls_name, bw, lh, lb = _render_ship(
                 svg_text, ship_resolution, rng, ship_blur_sigma, ship_length_range,
-                angle_deg=angle_deg,
+                angle_deg=angle_deg, length_exponent=length_exponent,
             )
 
             available = water_mask & ~occupancy

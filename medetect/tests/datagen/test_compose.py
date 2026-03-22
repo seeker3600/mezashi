@@ -287,6 +287,7 @@ class TestGeoScale:
             ship_blur_sigma=0.5,
             ship_alpha=(0.7, 1.0),
             ship_length_range=None,
+            length_exponent=1.0,
             rng=rng,
         )
         assert result is not None
@@ -311,6 +312,7 @@ class TestGeoScale:
             ship_blur_sigma=0.5,
             ship_alpha=(0.7, 1.0),
             ship_length_range=None,
+            length_exponent=1.0,
             rng=rng,
         )
         assert result is not None
@@ -335,6 +337,7 @@ class TestGeoScale:
             ship_blur_sigma=0.5,
             ship_alpha=(0.7, 1.0),
             ship_length_range=None,
+            length_exponent=1.0,
             rng=rng,
         )
         assert result is not None
@@ -465,4 +468,159 @@ class TestAntiAliasedEdges:
         if interior.size > 0:
             assert interior.min() > 200, (
                 f"Interior alpha too low (min={interior.min()})"
+            )
+
+
+class TestLengthExponent:
+    """length_exponent パラメータによるサイズ分布制御のテスト。"""
+
+    def test_exponent_1_is_log_uniform(self) -> None:
+        """exponent=1.0 は従来の対数一様分布と同等。"""
+        rng = random.Random(42)
+        lengths = [
+            compute_ship_pixel_size(
+                "patrol", 5.0, 1.0, rng,
+                length_range=(10.0, 150.0), length_exponent=1.0,
+            )[1]
+            for _ in range(2000)
+        ]
+        median = sorted(lengths)[len(lengths) // 2]
+        # Log-uniform median of [10, 150] ≈ sqrt(10*150) ≈ 38.7
+        assert median < 55, f"Median {median} too high for log-uniform"
+
+    def test_exponent_gt1_more_small(self) -> None:
+        """exponent>1 にすると中央値が下がる（小さい船が増える）。"""
+        rng1 = random.Random(99)
+        rng2 = random.Random(99)
+        lengths_1 = [
+            compute_ship_pixel_size(
+                "patrol", 5.0, 1.0, rng1,
+                length_range=(10.0, 150.0), length_exponent=1.0,
+            )[1]
+            for _ in range(2000)
+        ]
+        lengths_3 = [
+            compute_ship_pixel_size(
+                "patrol", 5.0, 1.0, rng2,
+                length_range=(10.0, 150.0), length_exponent=3.0,
+            )[1]
+            for _ in range(2000)
+        ]
+        median_1 = sorted(lengths_1)[len(lengths_1) // 2]
+        median_3 = sorted(lengths_3)[len(lengths_3) // 2]
+        assert median_3 < median_1, (
+            f"exponent=3 median ({median_3}) should be < exponent=1 ({median_1})"
+        )
+
+    def test_exponent_lt1_more_large(self) -> None:
+        """exponent<1 にすると中央値が上がる（大きい船が増える）。"""
+        rng1 = random.Random(7)
+        rng2 = random.Random(7)
+        lengths_1 = [
+            compute_ship_pixel_size(
+                "patrol", 5.0, 1.0, rng1,
+                length_range=(10.0, 150.0), length_exponent=1.0,
+            )[1]
+            for _ in range(2000)
+        ]
+        lengths_05 = [
+            compute_ship_pixel_size(
+                "patrol", 5.0, 1.0, rng2,
+                length_range=(10.0, 150.0), length_exponent=0.3,
+            )[1]
+            for _ in range(2000)
+        ]
+        median_1 = sorted(lengths_1)[len(lengths_1) // 2]
+        median_05 = sorted(lengths_05)[len(lengths_05) // 2]
+        assert median_05 > median_1, (
+            f"exponent=0.3 median ({median_05}) should be > exponent=1 ({median_1})"
+        )
+
+
+class TestLandOnlyNegativeExample:
+    """陸地のみのタイルがネガティブサンプル（船なし）として出力されるテスト。"""
+
+    @pytest.fixture()
+    def land_only_tif(self, tmp_path: "pathlib.Path") -> "pathlib.Path":
+        """水域なし（全面陸地相当）の GeoTIFF を生成する。"""
+        import pathlib
+
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.transform import from_bounds
+
+        tif_path = tmp_path / "land_visual.tif"
+        size = 200
+        transform = from_bounds(0, 0, 100 * size, 100 * size, size, size)
+        # Bright brownish land — clearly not water
+        data = np.full((3, size, size), 0, dtype=np.uint8)
+        data[0, :, :] = 120  # R
+        data[1, :, :] = 100  # G
+        data[2, :, :] = 70   # B
+        with rasterio.open(
+            tif_path,
+            "w",
+            driver="GTiff",
+            height=size,
+            width=size,
+            count=3,
+            dtype="uint8",
+            crs=CRS.from_epsg(32654),
+            transform=transform,
+        ) as dst:
+            dst.write(data)
+        return tif_path
+
+    def test_land_tile_returns_negative_example(
+        self, land_only_tif: "pathlib.Path"
+    ) -> None:
+        """水域なしタイルが船なし（ラベル空）で返る。"""
+        rng = random.Random(42)
+        result = _compose_one(
+            tif_path=land_only_tif,
+            svg_files=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(3, 5),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.3,
+            ship_blur_sigma=0.5,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=rng,
+        )
+        assert result is not None, "Land-only tile should return (tile, [], 0), not None"
+        tile, labels, n_clusters = result
+        assert tile.shape == (64, 64, 3)
+        assert labels == []
+        assert n_clusters == 0
+
+
+class TestOverlapPrevention:
+    """船の重なり防止のテスト。"""
+
+    def test_find_water_position_avoids_occupied(self) -> None:
+        """占有マスクが考慮されて既存船との重複を避ける。"""
+        water = np.ones((200, 200), dtype=bool)
+        occupancy = np.zeros((200, 200), dtype=bool)
+        # Occupy a large area in the center
+        _stamp_occupancy(occupancy, cx=100, cy=100, w=60, h=120, angle_rad=0.0)
+        available = water & ~occupancy
+        rng = random.Random(0)
+        positions = []
+        for _ in range(50):
+            pos = find_water_position(
+                available, ship_w=10, ship_h=20, angle_rad=0.0, rng=rng,
+            )
+            if pos is not None:
+                positions.append(pos)
+        # All found positions should be outside the occupied area
+        for cx, cy in positions:
+            assert not (70 <= cx <= 130 and 40 <= cy <= 160), (
+                f"Ship placed at ({cx}, {cy}) inside occupied zone"
             )

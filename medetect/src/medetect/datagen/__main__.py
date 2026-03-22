@@ -122,6 +122,17 @@ def main() -> None:
         help="Global maximum ship length in metres. Default: per-class maximum.",
     )
     parser.add_argument(
+        "--length_exponent",
+        type=float,
+        default=1.0,
+        help=(
+            "Controls the ship size-frequency distribution. "
+            "1.0 = log-uniform (default, naturally more small ships). "
+            "> 1.0 = even more small ships. "
+            "< 1.0 toward 0 = more uniform (less small-biased)."
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -164,6 +175,7 @@ def main() -> None:
         min_water_ratio=args.min_water_ratio,
         ship_blur_sigma=args.ship_blur_sigma,
         ship_length_range=ship_length_range,
+        length_exponent=args.length_exponent,
         seed=args.seed,
     )
 

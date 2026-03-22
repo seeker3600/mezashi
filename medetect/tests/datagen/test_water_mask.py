@@ -75,3 +75,21 @@ class TestMakeWaterMaskFromRgb:
         rgb = np.array([[[200, 190, 180]]], dtype=np.uint8)
         mask = make_water_mask_from_rgb(rgb)
         assert not mask[0, 0]
+
+    def test_dark_land_shadow_excluded(self) -> None:
+        """暗い陸地の影（茶色系）は水域に含まれない。"""
+        rgb = np.array([[[40, 35, 20]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert not mask[0, 0]
+
+    def test_dark_vegetation_excluded(self) -> None:
+        """暗い植生（緑優勢）は水域に含まれない。"""
+        rgb = np.array([[[15, 30, 15]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert not mask[0, 0]
+
+    def test_neutral_dark_classified_as_water(self) -> None:
+        """中性的な暗いピクセル（ほぼ黒）は水域に含む。"""
+        rgb = np.array([[[12, 14, 13]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert mask[0, 0]
