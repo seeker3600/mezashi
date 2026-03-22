@@ -25,6 +25,8 @@ import logging
 import math
 import os
 import random
+import re
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -638,3 +640,83 @@ def slice_training_images(
         stats_images, stats_tiles,
     )
     return {"images_processed": stats_images, "tiles_created": stats_tiles}
+
+
+def split_sliced_tiles(
+    images_train_dir: str | Path,
+    *,
+    weights: tuple[float, float] = (0.9, 0.1),
+    seed: int = 0,
+) -> tuple[int, int]:
+    """スライスタイルをソース画像単位で train/val に分割する。
+
+    ultralytics の ``autosplit`` と異なり、同じ元画像から生成されたタイルが
+    train と val に混在することを防ぐ（データリーケージ防止）。
+
+    分割結果は ``images_train_dir`` の親ディレクトリ (``images/``) に
+    ``autosplit_train.txt`` と ``autosplit_val.txt`` として保存される。
+    各行の形式は ultralytics の ``autosplit`` に準拠し、
+    ``./train/{tile_filename}`` となる。
+
+    Parameters
+    ----------
+    images_train_dir:
+        スライス済みタイルが格納された ``images/train`` ディレクトリのパス。
+    weights:
+        ``(train比率, val比率)`` のタプル。デフォルト ``(0.9, 0.1)``。
+    seed:
+        乱数シード。デフォルト ``0``。
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(train タイル数, val タイル数)``。
+    """
+    images_train_dir = Path(images_train_dir)
+    images_dir = images_train_dir.parent
+
+    tile_files = sorted(
+        f for f in images_train_dir.iterdir()
+        if f.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+    )
+
+    # ソース画像ごとにタイルをグループ化（タイル名: {source_stem}_{row}_{col}）
+    stem_to_tiles: dict[str, list[Path]] = defaultdict(list)
+    pattern = re.compile(r"^(.+)_\d+_\d+$")
+    for tile in tile_files:
+        m = pattern.match(tile.stem)
+        source_stem = m.group(1) if m else tile.stem
+        stem_to_tiles[source_stem].append(tile)
+
+    # ソース画像単位で train/val に分割
+    stems = sorted(stem_to_tiles.keys())
+    rng = random.Random(seed)
+    rng.shuffle(stems)
+    n_val = max(1, round(len(stems) * weights[1])) if stems else 0
+    val_stems = set(stems[:n_val])
+    train_stems = set(stems[n_val:])
+
+    # ultralytics autosplit 互換のテキストファイルを書き出す
+    autosplit_train = images_dir / "autosplit_train.txt"
+    autosplit_val = images_dir / "autosplit_val.txt"
+
+    train_count = 0
+    val_count = 0
+
+    with autosplit_train.open("w") as f_train:
+        for stem in sorted(train_stems):
+            for tile in sorted(stem_to_tiles[stem]):
+                f_train.write(f"./train/{tile.name}\n")
+                train_count += 1
+
+    with autosplit_val.open("w") as f_val:
+        for stem in sorted(val_stems):
+            for tile in sorted(stem_to_tiles[stem]):
+                f_val.write(f"./train/{tile.name}\n")
+                val_count += 1
+
+    logger.info(
+        "分割完了 — train: %d タイル (%d 元画像), val: %d タイル (%d 元画像)",
+        train_count, len(train_stems), val_count, len(val_stems),
+    )
+    return train_count, val_count

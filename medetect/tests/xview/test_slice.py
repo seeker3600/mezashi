@@ -16,6 +16,7 @@ from medetect.xview.slice import (
     _compute_tile_transform,
     _iter_tile_windows,
     _parse_yolo_labels,
+    split_sliced_tiles,
 )
 
 
@@ -517,3 +518,88 @@ class TestComputeTileTransform:
         assert result.d == pytest.approx(0.1 * scale)
         assert result.e == pytest.approx(-0.5 * scale)
         assert result.f == pytest.approx(expected_f)
+
+
+# ---------------------------------------------------------------------------
+# split_sliced_tiles
+# ---------------------------------------------------------------------------
+
+class TestSplitSlicedTiles:
+    """split_sliced_tiles のテスト。"""
+
+    def _make_tiles(self, images_train: Path, stems: list[str], rows: int = 2, cols: int = 2) -> None:
+        """テスト用タイルファイル（空 PNG）を作成する。"""
+        images_train.mkdir(parents=True, exist_ok=True)
+        for stem in stems:
+            for r in range(rows):
+                for c in range(cols):
+                    (images_train / f"{stem}_{r}_{c}.png").touch()
+
+    def test_no_leakage(self, tmp_path: Path) -> None:
+        """同じソース画像のタイルが train/val に混在しないことを確認する。"""
+        images_train = tmp_path / "images" / "train"
+        # 10 ソース画像 × 4 タイル = 40 タイル
+        stems = [f"img{i:04d}" for i in range(10)]
+        self._make_tiles(images_train, stems)
+
+        split_sliced_tiles(images_train, weights=(0.9, 0.1), seed=0)
+
+        train_txt = tmp_path / "images" / "autosplit_train.txt"
+        val_txt = tmp_path / "images" / "autosplit_val.txt"
+        assert train_txt.exists()
+        assert val_txt.exists()
+
+        def get_sources(txt: Path) -> set[str]:
+            import re
+            pattern = re.compile(r"^(.+)_\d+_\d+\.png$")
+            sources = set()
+            for line in txt.read_text().splitlines():
+                name = Path(line.strip()).name
+                m = pattern.match(name)
+                if m:
+                    sources.add(m.group(1))
+            return sources
+
+        train_sources = get_sources(train_txt)
+        val_sources = get_sources(val_txt)
+        # ソース画像が train/val 間でオーバーラップしないこと
+        assert train_sources.isdisjoint(val_sources)
+        # 全ソース画像が網羅されていること
+        assert train_sources | val_sources == set(stems)
+
+    def test_total_tile_count(self, tmp_path: Path) -> None:
+        """train + val のタイル数が全タイル数と一致する。"""
+        images_train = tmp_path / "images" / "train"
+        stems = [f"src{i}" for i in range(5)]
+        self._make_tiles(images_train, stems, rows=3, cols=3)  # 5 × 9 = 45 タイル
+
+        train_count, val_count = split_sliced_tiles(images_train, weights=(0.8, 0.2), seed=42)
+
+        assert train_count + val_count == 45
+
+    def test_output_format_compatible_with_autosplit(self, tmp_path: Path) -> None:
+        """出力パスが ultralytics autosplit 互換の形式（./train/...）であること。"""
+        images_train = tmp_path / "images" / "train"
+        self._make_tiles(images_train, ["abc", "def"])
+
+        split_sliced_tiles(images_train, seed=0)
+
+        for txt in [
+            tmp_path / "images" / "autosplit_train.txt",
+            tmp_path / "images" / "autosplit_val.txt",
+        ]:
+            if txt.stat().st_size > 0:
+                for line in txt.read_text().splitlines():
+                    assert line.startswith("./train/"), f"不正なパス形式: {line!r}"
+                    assert line.endswith(".png"), f"PNG 以外のファイル: {line!r}"
+
+    def test_single_source_goes_to_val(self, tmp_path: Path) -> None:
+        """ソース画像が 1 枚の場合は val に 1 枚以上割り当てられる。"""
+        images_train = tmp_path / "images" / "train"
+        self._make_tiles(images_train, ["only"])
+
+        train_count, val_count = split_sliced_tiles(images_train, weights=(0.9, 0.1), seed=0)
+
+        # 1 ソース → val に割り当てられ、train は 0
+        assert val_count == 4
+        assert train_count == 0
