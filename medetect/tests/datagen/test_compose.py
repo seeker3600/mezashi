@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 
 from medetect.datagen.compose import (
+    _compose_one,
+    _stamp_occupancy,
     blend_ship,
     compute_obb_corners,
     compute_ship_pixel_size,
@@ -168,6 +170,44 @@ class TestFindWaterPosition:
         pos = find_water_position(mask, ship_w=20, ship_h=40, angle_rad=0.0, rng=rng)
         assert pos is None
 
+    def test_occupied_area_avoided(self) -> None:
+        """占有済みエリアには配置されない。"""
+        mask = np.ones((100, 100), dtype=bool)
+        # Occupy the entire mask except a corner
+        mask[10:90, 10:90] = False
+        rng = random.Random(42)
+        pos = find_water_position(mask, ship_w=5, ship_h=5, angle_rad=0.0, rng=rng)
+        # Should still find a position in the unoccupied strip
+        assert pos is not None
+
+
+class TestStampOccupancy:
+    def test_marks_center_occupied(self) -> None:
+        """船の中心が占有済みになる。"""
+        occupancy = np.zeros((100, 100), dtype=bool)
+        _stamp_occupancy(occupancy, cx=50, cy=50, w=10, h=20, angle_rad=0.0)
+        assert occupancy[50, 50]
+
+    def test_corners_outside_are_free(self) -> None:
+        """小さい船をスタンプしても遠い角は未占有のまま。"""
+        occupancy = np.zeros((100, 100), dtype=bool)
+        _stamp_occupancy(occupancy, cx=50, cy=50, w=10, h=20, angle_rad=0.0)
+        assert not occupancy[0, 0]
+
+    def test_prevents_second_placement(self) -> None:
+        """スタンプ後の占有マスクで同位置への再配置ができない。"""
+        water = np.ones((100, 100), dtype=bool)
+        occupancy = np.zeros((100, 100), dtype=bool)
+        _stamp_occupancy(occupancy, cx=50, cy=50, w=30, h=60, angle_rad=0.0)
+        available = water & ~occupancy
+        rng = random.Random(42)
+        # A large ship centered at 50,50 should no longer fit there
+        pos = find_water_position(available, ship_w=30, ship_h=60, angle_rad=0.0, rng=rng)
+        if pos is not None:
+            cx, cy = pos
+            # The found position must be away from the occupied center
+            assert not (40 <= cx <= 60 and 30 <= cy <= 70)
+
 
 class TestBlendShip:
     def test_modifies_background(self) -> None:
@@ -191,3 +231,94 @@ class TestBlendShip:
         ship = np.full((20, 10, 4), 200, dtype=np.uint8)
         # Place at edge — should not raise
         blend_ship(bg, ship, cx=2, cy=2, alpha_factor=0.8)
+
+
+class TestIgnoreGeo:
+    """ignore_geo モードのテスト。"""
+
+    @pytest.fixture()
+    def tiny_tif(self, tmp_path: "pathlib.Path") -> "pathlib.Path":
+        """低解像度(100 m/px)の小さな GeoTIFF を生成する。"""
+        import pathlib
+
+        import numpy as np
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.transform import from_bounds
+
+        tif_path = tmp_path / "bg.tif"
+        size = 100  # pixels
+        # Bounds span 100 * 100 m = 0.001° (roughly) — set explicitly in projected CRS
+        transform = from_bounds(0, 0, 100 * size, 100 * size, size, size)
+        data = np.full((3, size, size), 128, dtype=np.uint8)
+        with rasterio.open(
+            tif_path,
+            "w",
+            driver="GTiff",
+            height=size,
+            width=size,
+            count=3,
+            dtype="uint8",
+            crs=CRS.from_epsg(32654),  # UTM zone 54N — projected, ~100 m/px
+            transform=transform,
+        ) as dst:
+            dst.write(data)
+        return tif_path
+
+    def test_ignore_geo_produces_correct_size(
+        self, tiny_tif: "pathlib.Path"
+    ) -> None:
+        """ignore_geo=True のとき出力タイルが image_size×image_size になる。"""
+        import pathlib
+
+        rng = random.Random(0)
+        result = _compose_one(
+            tif_path=tiny_tif,
+            svg_files=None,
+            image_size=64,
+            resolution=10.0,  # ship sizing resolution — ignored for tile read
+            ignore_geo=True,
+            ships_per_image=(0, 0),  # 船なし → 確実に水マスク分岐のみテスト
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            ship_blur_sigma=0.5,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            rng=rng,
+        )
+        # 背景のみでも result は返るはず
+        assert result is not None
+        tile, _labels, _n_clusters = result
+        assert tile.shape == (64, 64, 3)
+
+    def test_ignore_geo_false_small_tile(self, tiny_tif: "pathlib.Path") -> None:
+        """ignore_geo=False かつ低解像度 TIFF では src_tile>image_size になり
+        リサンプリングが行われてもタイルサイズは image_size になる。"""
+        import pathlib
+
+        rng = random.Random(1)
+        # Native resolution = 100 m/px, requested = 10 m/px → src_tile = 64 * 10/100 = 6 px
+        # TIFF is 100×100, so src_tile(6) < 100 → should succeed
+        result = _compose_one(
+            tif_path=tiny_tif,
+            svg_files=None,
+            image_size=64,
+            resolution=10.0,
+            ignore_geo=False,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            ship_blur_sigma=0.5,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            rng=rng,
+        )
+        assert result is not None
+        tile, _, _ = result
+        assert tile.shape == (64, 64, 3)

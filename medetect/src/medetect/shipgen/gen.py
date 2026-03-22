@@ -77,10 +77,12 @@ def _write_struct_svg(
     y0 = x0 * lb_ratio
     y1 = x1 * lb_ratio
     fill = colors.struct_css(spec.brightness_off, rng)
+    stroke = colors.struct_css(spec.brightness_off - 25, rng)
+    sw = min(er - el, y1 - y0) * 0.06
     out.write(
         f'  <rect x="{_f(el)}" y="{_f(y0)}" '
         f'width="{_f(er - el)}" height="{_f(y1 - y0)}" '
-        f'fill="{fill}"/>\n'
+        f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sw)}"/>\n'
     )
 
 
@@ -316,9 +318,13 @@ def generate_ship_svg(
     )
 
     # 1) Hull polygon
+    hull_stroke = colors.detail_css(-20)
+    hull_sw = 0.5 / lb_ratio * 0.4
     out.write(
         f'  <polygon points="{_polygon_attr(hull_pts)}" '
-        f'fill="{colors.hull_css()}"/>\n'
+        f'fill="{colors.hull_css()}" '
+        f'stroke="{hull_stroke}" stroke-width="{_f(hull_sw)}" '
+        f'stroke-linejoin="round"/>\n'
     )
 
     # 2) Superstructures

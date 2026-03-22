@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from numpy.typing import NDArray
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 from rasterio.windows import Window
 from tqdm import tqdm
 
@@ -321,11 +321,33 @@ def _rotate_ship(
     return np.array(rotated)
 
 
+def _stamp_occupancy(
+    occupancy: NDArray[np.bool_],
+    cx: int,
+    cy: int,
+    w: int,
+    h: int,
+    angle_rad: float,
+    margin: int = 2,
+) -> None:
+    """回転 OBB フットプリント（+ margin px）を占有済みとしてマークする（in-place）。"""
+    corners = compute_obb_corners(
+        float(cx), float(cy),
+        float(w + margin * 2), float(h + margin * 2),
+        angle_rad,
+    )
+    img = Image.fromarray(occupancy.astype(np.uint8) * 255)
+    draw = ImageDraw.Draw(img)
+    draw.polygon(corners, fill=255)
+    occupancy[:] = np.array(img) > 0
+
+
 # ── Cluster logic ─────────────────────────────────────────────────────────
 
 
 def _place_cluster(
     water_mask: NDArray[np.bool_],
+    occupancy: NDArray[np.bool_],
     svg_files: list[Path] | None,
     resolution_m: float,
     rng: random.Random,
@@ -337,20 +359,30 @@ def _place_cluster(
     background: NDArray[np.uint8],
     length_range: tuple[float, float] | None = None,
 ) -> list[str]:
-    """Place a cluster of ships side-by-side.  Returns label lines."""
+    """Place a cluster of ships side-by-side.  Returns label lines.
+
+    Ships are laid out perpendicular to the heading direction so their
+    hulls touch.  Occupancy is updated after each placed ship to prevent
+    overlap with subsequently placed individual ships.
+    """
     n_ships = rng.randint(*cluster_size_range)
     base_angle = rng.uniform(0, 360)
     labels: list[str] = []
 
-    # Find a base position
+    # Render the first ship to determine size for base-position search
     svg0 = _pick_svg(svg_files, rng)
     rgba0, cls0, bw0, lh0, lb0 = _render_ship(svg0, resolution_m, rng, blur_sigma, length_range)
     angle0_rad = math.radians(base_angle)
-    pos = find_water_position(water_mask, bw0 * 2, lh0 * 2, angle0_rad, rng)
+
+    # Find a base position on available (water & unoccupied) area
+    available = water_mask & ~occupancy
+    pos = find_water_position(available, bw0 * 2, lh0 * 2, angle0_rad, rng)
     if pos is None:
         return labels
 
     base_cx, base_cy = pos
+    # Running perpendicular cursor: starts at 0, advances by each ship's beam
+    cursor = 0
 
     for i in range(n_ships):
         svg = _pick_svg(svg_files, rng) if i > 0 else svg0
@@ -364,22 +396,34 @@ def _place_cluster(
 
         rotated = _rotate_ship(rgba, angle_deg)
 
-        # Offset perpendicular to heading for side-by-side placement
-        perp_angle = angle_rad + math.pi / 2
-        offset = i * (bw + rng.randint(0, max(1, bw // 3)))
-        cx = base_cx + int(offset * math.cos(perp_angle))
-        cy = base_cy + int(offset * math.sin(perp_angle))
+        # Offset across the beam (side-by-side / hull-to-hull).
+        # PIL image coords: bow direction = (sin θ, -cos θ),
+        # so beam direction = (cos θ, sin θ).  Use angle_rad directly.
+        offset = cursor + bw // 2
+        cx = base_cx + int(offset * math.cos(angle_rad))
+        cy = base_cy + int(offset * math.sin(angle_rad))
+        cursor += bw + rng.randint(0, 1)  # hull-to-hull, almost touching
 
-        # Boundary check
+        # Image boundary check
         rh, rw = rotated.shape[:2]
         if (cx - rw // 2 < 0 or cx + rw // 2 >= image_size
                 or cy - rh // 2 < 0 or cy + rh // 2 >= image_size):
+            break  # cluster has fallen off the edge — stop here
+
+        # Water check at target position (handle pixel offset from rotation)
+        half_bw = max(1, bw // 2)
+        half_lh = max(1, lh // 2)
+        cy0 = max(0, cy - half_lh)
+        cy1 = min(image_size, cy + half_lh)
+        cx0 = max(0, cx - half_bw)
+        cx1 = min(image_size, cx + half_bw)
+        if not water_mask[cy0:cy1, cx0:cx1].any():
             continue
 
         alpha = rng.uniform(*alpha_range)
-        # Water colour tinting from surrounding pixels
         water_tint = _sample_water_tint(background, cx, cy)
         blend_ship(background, rotated, cx, cy, alpha, water_tint)
+        _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
 
         corners = compute_obb_corners(float(cx), float(cy), float(bw), float(lh), angle_rad)
         labels.append(format_obb_label(class_id, corners, image_size, image_size))
@@ -416,6 +460,7 @@ def generate_dataset(
     ship_dir: Path | str | None = None,
     image_size: int = 640,
     resolution: float | None = None,
+    ignore_geo: bool = False,
     ships_per_image: tuple[int, int] = (0, 10),
     cluster_prob: float = 0.15,
     cluster_size: tuple[int, int] = (2, 5),
@@ -446,6 +491,11 @@ def generate_dataset(
         Output tile edge size in pixels.
     resolution
         Target resolution in m/px.  *None* uses the native GeoTIFF resolution.
+        When *ignore_geo* is True, this is used only for ship size calculation.
+    ignore_geo
+        When True, ignore the TIFF\'s geographic coordinate system and use 1 input
+        pixel = 1 output pixel (no resampling).  ``resolution`` still controls ship
+        sizes in metres.
     ships_per_image
         ``(min, max)`` number of ships per tile.
     cluster_prob
@@ -509,6 +559,7 @@ def generate_dataset(
                 svg_files=svg_files,
                 image_size=image_size,
                 resolution=resolution,
+                ignore_geo=ignore_geo,
                 ships_per_image=ships_per_image,
                 cluster_prob=cluster_prob,
                 cluster_size=cluster_size,
@@ -567,6 +618,7 @@ def _compose_one(
     svg_files: list[Path] | None,
     image_size: int,
     resolution: float | None,
+    ignore_geo: bool,
     ships_per_image: tuple[int, int],
     cluster_prob: float,
     cluster_size: tuple[int, int],
@@ -581,18 +633,24 @@ def _compose_one(
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image.  Returns ``(tile, labels, n_clusters)``."""
     with rasterio.open(tif_path) as src:
-        native_res = (src.res[0] + src.res[1]) / 2.0
-
-        # Handle geographic CRS (degree units)
-        if src.crs and src.crs.is_geographic:
-            center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
-            native_res = native_res * 111320.0 * math.cos(math.radians(center_lat))
-
-        if resolution is not None:
-            src_tile = max(1, round(image_size * resolution / native_res))
-        else:
+        if ignore_geo:
+            # Use TIFF pixels as-is; resolution applies only to ship sizing.
             src_tile = image_size
-            resolution = native_res
+            ship_resolution = resolution if resolution is not None else 10.0
+        else:
+            native_res = (src.res[0] + src.res[1]) / 2.0
+
+            # Handle geographic CRS (degree units)
+            if src.crs and src.crs.is_geographic:
+                center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
+                native_res = native_res * 111320.0 * math.cos(math.radians(center_lat))
+
+            if resolution is not None:
+                src_tile = max(1, round(image_size * resolution / native_res))
+            else:
+                src_tile = image_size
+                resolution = native_res
+            ship_resolution = resolution  # type: ignore[assignment]
 
         for _ in range(max_crop_attempts):
             if src.width <= src_tile or src.height <= src_tile:
@@ -617,7 +675,9 @@ def _compose_one(
 
             # Water mask
             scl_file = _scl_path_for(tif_path)
-            scl = _read_scl_tile(scl_file, col, row, src_tile, image_size)
+            scl_col = 0 if ignore_geo else col
+            scl_row = 0 if ignore_geo else row
+            scl = _read_scl_tile(scl_file, scl_col, scl_row, src_tile, image_size)
             if scl is not None:
                 water_mask = make_water_mask_from_scl(scl)
             else:
@@ -632,39 +692,41 @@ def _compose_one(
             return None
 
     # Place ships
-    n_ships = rng.randint(*ships_per_image)
+    # ships_per_image は「配置イベント数」= 単独船1隻またはクラスタ1グループ を何回行うか。
+    n_events = rng.randint(*ships_per_image)
+    occupancy = np.zeros((image_size, image_size), dtype=bool)
     labels: list[str] = []
     n_clusters = 0
-    placed = 0
 
-    while placed < n_ships:
-        is_cluster = rng.random() < cluster_prob and (n_ships - placed) >= cluster_size[0]
+    for _ in range(n_events):
+        is_cluster = rng.random() < cluster_prob
 
         if is_cluster:
             new_labels = _place_cluster(
-                water_mask, svg_files, resolution, rng,
+                water_mask, occupancy, svg_files, ship_resolution, rng,
                 cluster_size, ship_blur_sigma, ship_alpha,
                 class_id, image_size, tile, ship_length_range,
             )
             labels.extend(new_labels)
-            placed += max(len(new_labels), cluster_size[0])
             if new_labels:
                 n_clusters += 1
         else:
             svg_text = _pick_svg(svg_files, rng)
             rgba, cls_name, bw, lh, lb = _render_ship(
-                svg_text, resolution, rng, ship_blur_sigma, ship_length_range,
+                svg_text, ship_resolution, rng, ship_blur_sigma, ship_length_range,
             )
             angle_deg = rng.uniform(0, 360)
             angle_rad = math.radians(angle_deg)
             rotated = _rotate_ship(rgba, angle_deg)
 
-            pos = find_water_position(water_mask, bw, lh, angle_rad, rng)
+            available = water_mask & ~occupancy
+            pos = find_water_position(available, bw, lh, angle_rad, rng)
             if pos is not None:
                 cx, cy = pos
                 alpha = rng.uniform(*ship_alpha)
                 water_tint = _sample_water_tint(tile, cx, cy)
                 blend_ship(tile, rotated, cx, cy, alpha, water_tint)
+                _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
 
                 corners = compute_obb_corners(
                     float(cx), float(cy), float(bw), float(lh), angle_rad,
@@ -672,7 +734,6 @@ def _compose_one(
                 labels.append(
                     format_obb_label(class_id, corners, image_size, image_size),
                 )
-            placed += 1
 
     return tile, labels, n_clusters
 
