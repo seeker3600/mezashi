@@ -344,14 +344,19 @@ def _render_ship(
     rng: random.Random,
     blur_sigma: float,
     length_range: tuple[float, float] | None = None,
+    angle_deg: float = 0.0,
 ) -> tuple[NDArray[np.uint8], str, int, int, float]:
-    """Render one ship and return ``(rgba, class_name, beam_px, length_px, lb_ratio)``."""
+    """Render one ship and return ``(rgba, class_name, beam_px, length_px, lb_ratio)``.
+
+    The ship is rotated during SVG rasterization (not post-hoc) for better quality.
+    """
     ship_class, lb_ratio = parse_svg_metadata(svg_text)
     beam_px, length_px = compute_ship_pixel_size(
         ship_class, lb_ratio, resolution_m, rng, length_range,
     )
 
-    rgba = rasterize_ship_svg(svg_text, beam_px, length_px)
+    # Rasterize with rotation applied during SVG rendering
+    rgba = rasterize_ship_svg(svg_text, beam_px, length_px, angle_deg=angle_deg)
 
     # Gaussian blur to simulate satellite PSF
     if blur_sigma > 0 and min(beam_px, length_px) > 2:
@@ -362,14 +367,7 @@ def _render_ship(
     return rgba, ship_class, beam_px, length_px, lb_ratio
 
 
-def _rotate_ship(
-    rgba: NDArray[np.uint8],
-    angle_deg: float,
-) -> NDArray[np.uint8]:
-    """Rotate ship RGBA image by *angle_deg* with transparent background."""
-    img = Image.fromarray(rgba)
-    rotated = img.rotate(-angle_deg, resample=Image.BICUBIC, expand=True)
-    return np.array(rotated)
+# _rotate_ship() removed: rotation now happens during SVG rasterization in _render_ship()
 
 
 def _stamp_occupancy(
@@ -420,8 +418,10 @@ def _place_cluster(
     base_angle = rng.uniform(0, 360)
     labels: list[str] = []
 
-    # Render the first ship to determine size for base-position search
+    # Pick the first ship (will be rendered with angle in the loop,
+    # but we need to determine size for base-position search)
     svg_text = _pick_svg(svg_files, rng)
+    # Render without rotation just to get the size
     rgba0, cls0, bw0, lh0, lb0 = _render_ship(svg_text, resolution_m, rng, blur_sigma, length_range)
     angle0_rad = math.radians(base_angle)
 
@@ -446,8 +446,16 @@ def _place_cluster(
     placed: list[tuple[int, int, int, int, float]] = []  # (cx, cy, bw, lh, angle_rad)
 
     for i in range(n_ships):
+        # Small angle jitter within the cluster
+        angle_deg = base_angle + rng.uniform(-10, 10)
+        angle_rad = math.radians(angle_deg)
+
         if i == 0:
-            rgba, cls_name, bw, lh, lb = rgba0, cls0, bw0, lh0, lb0
+            # First ship: already rendered, apply jitter angle
+            angle0_deg = angle_deg
+            rotated, cls_name, bw, lh, lb = _render_ship(
+                svg_text, resolution_m, rng, blur_sigma, length_range, angle_deg=angle0_deg
+            )
         else:
             # Pick a different SVG but render at ~same size as the first ship
             # (±10% jitter) so the cluster looks uniform.
@@ -456,17 +464,15 @@ def _place_cluster(
             scale = rng.uniform(0.9, 1.1)
             jit_bw = max(2, round(bw0 * scale))
             jit_lh = max(3, round(lh0 * scale))
-            rgba = rasterize_ship_svg(svg_text, jit_bw, jit_lh)
+            # Render rotated SVG
+            rotated = rasterize_ship_svg(
+                svg_text, jit_bw, jit_lh, angle_deg=angle_deg
+            )
             if blur_sigma > 0 and min(jit_bw, jit_lh) > 2:
-                img = Image.fromarray(rgba)
+                img = Image.fromarray(rotated)
                 img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
-                rgba = np.array(img)
+                rotated = np.array(img)
             cls_name, bw, lh = cls0, jit_bw, jit_lh
-        # Small angle jitter within the cluster
-        angle_deg = base_angle + rng.uniform(-10, 10)
-        angle_rad = math.radians(angle_deg)
-
-        rotated = _rotate_ship(rgba, angle_deg)
 
         # Offset across the beam (side-by-side / hull-to-hull).
         offset = cursor + bw // 2
@@ -790,12 +796,13 @@ def _compose_one(
                 n_clusters += 1
         else:
             svg_text = _pick_svg(svg_files, rng)
-            rgba, cls_name, bw, lh, lb = _render_ship(
-                svg_text, ship_resolution, rng, ship_blur_sigma, ship_length_range,
-            )
             angle_deg = rng.uniform(0, 360)
             angle_rad = math.radians(angle_deg)
-            rotated = _rotate_ship(rgba, angle_deg)
+            # Render ship with rotation applied during SVG rasterization
+            rotated, cls_name, bw, lh, lb = _render_ship(
+                svg_text, ship_resolution, rng, ship_blur_sigma, ship_length_range,
+                angle_deg=angle_deg,
+            )
 
             available = water_mask & ~occupancy
             pos = find_water_position(available, bw, lh, angle_rad, rng)

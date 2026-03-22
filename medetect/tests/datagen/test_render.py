@@ -88,3 +88,32 @@ class TestRasterizeShipSvg:
         )
         result = rasterize_ship_svg(svg, 20, 20)
         assert result[10, 10, 3] > 0
+
+    def test_rotation_angle_deg_zero(self) -> None:
+        """angle_deg=0 は無回転と同じ結果。"""
+        result_no_angle = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80)
+        result_zero_angle = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80, angle_deg=0.0)
+        np.testing.assert_array_almost_equal(result_no_angle, result_zero_angle)
+
+    def test_rotation_90_returns_rotated_bbox(self) -> None:
+        """90度回転で幅と高さが入れ替わる。"""
+        result = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80, angle_deg=90.0)
+        # viewBox 0 0 1 4, width_px=20, height_px=80
+        # 90° rotation: out_w=80, out_h=20 → shape=(20, 80, 4)
+        assert result.shape == (20, 80, 4)
+        assert result.dtype == np.uint8
+
+    def test_rotation_90_preserves_pixels(self) -> None:
+        """90度回転後も船のピクセルが存在する。"""
+        result = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80, angle_deg=90.0)
+        assert (result[:, :, 3] > 0).sum() > 0
+
+    def test_rotation_45_expands_bbox(self) -> None:
+        """45度回転で出力bboxが元と異なるサイズになる。"""
+        result_0 = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80)
+        result_45 = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80, angle_deg=45.0)
+        # 20×80 ship at 45°: out = round((20+80)*cos45) ≈ 71 for both axes
+        assert result_45.shape[1] > result_0.shape[1]  # width grows (71 > 20)
+        assert result_45.shape[0] != result_0.shape[0]  # height changes
+        # Ship pixels should be preserved
+        assert (result_45[:, :, 3] > 0).sum() > 0
