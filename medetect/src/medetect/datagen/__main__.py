@@ -128,12 +128,15 @@ def main() -> None:
         help="Random seed for reproducibility.",
     )
     parser.add_argument(
-        "--ignore_geo",
-        action="store_true",
-        default=False,
+        "--geo_scale",
+        type=float,
+        default=None,
         help=(
-            "Ignore the TIFF geographic CRS and use 1 input pixel = 1 output pixel. "
-            "--resolution still controls ship sizes in metres (default: 10.0 m/px)."
+            "Ignore TIFF geographic CRS and use a fixed pixel scale. "
+            "1.0 = 1 input pixel per output pixel, "
+            "2.0 = 2 input pixels per output pixel (zoom out), "
+            "0.5 = upsample 2x (zoom in). "
+            "--resolution still controls ship sizes in metres."
         ),
     )
 
@@ -152,7 +155,7 @@ def main() -> None:
         ship_dir=args.ship_dir,
         image_size=args.image_size,
         resolution=args.resolution,
-        ignore_geo=args.ignore_geo,
+        geo_scale=args.geo_scale,
         ships_per_image=args.ships_per_image,
         cluster_prob=args.cluster_prob,
         cluster_size=args.cluster_size,

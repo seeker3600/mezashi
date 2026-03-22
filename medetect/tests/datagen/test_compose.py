@@ -233,8 +233,8 @@ class TestBlendShip:
         blend_ship(bg, ship, cx=2, cy=2, alpha_factor=0.8)
 
 
-class TestIgnoreGeo:
-    """ignore_geo モードのテスト。"""
+class TestGeoScale:
+    """geo_scale モードのテスト。"""
 
     @pytest.fixture()
     def tiny_tif(self, tmp_path: "pathlib.Path") -> "pathlib.Path":
@@ -265,20 +265,18 @@ class TestIgnoreGeo:
             dst.write(data)
         return tif_path
 
-    def test_ignore_geo_produces_correct_size(
+    def test_geo_scale_1_produces_correct_size(
         self, tiny_tif: "pathlib.Path"
     ) -> None:
-        """ignore_geo=True のとき出力タイルが image_size×image_size になる。"""
-        import pathlib
-
+        """geo_scale=1.0 のとき出力タイルが image_size×image_size になる。"""
         rng = random.Random(0)
         result = _compose_one(
             tif_path=tiny_tif,
             svg_files=None,
             image_size=64,
-            resolution=10.0,  # ship sizing resolution — ignored for tile read
-            ignore_geo=True,
-            ships_per_image=(0, 0),  # 船なし → 確実に水マスク分岐のみテスト
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
             cluster_prob=0.0,
             cluster_size=(2, 2),
             class_id=0,
@@ -289,25 +287,19 @@ class TestIgnoreGeo:
             ship_length_range=None,
             rng=rng,
         )
-        # 背景のみでも result は返るはず
         assert result is not None
         tile, _labels, _n_clusters = result
         assert tile.shape == (64, 64, 3)
 
-    def test_ignore_geo_false_small_tile(self, tiny_tif: "pathlib.Path") -> None:
-        """ignore_geo=False かつ低解像度 TIFF では src_tile>image_size になり
-        リサンプリングが行われてもタイルサイズは image_size になる。"""
-        import pathlib
-
+    def test_geo_scale_none_uses_crs(self, tiny_tif: "pathlib.Path") -> None:
+        """geo_scale=None のときは CRS ベースの解像度変換が行われる。"""
         rng = random.Random(1)
-        # Native resolution = 100 m/px, requested = 10 m/px → src_tile = 64 * 10/100 = 6 px
-        # TIFF is 100×100, so src_tile(6) < 100 → should succeed
         result = _compose_one(
             tif_path=tiny_tif,
             svg_files=None,
             image_size=64,
             resolution=10.0,
-            ignore_geo=False,
+            geo_scale=None,
             ships_per_image=(0, 0),
             cluster_prob=0.0,
             cluster_size=(2, 2),
@@ -322,3 +314,79 @@ class TestIgnoreGeo:
         assert result is not None
         tile, _, _ = result
         assert tile.shape == (64, 64, 3)
+
+    def test_geo_scale_05_upsamples(self, tiny_tif: "pathlib.Path") -> None:
+        """geo_scale=0.5 のとき半分のTIFFピクセルを読みアップサンプルする。"""
+        rng = random.Random(2)
+        result = _compose_one(
+            tif_path=tiny_tif,
+            svg_files=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=0.5,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            ship_blur_sigma=0.5,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            rng=rng,
+        )
+        assert result is not None
+        tile, _, _ = result
+        # src_tile = round(64 * 0.5) = 32, then resized to 64
+        assert tile.shape == (64, 64, 3)
+
+
+class TestShipSizeDistribution:
+    """compute_ship_pixel_size の長さ分布が対数一様になっているか。"""
+
+    def test_log_uniform_more_small_ships(self) -> None:
+        """10-150m 範囲で生成すると中央値が (10+150)/2=80 より小さくなる。"""
+        rng = random.Random(42)
+        lengths = []
+        for _ in range(2000):
+            _bw, lh = compute_ship_pixel_size(
+                "patrol", 5.0, 1.0, rng, length_range=(10.0, 150.0),
+            )
+            lengths.append(lh)  # at 1 m/px, length_px ≈ length_m
+        median = sorted(lengths)[len(lengths) // 2]
+        # Log-uniform median of [10, 150] = sqrt(10*150) ≈ 38.7
+        # Linear uniform median would be ~80.
+        assert median < 55, f"Median {median} too high — distribution not log-uniform"
+
+    def test_log_uniform_still_produces_large(self) -> None:
+        """大きな船もゼロではない。"""
+        rng = random.Random(0)
+        lengths = []
+        for _ in range(500):
+            _bw, lh = compute_ship_pixel_size(
+                "carrier", 5.0, 1.0, rng, length_range=(10.0, 300.0),
+            )
+            lengths.append(lh)
+        # carrier range (260-300) ∩ length_range (10-300) → 260-300m
+        assert max(lengths) > 250, "No large ships generated"
+
+
+class TestEdgeFeathering:
+    """_render_ship で生成されるアルファ輪郭のフェザリング。"""
+
+    def test_alpha_edges_are_soft(self) -> None:
+        """生成された船のアルファチャンネル端部に中間値(0<a<255)が存在する。"""
+        from medetect.datagen.compose import _render_ship
+
+        rng = random.Random(7)
+        # Generate a big enough ship so feathering is applied (min dim > 4)
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 5"'
+            ' data-ship-class="destroyer" data-lb-ratio="5.0">'
+            '<polygon points="0.5,0 0,5 1,5" fill="#888"/></svg>'
+        )
+        rgba, *_ = _render_ship(svg, 5.0, rng, 0.8, length_range=(80.0, 100.0))
+        alpha = rgba[:, :, 3]
+        # There should be pixels with partial transparency (feathered edges)
+        partial = (alpha > 0) & (alpha < 255)
+        assert partial.sum() > 0, "No feathered edge pixels found"

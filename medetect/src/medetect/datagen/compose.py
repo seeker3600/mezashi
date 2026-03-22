@@ -85,7 +85,11 @@ def compute_ship_pixel_size(
         hi = min(hi, length_range[1])
         if lo > hi:
             lo, hi = length_range[0], length_range[1]
-    length_m = rng.uniform(lo, hi)
+    # Log-uniform: equal probability per multiplicative factor.
+    # E.g. 10-30 m and 30-90 m each get ~same probability mass,
+    # naturally producing more small ships than large ones.
+    lo = max(lo, 1.0)  # guard against log(0)
+    length_m = math.exp(rng.uniform(math.log(lo), math.log(hi)))
     beam_m = length_m / lb_ratio
 
     length_px = max(3, round(length_m / resolution_m))
@@ -308,6 +312,15 @@ def _render_ship(
         img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
         rgba = np.array(img)
 
+    # Feather alpha edges so the ship contour blends naturally with the
+    # background.  A small extra blur on the alpha channel creates a soft
+    # semi-transparent fringe without affecting the interior.
+    if min(beam_px, length_px) > 4:
+        feather_r = max(0.5, min(beam_px, length_px) * 0.08)
+        alpha_ch = Image.fromarray(rgba[:, :, 3])
+        alpha_ch = alpha_ch.filter(ImageFilter.GaussianBlur(radius=feather_r))
+        rgba[:, :, 3] = np.array(alpha_ch)
+
     return rgba, ship_class, beam_px, length_px, lb_ratio
 
 
@@ -370,8 +383,8 @@ def _place_cluster(
     labels: list[str] = []
 
     # Render the first ship to determine size for base-position search
-    svg0 = _pick_svg(svg_files, rng)
-    rgba0, cls0, bw0, lh0, lb0 = _render_ship(svg0, resolution_m, rng, blur_sigma, length_range)
+    svg_text = _pick_svg(svg_files, rng)
+    rgba0, cls0, bw0, lh0, lb0 = _render_ship(svg_text, resolution_m, rng, blur_sigma, length_range)
     angle0_rad = math.radians(base_angle)
 
     # Find a base position on available (water & unoccupied) area
@@ -385,11 +398,27 @@ def _place_cluster(
     cursor = 0
 
     for i in range(n_ships):
-        svg = _pick_svg(svg_files, rng) if i > 0 else svg0
-        rgba, cls_name, bw, lh, lb = (
-            _render_ship(svg, resolution_m, rng, blur_sigma, length_range) if i > 0
-            else (rgba0, cls0, bw0, lh0, lb0)
-        )
+        if i == 0:
+            rgba, cls_name, bw, lh, lb = rgba0, cls0, bw0, lh0, lb0
+        else:
+            # Pick a different SVG but render at ~same size as the first ship
+            # (±10% jitter) so the cluster looks uniform.
+            svg_text = _pick_svg(svg_files, rng)
+            _cls, lb = parse_svg_metadata(svg_text)
+            scale = rng.uniform(0.9, 1.1)
+            jit_bw = max(2, round(bw0 * scale))
+            jit_lh = max(3, round(lh0 * scale))
+            rgba = rasterize_ship_svg(svg_text, jit_bw, jit_lh)
+            if blur_sigma > 0 and min(jit_bw, jit_lh) > 2:
+                img = Image.fromarray(rgba)
+                img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
+                rgba = np.array(img)
+            if min(jit_bw, jit_lh) > 4:
+                feather_r = max(0.5, min(jit_bw, jit_lh) * 0.08)
+                alpha_ch = Image.fromarray(rgba[:, :, 3])
+                alpha_ch = alpha_ch.filter(ImageFilter.GaussianBlur(radius=feather_r))
+                rgba[:, :, 3] = np.array(alpha_ch)
+            cls_name, bw, lh = cls0, jit_bw, jit_lh
         # Small angle jitter within the cluster
         angle_deg = base_angle + rng.uniform(-10, 10)
         angle_rad = math.radians(angle_deg)
@@ -460,7 +489,7 @@ def generate_dataset(
     ship_dir: Path | str | None = None,
     image_size: int = 640,
     resolution: float | None = None,
-    ignore_geo: bool = False,
+    geo_scale: float | None = None,
     ships_per_image: tuple[int, int] = (0, 10),
     cluster_prob: float = 0.15,
     cluster_size: tuple[int, int] = (2, 5),
@@ -491,10 +520,12 @@ def generate_dataset(
         Output tile edge size in pixels.
     resolution
         Target resolution in m/px.  *None* uses the native GeoTIFF resolution.
-        When *ignore_geo* is True, this is used only for ship size calculation.
-    ignore_geo
-        When True, ignore the TIFF\'s geographic coordinate system and use 1 input
-        pixel = 1 output pixel (no resampling).  ``resolution`` still controls ship
+        When *geo_scale* is set, this is used only for ship size calculation.
+    geo_scale
+        When set, ignore the TIFF's geographic CRS and use a fixed pixel
+        scale instead.  ``1.0`` = 1 TIFF pixel per output pixel,
+        ``2.0`` = 2 TIFF pixels per output pixel (zoom out / more area),
+        ``0.5`` = upsample 2× (zoom in).  ``resolution`` still controls ship
         sizes in metres.
     ships_per_image
         ``(min, max)`` number of ships per tile.
@@ -559,7 +590,7 @@ def generate_dataset(
                 svg_files=svg_files,
                 image_size=image_size,
                 resolution=resolution,
-                ignore_geo=ignore_geo,
+                geo_scale=geo_scale,
                 ships_per_image=ships_per_image,
                 cluster_prob=cluster_prob,
                 cluster_size=cluster_size,
@@ -618,7 +649,7 @@ def _compose_one(
     svg_files: list[Path] | None,
     image_size: int,
     resolution: float | None,
-    ignore_geo: bool,
+    geo_scale: float | None,
     ships_per_image: tuple[int, int],
     cluster_prob: float,
     cluster_size: tuple[int, int],
@@ -633,9 +664,11 @@ def _compose_one(
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image.  Returns ``(tile, labels, n_clusters)``."""
     with rasterio.open(tif_path) as src:
-        if ignore_geo:
-            # Use TIFF pixels as-is; resolution applies only to ship sizing.
-            src_tile = image_size
+        if geo_scale is not None:
+            # Ignore geographic CRS; use a fixed pixel scale.
+            # geo_scale=1.0 → 1 TIFF px = 1 output px
+            # geo_scale=2.0 → 2 TIFF px = 1 output px (zoom out)
+            src_tile = max(1, round(image_size * geo_scale))
             ship_resolution = resolution if resolution is not None else 10.0
         else:
             native_res = (src.res[0] + src.res[1]) / 2.0
@@ -675,9 +708,7 @@ def _compose_one(
 
             # Water mask
             scl_file = _scl_path_for(tif_path)
-            scl_col = 0 if ignore_geo else col
-            scl_row = 0 if ignore_geo else row
-            scl = _read_scl_tile(scl_file, scl_col, scl_row, src_tile, image_size)
+            scl = _read_scl_tile(scl_file, col, row, src_tile, image_size)
             if scl is not None:
                 water_mask = make_water_mask_from_scl(scl)
             else:
