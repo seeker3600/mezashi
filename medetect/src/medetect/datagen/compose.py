@@ -66,13 +66,25 @@ def compute_ship_pixel_size(
     lb_ratio: float,
     resolution_m: float,
     rng: random.Random,
+    length_range: tuple[float, float] | None = None,
 ) -> tuple[int, int]:
     """Compute ship raster size ``(beam_px, length_px)`` for the tile resolution.
 
     A random length within the real-world range for *ship_class* is chosen,
     then converted to pixels at the given *resolution_m*.
+
+    Parameters
+    ----------
+    length_range
+        Global ``(min_m, max_m)`` clamp applied on top of the per-class range.
+        When *None*, only the per-class range is used.
     """
     lo, hi = SHIP_LENGTHS_M.get(ship_class, _DEFAULT_LENGTH_M)
+    if length_range is not None:
+        lo = max(lo, length_range[0])
+        hi = min(hi, length_range[1])
+        if lo > hi:
+            lo, hi = length_range[0], length_range[1]
     length_m = rng.uniform(lo, hi)
     beam_m = length_m / lb_ratio
 
@@ -280,11 +292,12 @@ def _render_ship(
     resolution_m: float,
     rng: random.Random,
     blur_sigma: float,
+    length_range: tuple[float, float] | None = None,
 ) -> tuple[NDArray[np.uint8], str, int, int, float]:
     """Render one ship and return ``(rgba, class_name, beam_px, length_px, lb_ratio)``."""
     ship_class, lb_ratio = parse_svg_metadata(svg_text)
     beam_px, length_px = compute_ship_pixel_size(
-        ship_class, lb_ratio, resolution_m, rng,
+        ship_class, lb_ratio, resolution_m, rng, length_range,
     )
 
     rgba = rasterize_ship_svg(svg_text, beam_px, length_px)
@@ -322,6 +335,7 @@ def _place_cluster(
     class_id: int,
     image_size: int,
     background: NDArray[np.uint8],
+    length_range: tuple[float, float] | None = None,
 ) -> list[str]:
     """Place a cluster of ships side-by-side.  Returns label lines."""
     n_ships = rng.randint(*cluster_size_range)
@@ -330,7 +344,7 @@ def _place_cluster(
 
     # Find a base position
     svg0 = _pick_svg(svg_files, rng)
-    rgba0, cls0, bw0, lh0, lb0 = _render_ship(svg0, resolution_m, rng, blur_sigma)
+    rgba0, cls0, bw0, lh0, lb0 = _render_ship(svg0, resolution_m, rng, blur_sigma, length_range)
     angle0_rad = math.radians(base_angle)
     pos = find_water_position(water_mask, bw0 * 2, lh0 * 2, angle0_rad, rng)
     if pos is None:
@@ -341,7 +355,7 @@ def _place_cluster(
     for i in range(n_ships):
         svg = _pick_svg(svg_files, rng) if i > 0 else svg0
         rgba, cls_name, bw, lh, lb = (
-            _render_ship(svg, resolution_m, rng, blur_sigma) if i > 0
+            _render_ship(svg, resolution_m, rng, blur_sigma, length_range) if i > 0
             else (rgba0, cls0, bw0, lh0, lb0)
         )
         # Small angle jitter within the cluster
@@ -410,6 +424,7 @@ def generate_dataset(
     min_water_ratio: float = 0.3,
     ship_blur_sigma: float = 0.8,
     ship_alpha: tuple[float, float] = (0.7, 0.95),
+    ship_length_range: tuple[float, float] | None = None,
     seed: int | None = None,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format.
@@ -447,6 +462,9 @@ def generate_dataset(
         Gaussian blur sigma applied to rendered ships.
     ship_alpha
         ``(min, max)`` alpha factor range for ship blending.
+    ship_length_range
+        Global ``(min_m, max_m)`` constraint on ship length in metres.
+        Applied on top of the per-class range.  *None* = no global limit.
     seed
         Random seed for reproducibility.
 
@@ -499,6 +517,7 @@ def generate_dataset(
                 min_water_ratio=min_water_ratio,
                 ship_blur_sigma=ship_blur_sigma,
                 ship_alpha=ship_alpha,
+                ship_length_range=ship_length_range,
                 rng=rng,
             )
         except Exception:
@@ -556,6 +575,7 @@ def _compose_one(
     min_water_ratio: float,
     ship_blur_sigma: float,
     ship_alpha: tuple[float, float],
+    ship_length_range: tuple[float, float] | None,
     rng: random.Random,
     max_crop_attempts: int = 20,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
@@ -624,7 +644,7 @@ def _compose_one(
             new_labels = _place_cluster(
                 water_mask, svg_files, resolution, rng,
                 cluster_size, ship_blur_sigma, ship_alpha,
-                class_id, image_size, tile,
+                class_id, image_size, tile, ship_length_range,
             )
             labels.extend(new_labels)
             placed += max(len(new_labels), cluster_size[0])
@@ -633,7 +653,7 @@ def _compose_one(
         else:
             svg_text = _pick_svg(svg_files, rng)
             rgba, cls_name, bw, lh, lb = _render_ship(
-                svg_text, resolution, rng, ship_blur_sigma,
+                svg_text, resolution, rng, ship_blur_sigma, ship_length_range,
             )
             angle_deg = rng.uniform(0, 360)
             angle_rad = math.radians(angle_deg)

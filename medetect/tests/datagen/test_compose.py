@@ -54,6 +54,40 @@ class TestComputeShipPixelSize:
         assert beam_px >= 2
         assert length_px >= 3
 
+    def test_length_range_clamps_upper(self) -> None:
+        """length_range の上限が適用される。"""
+        rng = random.Random(0)
+        results = [
+            compute_ship_pixel_size(
+                "destroyer", lb_ratio=8.0, resolution_m=1.0,
+                rng=rng, length_range=(10.0, 50.0),
+            )
+            for _ in range(20)
+        ]
+        for _beam, length in results:
+            assert length <= 52  # 50 m / 1 m/px + rounding tolerance
+
+    def test_length_range_clamps_lower(self) -> None:
+        """length_range の下限が適用される。"""
+        rng = random.Random(0)
+        results = [
+            compute_ship_pixel_size(
+                "fishing_trawler", lb_ratio=5.0, resolution_m=1.0,
+                rng=rng, length_range=(80.0, 200.0),
+            )
+            for _ in range(20)
+        ]
+        for _beam, length in results:
+            assert length >= 78  # 80 m / 1 m/px - rounding
+
+    def test_length_range_none_uses_class_range(self) -> None:
+        """length_range=None のとき制約なし（既存の動作を維持）。"""
+        rng = random.Random(42)
+        beam_px, length_px = compute_ship_pixel_size(
+            "destroyer", lb_ratio=8.0, resolution_m=10.0, rng=rng, length_range=None,
+        )
+        assert length_px >= 3
+
 
 class TestComputeObbCorners:
     def test_axis_aligned(self) -> None:

@@ -108,6 +108,20 @@ def main() -> None:
         help="Gaussian blur sigma for ships (default: 0.8).",
     )
     parser.add_argument(
+        "--ship_length_min",
+        type=float,
+        default=None,
+        metavar="METRES",
+        help="Global minimum ship length in metres. Default: per-class minimum.",
+    )
+    parser.add_argument(
+        "--ship_length_max",
+        type=float,
+        default=None,
+        metavar="METRES",
+        help="Global maximum ship length in metres. Default: per-class maximum.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -115,6 +129,12 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    ship_length_range: tuple[float, float] | None = None
+    if args.ship_length_min is not None or args.ship_length_max is not None:
+        lo = args.ship_length_min if args.ship_length_min is not None else 1.0
+        hi = args.ship_length_max if args.ship_length_max is not None else 1e9
+        ship_length_range = (lo, hi)
 
     stats = generate_dataset(
         bg_dir=args.bg_dir,
@@ -130,6 +150,7 @@ def main() -> None:
         erode_coast=args.erode_coast,
         min_water_ratio=args.min_water_ratio,
         ship_blur_sigma=args.ship_blur_sigma,
+        ship_length_range=ship_length_range,
         seed=args.seed,
     )
 
