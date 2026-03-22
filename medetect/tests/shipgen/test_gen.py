@@ -50,7 +50,8 @@ class TestInterpolateHull:
         assert hw[-1] == pytest.approx(0.30)
 
     @pytest.mark.parametrize(
-        "profile", ["warship", "carrier", "box", "fishing", "fishing_wide"],
+        "profile", ["warship", "carrier", "box", "fishing", "fishing_wide",
+                     "warship_lean", "tanker"],
     )
     def test_all_profiles_work(self, profile: str) -> None:
         """全プロファイルがエラーなく補間できる。"""

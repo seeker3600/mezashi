@@ -193,6 +193,65 @@ def _write_detail_svg(
             f'fill="none" stroke="{stroke}" stroke-width="{_f(sz * 0.06)}"/>\n'
         )
 
+    elif kind == "funnel":
+        # Exhaust funnel — dark-topped rectangle
+        w = sz * 0.7
+        h = sz * 0.5
+        fill = colors.detail_css(-25)
+        top_fill = colors.detail_css(-45)
+        out.write(
+            f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+            f'width="{_f(w)}" height="{_f(h)}" fill="{fill}"/>\n'
+        )
+        out.write(
+            f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+            f'width="{_f(w)}" height="{_f(h * 0.25)}" fill="{top_fill}"/>\n'
+        )
+
+    elif kind == "radar_dome":
+        # Radome — light filled circle
+        r = sz * 0.4
+        fill = colors.detail_css(40)
+        out.write(
+            f'  <circle cx="{_f(cx)}" cy="{_f(cy)}" r="{_f(r)}" '
+            f'fill="{fill}"/>\n'
+        )
+
+    elif kind == "ciws":
+        # Close-in weapon system — small dome with barrel
+        r = sz * 0.35
+        fill = colors.detail_css(-20)
+        out.write(
+            f'  <circle cx="{_f(cx)}" cy="{_f(cy)}" r="{_f(r)}" '
+            f'fill="{fill}"/>\n'
+        )
+        by = cy - r * 1.2
+        out.write(
+            f'  <line x1="{_f(cx)}" y1="{_f(cy)}" '
+            f'x2="{_f(cx)}" y2="{_f(by)}" '
+            f'stroke="{fill}" stroke-width="{_f(sz * 0.08)}"/>\n'
+        )
+
+    elif kind == "winch":
+        # Deck winch — small circle with stroke
+        r = sz * 0.35
+        fill = colors.detail_css(-15)
+        stroke = colors.detail_css(-30)
+        out.write(
+            f'  <circle cx="{_f(cx)}" cy="{_f(cy)}" r="{_f(r)}" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sz * 0.1)}"/>\n'
+        )
+
+    elif kind == "bollard":
+        # Deck bollard — tiny filled rectangle
+        w = sz * 0.3
+        h = sz * 0.4
+        fill = colors.detail_css(-30)
+        out.write(
+            f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+            f'width="{_f(w)}" height="{_f(h)}" fill="{fill}"/>\n'
+        )
+
 
 # ── Public API ───────────────────────────────────────────────────────────
 

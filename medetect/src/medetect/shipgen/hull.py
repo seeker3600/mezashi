@@ -60,6 +60,26 @@ PROFILES: dict[str, list[tuple[float, float]]] = {
         (0.88, 0.38),
         (1.00, 0.15),
     ],
+    # Slender modern warship — tumblehome / stealth hull
+    "warship_lean": [
+        (0.00, 0.00),
+        (0.10, 0.18),
+        (0.22, 0.40),
+        (0.45, 0.46),
+        (0.70, 0.42),
+        (0.88, 0.25),
+        (1.00, 0.12),
+    ],
+    # Full-bodied tanker / supply ship
+    "tanker": [
+        (0.00, 0.10),
+        (0.06, 0.32),
+        (0.14, 0.48),
+        (0.50, 0.50),
+        (0.86, 0.48),
+        (0.94, 0.40),
+        (1.00, 0.30),
+    ],
 }
 
 
