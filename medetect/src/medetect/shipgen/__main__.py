@@ -29,27 +29,19 @@ def main() -> None:
     all_classes = get_ship_classes()
 
     parser = argparse.ArgumentParser(
-        description="Generate synthetic ship silhouette images for training.",
+        description="Generate synthetic ship silhouette SVGs for training.",
     )
     parser.add_argument(
         "--output_dir",
         type=Path,
         required=True,
-        help="Output directory for generated PNG images.",
+        help="Output directory for generated SVG files.",
     )
     parser.add_argument(
         "--count",
         type=int,
         required=True,
-        help="Number of images to generate.",
-    )
-    parser.add_argument(
-        "--image_size",
-        type=int,
-        nargs=2,
-        required=True,
-        metavar=("MIN", "MAX"),
-        help="Ship length range in pixels (min max).",
+        help="Number of SVG files to generate.",
     )
     parser.add_argument(
         "--types",
@@ -73,6 +65,12 @@ def main() -> None:
         default=0.005,
         help="Hull outline perturbation scale (default: 0.005).",
     )
+    parser.add_argument(
+        "--n_hull_points",
+        type=int,
+        default=64,
+        help="Polygon sample points per hull side (default: 64).",
+    )
 
     args = parser.parse_args()
 
@@ -83,10 +81,10 @@ def main() -> None:
     generate_ships(
         output_dir=args.output_dir,
         count=args.count,
-        image_size=(args.image_size[0], args.image_size[1]),
         types=types,
         seed=args.seed,
         hull_noise=args.hull_noise,
+        n_hull_points=args.n_hull_points,
     )
 
 
