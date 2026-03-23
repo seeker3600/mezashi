@@ -254,6 +254,129 @@ def _write_detail_svg(
             f'width="{_f(w)}" height="{_f(h)}" fill="{fill}"/>\n'
         )
 
+    elif kind == "shadow":
+        # Dark shadow cast by nearby structure
+        w = sz * 1.2
+        h = sz * 0.6
+        out.write(
+            f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy)}" '
+            f'width="{_f(w)}" height="{_f(h)}" '
+            f'fill="rgba(0,0,0,0.18)" rx="{_f(h * 0.15)}"/>\n'
+        )
+
+    elif kind == "vent":
+        # Ventilation grille — small square with darker inset
+        s = sz * 0.6
+        fill = colors.detail_css(-10)
+        inner = colors.detail_css(-35)
+        out.write(
+            f'  <rect x="{_f(cx - s / 2)}" y="{_f(cy - s / 2)}" '
+            f'width="{_f(s)}" height="{_f(s)}" fill="{fill}"/>\n'
+        )
+        si = s * 0.55
+        out.write(
+            f'  <rect x="{_f(cx - si / 2)}" y="{_f(cy - si / 2)}" '
+            f'width="{_f(si)}" height="{_f(si)}" fill="{inner}"/>\n'
+        )
+
+    elif kind == "antenna":
+        # Whip antenna — thin vertical line with small circle top
+        h = sz * 1.5
+        stroke = colors.detail_css(-40)
+        out.write(
+            f'  <line x1="{_f(cx)}" y1="{_f(cy)}" '
+            f'x2="{_f(cx)}" y2="{_f(cy - h)}" '
+            f'stroke="{stroke}" stroke-width="{_f(sz * 0.06)}"/>\n'
+        )
+        out.write(
+            f'  <circle cx="{_f(cx)}" cy="{_f(cy - h)}" r="{_f(sz * 0.08)}" '
+            f'fill="{stroke}"/>\n'
+        )
+
+    elif kind == "davit":
+        # Boat davit — small L-shaped arm
+        arm = sz * 0.8
+        stroke = colors.detail_css(-30)
+        sw = sz * 0.1
+        # Vertical post
+        out.write(
+            f'  <line x1="{_f(cx)}" y1="{_f(cy)}" '
+            f'x2="{_f(cx)}" y2="{_f(cy - arm)}" '
+            f'stroke="{stroke}" stroke-width="{_f(sw)}"/>\n'
+        )
+        # Horizontal arm outward
+        out.write(
+            f'  <line x1="{_f(cx)}" y1="{_f(cy - arm)}" '
+            f'x2="{_f(cx + arm * 0.5)}" y2="{_f(cy - arm)}" '
+            f'stroke="{stroke}" stroke-width="{_f(sw)}"/>\n'
+        )
+
+    elif kind == "pipe":
+        # Exposed pipe run — thin horizontal line
+        length = detail.size * lb_ratio * 2
+        stroke = colors.detail_css(-22)
+        out.write(
+            f'  <line x1="{_f(cx)}" y1="{_f(cy - length / 2)}" '
+            f'x2="{_f(cx)}" y2="{_f(cy + length / 2)}" '
+            f'stroke="{stroke}" stroke-width="{_f(sz * 0.15)}"/>\n'
+        )
+
+    elif kind == "liferaft":
+        # Life raft canister — rounded rectangle
+        w = sz * 0.7
+        h = sz * 0.5
+        fill = colors.detail_css(25)
+        stroke = colors.detail_css(-5)
+        out.write(
+            f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+            f'width="{_f(w)}" height="{_f(h)}" rx="{_f(h * 0.3)}" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sz * 0.06)}"/>\n'
+        )
+
+    elif kind == "tire_fender":
+        # Side fender (tyre) — dark circle on hull edge
+        r = sz * 0.4
+        fill = colors.detail_css(-45)
+        out.write(
+            f'  <circle cx="{_f(cx)}" cy="{_f(cy)}" r="{_f(r)}" '
+            f'fill="{fill}"/>\n'
+        )
+
+    elif kind == "deck_line":
+        # Deck marking / railing line along ship length
+        length = detail.size * lb_ratio * 3
+        stroke = colors.detail_css(-18)
+        out.write(
+            f'  <line x1="{_f(cx)}" y1="{_f(cy - length / 2)}" '
+            f'x2="{_f(cx)}" y2="{_f(cy + length / 2)}" '
+            f'stroke="{stroke}" stroke-width="{_f(sz * 0.2)}" '
+            f'stroke-dasharray="{_f(sz * 0.4)} {_f(sz * 0.2)}"/>\n'
+        )
+
+    elif kind == "hatch":
+        # Cargo hatch — rectangle with inner cross lines
+        w = sz * 0.8
+        h = sz * 0.6
+        fill = colors.detail_css(-8)
+        stroke = colors.detail_css(-25)
+        sw = sz * 0.04
+        out.write(
+            f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+            f'width="{_f(w)}" height="{_f(h)}" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sw)}"/>\n'
+        )
+        # Centre cross
+        out.write(
+            f'  <line x1="{_f(cx - w / 2)}" y1="{_f(cy)}" '
+            f'x2="{_f(cx + w / 2)}" y2="{_f(cy)}" '
+            f'stroke="{stroke}" stroke-width="{_f(sw * 0.7)}"/>\n'
+        )
+        out.write(
+            f'  <line x1="{_f(cx)}" y1="{_f(cy - h / 2)}" '
+            f'x2="{_f(cx)}" y2="{_f(cy + h / 2)}" '
+            f'stroke="{stroke}" stroke-width="{_f(sw * 0.7)}"/>\n'
+        )
+
 
 # ── Public API ───────────────────────────────────────────────────────────
 
