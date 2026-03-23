@@ -45,6 +45,7 @@ class TestComputeGeoResolution:
 - Prefer **reasonable DRY** over perfect backward compatibility.
 - `any` and `type: ignore` require a justifying comment.
 - Use `from __future__ import annotations` for all new modules.
+- 大胆に変更せよ。上記と矛盾するように見えるかもしれないが、必要なら作り直しを恐れるな。
 
 ## Language policy
 - Issue / PR text → **日本語**
