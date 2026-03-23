@@ -57,8 +57,21 @@ SHIP_LENGTHS_M: dict[str, tuple[float, float]] = {
 
 _DEFAULT_LENGTH_M = (30.0, 100.0)
 
+# Mean pixel value (0-255) below which a tile is considered a satellite blackout area.
+_DARK_TILE_THRESHOLD: float = 10.0
+
 
 # ── Pure helpers (easily testable) ────────────────────────────────────────
+
+
+def is_dark_tile(tile: NDArray[np.uint8], threshold: float = _DARK_TILE_THRESHOLD) -> bool:
+    """Return True when the tile is a satellite blackout / no-data area.
+
+    Sentinel-2 images can contain strip-shaped black regions caused by
+    detector gaps or missing acquisitions.  A mean pixel value below
+    *threshold* reliably identifies such tiles.
+    """
+    return float(tile.mean()) < threshold
 
 
 def compute_ship_pixel_size(
@@ -788,6 +801,14 @@ def _compose_one(
                 img = Image.fromarray(tile)
                 img = img.resize((image_size, image_size), Image.BILINEAR)
                 tile = np.array(img)
+
+            # Skip satellite blackout strips (帯状の真っ黒領域)
+            if is_dark_tile(tile):
+                logger.debug(
+                    "Dark tile in %s at col=%d row=%d (mean=%.1f) — retrying",
+                    tif_path.name, col, row, float(tile.mean()),
+                )
+                continue
 
             # Water mask
             scl_file = _scl_path_for(tif_path)

@@ -16,6 +16,7 @@ from medetect.datagen.compose import (
     compute_ship_pixel_size,
     find_water_position,
     format_obb_label,
+    is_dark_tile,
 )
 
 
@@ -624,3 +625,35 @@ class TestOverlapPrevention:
             assert not (70 <= cx <= 130 and 40 <= cy <= 160), (
                 f"Ship placed at ({cx}, {cy}) inside occupied zone"
             )
+
+
+class TestIsDarkTile:
+    """衛星画像の帯状真っ黒領域 (blackout tile) 検出のテスト。"""
+
+    def test_all_black_is_dark(self) -> None:
+        """全黒タイルは暗いと判定される。"""
+        tile = np.zeros((64, 64, 3), dtype=np.uint8)
+        assert is_dark_tile(tile)
+
+    def test_normal_image_is_not_dark(self) -> None:
+        """通常の輝度を持つタイルは暗いと判定されない。"""
+        tile = np.full((64, 64, 3), 80, dtype=np.uint8)
+        assert not is_dark_tile(tile)
+
+    def test_custom_threshold(self) -> None:
+        """カスタム閾値が適用される。"""
+        tile = np.full((64, 64, 3), 5, dtype=np.uint8)  # mean=5
+        assert not is_dark_tile(tile, threshold=5.0)   # mean == threshold → not dark
+        assert is_dark_tile(tile, threshold=6.0)        # mean < threshold → dark
+
+    def test_stripe_scenario(self) -> None:
+        """帯状に真っ黒な領域が含まれるタイルは暗いと判定される。"""
+        # 半分が黒、半分が通常輝度のタイル → mean ≈ 40 → 暗くない
+        tile = np.full((64, 64, 3), 80, dtype=np.uint8)
+        tile[:32, :, :] = 0  # 上半分が黒いストライプ
+        assert not is_dark_tile(tile)  # mean ≈ 40、閾値 10 より大きい
+
+        # ほぼ全体が黒で僅かに輝度があるタイル → dark
+        mostly_dark = np.zeros((64, 64, 3), dtype=np.uint8)
+        mostly_dark[60:64, 60:64, :] = 80  # ごく一部だけ明るい
+        assert is_dark_tile(mostly_dark)
