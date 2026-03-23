@@ -956,8 +956,8 @@ def _write_dataset_yaml(output_dir: Path, class_id: int) -> None:
     yaml_path = output_dir / "dataset.yaml"
     content = (
         f"path: {output_dir.resolve().as_posix()}\n"
-        f"train: images/train\n"
-        f"val: images/train\n"
+        f"train: images/autosplit_train.txt\n"
+        f"val: images/autosplit_val.txt\n"
         f"\n"
         f"names:\n"
         f"  {class_id}: ship\n"
