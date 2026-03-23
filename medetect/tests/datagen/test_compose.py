@@ -7,10 +7,14 @@ import numpy as np
 import pytest
 
 from medetect.datagen.compose import (
+    _SvgMeta,
     _blend_rgba_layer,
     _compose_one,
     _composite_rgba,
+    _load_svg_metas,
+    _natural_lb_ratio,
     _stamp_occupancy,
+    _svg_lb_weight,
     blend_ship,
     compute_obb_corners,
     compute_ship_pixel_size,
@@ -275,7 +279,7 @@ class TestGeoScale:
         rng = random.Random(0)
         result = _compose_one(
             tif_path=tiny_tif,
-            svg_files=None,
+            svg_metas=None,
             image_size=64,
             resolution=10.0,
             geo_scale=1.0,
@@ -300,7 +304,7 @@ class TestGeoScale:
         rng = random.Random(1)
         result = _compose_one(
             tif_path=tiny_tif,
-            svg_files=None,
+            svg_metas=None,
             image_size=64,
             resolution=10.0,
             geo_scale=None,
@@ -325,7 +329,7 @@ class TestGeoScale:
         rng = random.Random(2)
         result = _compose_one(
             tif_path=tiny_tif,
-            svg_files=None,
+            svg_metas=None,
             image_size=64,
             resolution=10.0,
             geo_scale=0.5,
@@ -579,7 +583,7 @@ class TestLandOnlyNegativeExample:
         rng = random.Random(42)
         result = _compose_one(
             tif_path=land_only_tif,
-            svg_files=None,
+            svg_metas=None,
             image_size=64,
             resolution=10.0,
             geo_scale=1.0,
@@ -627,6 +631,63 @@ class TestOverlapPrevention:
             )
 
 
+class TestNaturalLbRatio:
+    """_natural_lb_ratio の小型船・大型船の物理的妥当性検証。"""
+
+    def test_small_ship_low_lb(self) -> None:
+        """5mディンギー等、小型船は低いlb_ratio。"""
+        assert _natural_lb_ratio(5.0) < 4.0
+
+    def test_large_ship_higher_lb(self) -> None:
+        """200m驱逐艦等、大型船は高いlb_ratio。"""
+        assert _natural_lb_ratio(200.0) > _natural_lb_ratio(20.0)
+
+    def test_capped_at_10(self) -> None:
+        """10が上限。"""
+        assert _natural_lb_ratio(10000.0) == 10.0
+
+
+class TestSvgLbWeight:
+    """_svg_lb_weight の重み計算の検証。"""
+
+    def test_natural_lb_gets_full_weight(self) -> None:
+        """自然なlb_ratioの船は重み1.0。"""
+        lb = _natural_lb_ratio(15.0)  # natural lb at 15 m
+        assert _svg_lb_weight(lb, 15.0) == 1.0
+
+    def test_excess_lb_gets_lower_weight(self) -> None:
+        """lb_ratioが自然値の1.5倍を超えると重みが下がる。"""
+        w_bad = _svg_lb_weight(12.0, 10.0)   # very high lb for a 10 m target
+        w_good = _svg_lb_weight(3.5, 10.0)   # low lb, appropriate for 10 m
+        assert w_bad < w_good
+
+    def test_weight_positive(self) -> None:
+        """重みは常に正。"""
+        assert _svg_lb_weight(15.0, 5.0) > 0.0
+
+
+class TestLoadSvgMetas:
+    """_load_svg_metas のメタデータ読み込みまとめの検証。"""
+
+    def test_reads_lb_ratio(self, tmp_path: "pathlib.Path") -> None:
+        """SVGファイルからlb_ratioを正しく読み取る。"""
+        import pathlib
+
+        svg_content = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4.5"'
+            ' data-ship-class="fishing_trawler" data-lb-ratio="4.5">'
+            '<polygon points="0.5,0 0,4.5 1,4.5" fill="#666"/></svg>'
+        )
+        svg_path = tmp_path / "test_ship.svg"
+        svg_path.write_text(svg_content, encoding="utf-8")
+
+        metas = _load_svg_metas([svg_path])
+        assert len(metas) == 1
+        assert isinstance(metas[0], _SvgMeta)
+        assert metas[0].path == svg_path
+        assert metas[0].lb_ratio == 4.5
+
+
 class TestIsDarkTile:
     """衛星画像の帯状真っ黒領域 (blackout tile) 検出のテスト。"""
 
@@ -657,3 +718,88 @@ class TestIsDarkTile:
         mostly_dark = np.zeros((64, 64, 3), dtype=np.uint8)
         mostly_dark[60:64, 60:64, :] = 80  # ごく一部だけ明るい
         assert is_dark_tile(mostly_dark)
+
+
+class TestNaturalLbRatio:
+    """_natural_lb_ratio の物理的妥当性検証。"""
+
+    def test_small_ship_low_lb(self) -> None:
+        """5m ディンギー等、小型船は低い lb_ratio。"""
+        assert _natural_lb_ratio(5.0) < 4.0
+
+    def test_large_ship_higher_lb(self) -> None:
+        """200m 駆逐艦等、大型船は高い lb_ratio。"""
+        assert _natural_lb_ratio(200.0) > _natural_lb_ratio(20.0)
+
+    def test_capped_at_10(self) -> None:
+        """10 が上限。"""
+        assert _natural_lb_ratio(10000.0) == 10.0
+
+    def test_monotone_increasing(self) -> None:
+        """lb_ratio は船の長さに対して単調増加する。"""
+        lengths = [5.0, 20.0, 50.0, 100.0, 200.0, 300.0]
+        values = [_natural_lb_ratio(l) for l in lengths]
+        for a, b in zip(values, values[1:]):
+            assert a <= b
+
+
+class TestSvgLbWeight:
+    """_svg_lb_weight の重み計算の検証。"""
+
+    def test_natural_lb_gets_full_weight(self) -> None:
+        """自然な lb_ratio の船は重み 1.0。"""
+        lb = _natural_lb_ratio(15.0)
+        assert _svg_lb_weight(lb, 15.0) == 1.0
+
+    def test_excess_lb_gets_lower_weight(self) -> None:
+        """lb_ratio が自然値の 1.5 倍を超えると重みが下がる。"""
+        w_bad = _svg_lb_weight(12.0, 10.0)   # 10m 目標に対し過大な lb
+        w_good = _svg_lb_weight(3.5, 10.0)   # 10m 目標に適した lb
+        assert w_bad < w_good
+
+    def test_weight_always_positive(self) -> None:
+        """重みは常に正。"""
+        assert _svg_lb_weight(15.0, 5.0) > 0.0
+
+    def test_small_target_prefers_low_lb(self) -> None:
+        """小型船ターゲットでは、低 lb_ratio の SVG が高く評価される。"""
+        w_stubby = _svg_lb_weight(4.0, 10.0)   # trawler-like lb
+        w_slender = _svg_lb_weight(9.0, 10.0)  # destroyer-like lb
+        assert w_stubby > w_slender
+
+
+class TestLoadSvgMetas:
+    """_load_svg_metas のメタデータ読み込みまとめの検証。"""
+
+    def test_reads_lb_ratio(self, tmp_path) -> None:
+        """SVG ファイルから lb_ratio を正しく読み取る。"""
+        svg_content = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4.5"'
+            ' data-ship-class="fishing_trawler" data-lb-ratio="4.5">'
+            '<polygon points="0.5,0 0,4.5 1,4.5" fill="#666"/></svg>'
+        )
+        svg_path = tmp_path / "test_ship.svg"
+        svg_path.write_text(svg_content, encoding="utf-8")
+
+        metas = _load_svg_metas([svg_path])
+        assert len(metas) == 1
+        assert isinstance(metas[0], _SvgMeta)
+        assert metas[0].path == svg_path
+        assert metas[0].lb_ratio == 4.5
+
+    def test_multiple_files(self, tmp_path) -> None:
+        """複数ファイルのメタが順番通り返る。"""
+        lb_values = [3.8, 6.5, 9.0]
+        paths = []
+        for i, lb in enumerate(lb_values):
+            content = (
+                f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 {lb}"'
+                f' data-ship-class="patrol" data-lb-ratio="{lb}">'
+                f'<polygon points="0.5,0 0,{lb} 1,{lb}" fill="#888"/></svg>'
+            )
+            p = tmp_path / f"ship_{i}.svg"
+            p.write_text(content, encoding="utf-8")
+            paths.append(p)
+
+        metas = _load_svg_metas(paths)
+        assert [m.lb_ratio for m in metas] == lb_values

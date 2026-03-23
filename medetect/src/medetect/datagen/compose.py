@@ -19,6 +19,7 @@ import logging
 import math
 import random
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import rasterio
@@ -241,17 +242,84 @@ def _load_svg(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+class _SvgMeta(NamedTuple):
+    """Pre-read metadata for one SVG ship file."""
+
+    path: Path
+    lb_ratio: float
+
+
+def _load_svg_metas(svg_files: list[Path]) -> list[_SvgMeta]:
+    """Read lb_ratio from every SVG file up-front for weighted selection."""
+    metas: list[_SvgMeta] = []
+    for path in svg_files:
+        _cls, lb = parse_svg_metadata(path.read_text(encoding="utf-8"))
+        metas.append(_SvgMeta(path=path, lb_ratio=lb))
+    return metas
+
+
+def _natural_lb_ratio(length_m: float) -> float:
+    """Empirical L/B ratio typical for a vessel of the given length.
+
+    Derived from real-world data: smaller vessels are proportionally
+    wider (lower L/B) than large ships.
+    Linear approximation: lb ≈ 3.0 + 0.03 × length_m, capped at 10.
+    """
+    return min(10.0, 3.0 + 0.03 * length_m)
+
+
+def _svg_lb_weight(lb_ratio: float, target_length_m: float) -> float:
+    """Preference weight for an SVG with *lb_ratio* when generating ships
+    of *target_length_m* metres.
+
+    lb_ratios within 1.5× the natural value for that length score 1.0;
+    those exceeding it are exponentially down-weighted so that unnaturally
+    thin silhouettes are avoided for small ships.
+    """
+    natural = _natural_lb_ratio(target_length_m)
+    excess = max(0.0, lb_ratio - natural * 1.5)
+    return math.exp(-excess / 2.0)
+
+
 def _pick_svg(
-    svg_files: list[Path] | None,
+    svg_metas: list[_SvgMeta] | None,
     rng: random.Random,
+    length_range: tuple[float, float] | None = None,
 ) -> str:
-    """Return SVG text — from file list or generated on-the-fly."""
-    if svg_files:
-        return _load_svg(rng.choice(svg_files))
+    """Return SVG text weighted by lb_ratio suitability for *length_range*.
+
+    Smaller ships are proportionally wider (lower L/B ratio), so SVGs
+    with lb_ratio close to the natural value for the target length are
+    preferred.  Both pre-generated SVG files and on-the-fly shipgen ship
+    classes are weighted accordingly.
+    """
+    target_m: float | None = (
+        (length_range[0] + length_range[1]) / 2.0 if length_range is not None else None
+    )
+
+    if svg_metas:
+        if target_m is not None:
+            weights = [_svg_lb_weight(m.lb_ratio, target_m) for m in svg_metas]
+            (meta,) = rng.choices(svg_metas, weights=weights, k=1)
+        else:
+            meta = rng.choice(svg_metas)
+        return _load_svg(meta.path)
 
     from medetect.shipgen.gen import generate_ship_svg, get_ship_classes
+    from medetect.shipgen.ship_class import SHIP_CLASSES
 
-    cls = rng.choice(get_ship_classes())
+    classes = get_ship_classes()
+    if target_m is not None:
+        weights = [
+            _svg_lb_weight(
+                (SHIP_CLASSES[c].lb[0] + SHIP_CLASSES[c].lb[1]) / 2.0,
+                target_m,
+            )
+            for c in classes
+        ]
+        (cls,) = rng.choices(classes, weights=weights, k=1)
+    else:
+        cls = rng.choice(classes)
     return generate_ship_svg(cls, rng=rng)
 
 
@@ -420,7 +488,7 @@ def _stamp_occupancy(
 def _place_cluster(
     water_mask: NDArray[np.bool_],
     occupancy: NDArray[np.bool_],
-    svg_files: list[Path] | None,
+    svg_metas: list[_SvgMeta] | None,
     resolution_m: float,
     rng: random.Random,
     cluster_size_range: tuple[int, int],
@@ -444,7 +512,7 @@ def _place_cluster(
 
     # Pick the first ship (will be rendered with angle in the loop,
     # but we need to determine size for base-position search)
-    svg_text = _pick_svg(svg_files, rng)
+    svg_text = _pick_svg(svg_metas, rng, length_range)
     # Render without rotation just to get the size
     rgba0, cls0, bw0, lh0, lb0 = _render_ship(
         svg_text, resolution_m, rng, blur_sigma, length_range,
@@ -492,7 +560,7 @@ def _place_cluster(
         else:
             # Pick a different SVG but render at ~same size as the first ship
             # (±10% jitter) so the cluster looks uniform.
-            svg_text = _pick_svg(svg_files, rng)
+            svg_text = _pick_svg(svg_metas, rng, length_range)
             _cls, lb = parse_svg_metadata(svg_text)
             scale = rng.uniform(0.9, 1.1)
             jit_bw = max(2, round(bw0 * scale))
@@ -666,12 +734,13 @@ def generate_dataset(
         msg = f"No TIF files found in {bg_dir}"
         raise FileNotFoundError(msg)
 
-    svg_files: list[Path] | None = None
+    svg_metas: list[_SvgMeta] | None = None
     if ship_dir is not None:
         svg_files = sorted(Path(ship_dir).glob("*.svg"))
         if not svg_files:
             msg = f"No SVG files found in {ship_dir}"
             raise FileNotFoundError(msg)
+        svg_metas = _load_svg_metas(svg_files)
 
     stats = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
 
@@ -681,7 +750,7 @@ def generate_dataset(
         try:
             result = _compose_one(
                 tif_path=tif_path,
-                svg_files=svg_files,
+                svg_metas=svg_metas,
                 image_size=image_size,
                 resolution=resolution,
                 geo_scale=geo_scale,
@@ -741,7 +810,7 @@ def generate_dataset(
 def _compose_one(
     *,
     tif_path: Path,
-    svg_files: list[Path] | None,
+    svg_metas: list[_SvgMeta] | None,
     image_size: int,
     resolution: float | None,
     geo_scale: float | None,
@@ -842,7 +911,7 @@ def _compose_one(
 
         if is_cluster:
             new_labels = _place_cluster(
-                water_mask, occupancy, svg_files, ship_resolution, rng,
+                water_mask, occupancy, svg_metas, ship_resolution, rng,
                 cluster_size, ship_blur_sigma, ship_alpha,
                 class_id, image_size, tile, ship_length_range,
                 length_exponent,
@@ -851,7 +920,7 @@ def _compose_one(
             if new_labels:
                 n_clusters += 1
         else:
-            svg_text = _pick_svg(svg_files, rng)
+            svg_text = _pick_svg(svg_metas, rng, ship_length_range)
             angle_deg = rng.uniform(0, 360)
             angle_rad = math.radians(angle_deg)
             # Render ship with rotation applied during SVG rasterization
