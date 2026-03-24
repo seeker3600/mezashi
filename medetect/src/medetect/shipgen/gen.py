@@ -378,6 +378,104 @@ def _write_detail_svg(
         )
 
 
+def _write_deck_scatter_svg(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    colors: ShipColors,
+    rng: random.Random,
+    density: float = 3.0,
+) -> None:
+    """甲板上にランダムな小図形を散布してテクスチャを付加する。
+
+    hull の <clipPath> 内部に包んだ <g> から呼び出すこと。
+
+    Parameters
+    ----------
+    density
+        散布密度。1 あたりの図形数 = density * lb_ratio。
+        0 で散布なし。標準は 3.0。
+    """
+    if density <= 0:
+        return
+
+    n = len(half_widths)
+    base = density * lb_ratio
+    n_shapes = rng.randint(max(1, int(base * 0.6)), max(1, int(base * 1.4)) + 1)
+
+    for _ in range(n_shapes):
+        t = rng.uniform(0.04, 0.96)
+        idx = min(int(t * (n - 1)), n - 1)
+        hull_hw = float(half_widths[idx])
+        # Skip very narrow sections (bow/stern tips)
+        if hull_hw < 0.05:
+            continue
+
+        cy = t * lb_ratio
+        # Keep cx strictly inside hull to avoid relying solely on clipPath
+        margin = min(0.04, hull_hw * 0.15)
+        half_range = hull_hw - margin
+        cx = 0.5 + rng.uniform(-half_range, half_range)
+
+        # Shape size: small relative to beam, always fits inside hull
+        max_sz = min(0.06, hull_hw * 0.55)
+        sz = rng.uniform(max_sz * 0.3, max_sz)
+
+        # Colour: hull-toned with a noticeable but harmonious offset.
+        # Pick a signed shift so the shape is always distinguishable from hull.
+        sign = 1 if rng.random() < 0.5 else -1
+        offset = sign * rng.randint(18, 38)
+        # ~10% chance: accent colour (equipment / containers) — stays within
+        # a muted range to blend with the overall palette.
+        if rng.random() < 0.10:
+            hr, hg, hb = colors.hull
+            # Desaturate accent toward hull lightness to avoid eye-jarring pops
+            luma = int(hr * 0.3 + hg * 0.59 + hb * 0.11)
+            accent_shift = rng.randint(25, 55)
+            av = max(0, min(255, luma + accent_shift))
+            fill = f"rgb({av},{max(0, min(255, av - rng.randint(0, 20)))},{max(0, min(255, av - rng.randint(15, 45)))})"
+            stroke_color = colors.detail_css(offset - 10)
+        else:
+            fill = colors.detail_css(offset)
+            stroke_color = colors.detail_css(offset - sign * 12)
+
+        sw = sz * 0.12  # unified stroke width
+
+        kind = rng.choices(
+            ["rect", "circle", "line_h", "line_v"],
+            weights=[6, 2, 1, 1],
+        )[0]
+
+        if kind == "rect":
+            w = sz * rng.uniform(0.7, 2.0)
+            h = sz * rng.uniform(0.7, 2.0)
+            out.write(
+                f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+                f'width="{_f(w)}" height="{_f(h)}" '
+                f'fill="{fill}" stroke="{stroke_color}" stroke-width="{_f(sw)}"/>\n'
+            )
+        elif kind == "circle":
+            r = sz * 0.5
+            out.write(
+                f'  <circle cx="{_f(cx)}" cy="{_f(cy)}" r="{_f(r)}" '
+                f'fill="{fill}" stroke="{stroke_color}" stroke-width="{_f(sw)}"/>\n'
+            )
+        elif kind == "line_h":
+            hw_line = sz * rng.uniform(0.8, 2.2)
+            out.write(
+                f'  <line x1="{_f(cx - hw_line)}" y1="{_f(cy)}" '
+                f'x2="{_f(cx + hw_line)}" y2="{_f(cy)}" '
+                f'stroke="{fill}" stroke-width="{_f(sw * 1.3)}"/>\n'
+            )
+        elif kind == "line_v":
+            hl_line = sz * rng.uniform(0.8, 2.2)
+            out.write(
+                f'  <line x1="{_f(cx)}" y1="{_f(cy - hl_line)}" '
+                f'x2="{_f(cx)}" y2="{_f(cy + hl_line)}" '
+                f'stroke="{fill}" stroke-width="{_f(sw * 1.3)}"/>\n'
+            )
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 
@@ -392,6 +490,7 @@ def generate_ship_svg(
     rng: random.Random | None = None,
     hull_noise: float = 0.005,
     n_hull_points: int = 64,
+    deck_scatter_density: float = 3.0,
 ) -> str:
     """Generate a single ship as an SVG string.
 
@@ -408,6 +507,9 @@ def generate_ship_svg(
         Standard deviation of hull outline perturbation.
     n_hull_points
         Number of polygon sample points per side.
+    deck_scatter_density
+        Scatter shape density on deck.  Shapes per unit lb_ratio.
+        0 disables scatter entirely.  Default is 3.0.
 
     Returns
     -------
@@ -440,6 +542,15 @@ def generate_ship_svg(
         f'data-lb-ratio="{_f(lb_ratio)}">\n'
     )
 
+    # ClipPath — used to constrain deck scatter to hull outline
+    out.write(
+        f'  <defs>\n'
+        f'    <clipPath id="h">\n'
+        f'      <polygon points="{_polygon_attr(hull_pts)}"/>\n'
+        f'    </clipPath>\n'
+        f'  </defs>\n'
+    )
+
     # 1) Hull polygon
     hull_stroke = colors.detail_css(-20)
     hull_sw = 0.5 / lb_ratio * 0.4
@@ -455,7 +566,12 @@ def generate_ship_svg(
         if rng.random() < s.prob:
             _write_struct_svg(out, s, lb_ratio, half_widths, colors, rng)
 
-    # 3) Details
+    # 3) Deck scatter — random small shapes clipped to hull for visual texture
+    out.write('  <g clip-path="url(#h)">\n')
+    _write_deck_scatter_svg(out, lb_ratio, half_widths, colors, rng, deck_scatter_density)
+    out.write('  </g>\n')
+
+    # 4) Details
     for d in cls.details:
         if rng.random() < d.prob:
             _write_detail_svg(out, d, lb_ratio, colors, rng)
@@ -472,6 +588,7 @@ def generate_ships(
     seed: int | None = None,
     hull_noise: float = 0.005,
     n_hull_points: int = 64,
+    deck_scatter_density: float = 3.0,
 ) -> None:
     """Generate synthetic ship SVG files.
 
@@ -490,6 +607,8 @@ def generate_ships(
         Standard deviation of hull outline perturbation.
     n_hull_points
         Number of polygon sample points per side.
+    deck_scatter_density
+        Scatter shape density on deck passed to :func:`generate_ship_svg`.
 
     Raises
     ------
@@ -517,6 +636,7 @@ def generate_ships(
         svg = generate_ship_svg(
             ship_class, rng=rng, hull_noise=hull_noise,
             n_hull_points=n_hull_points,
+            deck_scatter_density=deck_scatter_density,
         )
 
         counters[ship_class] = counters.get(ship_class, 0) + 1

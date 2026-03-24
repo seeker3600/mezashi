@@ -162,6 +162,53 @@ class TestGenerateShipSvg:
         svg2 = generate_ship_svg("frigate", rng=random.Random(99))
         assert svg1 == svg2
 
+    def test_has_clippath_for_deck_scatter(self) -> None:
+        """甲板散布用の <clipPath id="h"> が <defs> 内に存在する。"""
+        svg = generate_ship_svg("frigate", rng=random.Random(42))
+        root = ET.fromstring(svg)
+        defs = root.find(f"{{{SVG_NS}}}defs")
+        assert defs is not None
+        clip = defs.find(f"{{{SVG_NS}}}clipPath")
+        assert clip is not None
+        assert clip.attrib.get("id") == "h"
+
+    def test_deck_scatter_group_present(self) -> None:
+        """clip-path 属性を持つ <g> 要素（散布図形グループ）が存在する。"""
+        svg = generate_ship_svg("frigate", rng=random.Random(42))
+        root = ET.fromstring(svg)
+        groups = [e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib]
+        assert len(groups) >= 1
+
+    def test_deck_scatter_group_has_shapes(self) -> None:
+        """散布グループ内に少なくとも1つの図形要素がある。"""
+        svg = generate_ship_svg("frigate", rng=random.Random(42))
+        root = ET.fromstring(svg)
+        groups = [e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib]
+        assert len(groups) >= 1
+        total_children = sum(len(list(g)) for g in groups)
+        assert total_children > 0
+
+    def test_deck_scatter_density_zero_is_empty(self) -> None:
+        """deck_scatter_density=0 のとき散布グループが空になる。"""
+        svg = generate_ship_svg("frigate", rng=random.Random(42), deck_scatter_density=0)
+        root = ET.fromstring(svg)
+        groups = [e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib]
+        total_children = sum(len(list(g)) for g in groups)
+        assert total_children == 0
+
+    def test_deck_scatter_density_high_more_shapes(self) -> None:
+        """density が高いほど散布図形が増える（同シード比較）。"""
+        svg_lo = generate_ship_svg("frigate", rng=random.Random(7), deck_scatter_density=1.0)
+        svg_hi = generate_ship_svg("frigate", rng=random.Random(7), deck_scatter_density=10.0)
+        def _count(svg: str) -> int:
+            root = ET.fromstring(svg)
+            return sum(
+                len(list(g))
+                for g in root
+                if g.tag == f"{{{SVG_NS}}}g" and "clip-path" in g.attrib
+            )
+        assert _count(svg_hi) > _count(svg_lo)
+
     @pytest.mark.parametrize("ship_class", get_ship_classes())
     def test_all_classes_generate(self, ship_class: str) -> None:
         """全艦種でエラーなく SVG を生成できる。"""

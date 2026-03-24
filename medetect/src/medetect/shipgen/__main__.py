@@ -71,6 +71,15 @@ def main() -> None:
         default=64,
         help="Polygon sample points per hull side (default: 64).",
     )
+    parser.add_argument(
+        "--deck_scatter_density",
+        type=float,
+        default=3.0,
+        help=(
+            "Deck scatter density: shapes per unit L/B ratio. "
+            "0 disables scatter entirely (default: 3.0)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -85,6 +94,7 @@ def main() -> None:
         seed=args.seed,
         hull_noise=args.hull_noise,
         n_hull_points=args.n_hull_points,
+        deck_scatter_density=args.deck_scatter_density,
     )
 
 
