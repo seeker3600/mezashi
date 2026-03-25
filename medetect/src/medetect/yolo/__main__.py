@@ -13,6 +13,7 @@ logging.basicConfig(
 from medetect.yolo.relabel import relabel_yolo_detect_dataset
 from medetect.yolo.tiff2png import convert_tiffs_to_png
 from medetect.yolo.train import train_yolo_model
+from medetect.yolo.valsplit import split_train_to_val
 
 
 def main() -> None:
@@ -70,6 +71,35 @@ def main() -> None:
         help="Number of worker threads (default: CPU count).",
     )
 
+    valsplit_parser = subparsers.add_parser(
+        "valsplit",
+        help="Extract a fraction of train images, augment them, and save as val.",
+    )
+    valsplit_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Dataset YAML path.",
+    )
+    valsplit_parser.add_argument(
+        "--fraction",
+        type=float,
+        required=True,
+        help="Fraction of train images to move to val (0.0-1.0 exclusive).",
+    )
+    valsplit_parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=640,
+        help="Target image size (default: 640).",
+    )
+    valsplit_parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible selection.",
+    )
+
     train_parser = subparsers.add_parser("train", help="Train a YOLO model.")
     train_parser.add_argument(
         "--max-retries",
@@ -97,6 +127,13 @@ def main() -> None:
         )
     elif args.command == "train":
         train_yolo_model(max_retries=args.max_retries)
+    elif args.command == "valsplit":
+        split_train_to_val(
+            config=args.config,
+            fraction=args.fraction,
+            imgsz=args.imgsz,
+            seed=args.seed,
+        )
 
 if __name__ == "__main__":
     main()
