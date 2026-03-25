@@ -378,6 +378,129 @@ def _write_detail_svg(
         )
 
 
+def _write_hull_edge_darken(
+    out: StringIO,
+    hull_pts: list[tuple[float, float]],
+    lb_ratio: float,
+    half_widths: NDArray,
+    rng: random.Random,
+) -> None:
+    """Draw semi-transparent dark strips along port & starboard edges.
+
+    Simulates the shadowed freeboard that is visible in real satellite
+    imagery — the hull side is darker than the deck surface.
+    """
+    n = len(half_widths)
+    opacity = rng.uniform(0.10, 0.22)
+    edge_frac = rng.uniform(0.06, 0.12)  # fraction of hull half-width
+
+    # Port edge strip (left side)
+    port_pts: list[tuple[float, float]] = []
+    for i in range(n):
+        t = i / (n - 1)
+        y = t * lb_ratio
+        hw = float(half_widths[i])
+        port_pts.append((0.5 - hw, y))
+    for i in range(n - 1, -1, -1):
+        t = i / (n - 1)
+        y = t * lb_ratio
+        hw = float(half_widths[i])
+        inner = max(0.5 - hw + hw * edge_frac, 0.5 - hw + 0.01)
+        port_pts.append((inner, y))
+    out.write(
+        f'  <polygon points="{_polygon_attr(port_pts)}" '
+        f'fill="rgba(0,0,0,{opacity:.2f})"/>\n'
+    )
+
+    # Starboard edge strip (right side)
+    stbd_pts: list[tuple[float, float]] = []
+    for i in range(n):
+        t = i / (n - 1)
+        y = t * lb_ratio
+        hw = float(half_widths[i])
+        inner = min(0.5 + hw - hw * edge_frac, 0.5 + hw - 0.01)
+        stbd_pts.append((inner, y))
+    for i in range(n - 1, -1, -1):
+        t = i / (n - 1)
+        y = t * lb_ratio
+        hw = float(half_widths[i])
+        stbd_pts.append((0.5 + hw, y))
+    out.write(
+        f'  <polygon points="{_polygon_attr(stbd_pts)}" '
+        f'fill="rgba(0,0,0,{opacity:.2f})"/>\n'
+    )
+
+
+def _write_deck_highlight(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    colors: ShipColors,
+    rng: random.Random,
+) -> None:
+    """Subtle centreline brightness gradient to simulate deck curvature."""
+    n = len(half_widths)
+    opacity = rng.uniform(0.04, 0.10)
+    width_frac = rng.uniform(0.25, 0.40)
+
+    pts: list[tuple[float, float]] = []
+    # Forward pass — left edge of highlight strip
+    for i in range(n):
+        t = i / (n - 1)
+        y = t * lb_ratio
+        hw = float(half_widths[i])
+        pts.append((0.5 - hw * width_frac, y))
+    # Reverse pass — right edge
+    for i in range(n - 1, -1, -1):
+        t = i / (n - 1)
+        y = t * lb_ratio
+        hw = float(half_widths[i])
+        pts.append((0.5 + hw * width_frac, y))
+
+    out.write(
+        f'  <polygon points="{_polygon_attr(pts)}" '
+        f'fill="rgba(255,255,255,{opacity:.2f})"/>\n'
+    )
+
+
+def _write_struct_shadow_svg(
+    out: StringIO,
+    spec: Struct,
+    lb_ratio: float,
+    half_widths: NDArray,
+    sun_dx: float,
+    sun_dy: float,
+    rng: random.Random,
+) -> None:
+    """Draw a dark shadow offset from a superstructure block."""
+    x0 = rng.uniform(*spec.x0)
+    x1 = rng.uniform(*spec.x1)
+    if x0 >= x1:
+        return
+    w_frac = rng.uniform(*spec.w)
+
+    n = len(half_widths)
+    mid_idx = min(int((x0 + x1) / 2 * (n - 1)), n - 1)
+    hull_hw = float(half_widths[mid_idx])
+
+    block_hw = w_frac * 0.5
+    cx = 0.5 + spec.y_off
+    el = max(cx - block_hw, 0.5 - hull_hw + 0.02)
+    er = min(cx + block_hw, 0.5 + hull_hw - 0.02)
+    if el >= er:
+        return
+
+    y0 = x0 * lb_ratio + sun_dy
+    y1 = x1 * lb_ratio + sun_dy
+    el_s = el + sun_dx
+    er_s = er + sun_dx
+    out.write(
+        f'  <rect x="{_f(el_s)}" y="{_f(y0)}" '
+        f'width="{_f(er_s - el_s)}" height="{_f(y1 - y0)}" '
+        f'fill="rgba(0,0,0,0.15)" rx="{_f((y1 - y0) * 0.05)}"/>\n'
+    )
+
+
 def _write_deck_scatter_svg(
     out: StringIO,
     lb_ratio: float,
@@ -385,6 +508,9 @@ def _write_deck_scatter_svg(
     colors: ShipColors,
     rng: random.Random,
     density: float = 3.0,
+    struct_zones: list[tuple[float, float]] | None = None,
+    sun_dx: float = 0.0,
+    sun_dy: float = 0.0,
 ) -> None:
     """甲板上にランダムな小図形を散布してテクスチャを付加する。
 
@@ -395,6 +521,12 @@ def _write_deck_scatter_svg(
     density
         散布密度。1 あたりの図形数 = density * lb_ratio。
         0 で散布なし。標準は 3.0。
+    struct_zones
+        Superstructure exclusion zones as ``(t_start, t_end)`` along the
+        normalised ship length [0, 1].  Scatter points falling inside
+        these regions are skipped.
+    sun_dx, sun_dy
+        Shadow offset direction shared with superstructure shadows.
     """
     if density <= 0:
         return
@@ -403,77 +535,187 @@ def _write_deck_scatter_svg(
     base = density * lb_ratio
     n_shapes = rng.randint(max(1, int(base * 0.6)), max(1, int(base * 1.4)) + 1)
 
+    sz_zones = struct_zones or []
+
     for _ in range(n_shapes):
         t = rng.uniform(0.04, 0.96)
+
+        # Skip if this point falls inside a superstructure zone
+        in_struct = False
+        for z_start, z_end in sz_zones:
+            if z_start <= t <= z_end:
+                in_struct = True
+                break
+        if in_struct:
+            continue
+
         idx = min(int(t * (n - 1)), n - 1)
         hull_hw = float(half_widths[idx])
-        # Skip very narrow sections (bow/stern tips)
         if hull_hw < 0.05:
             continue
 
         cy = t * lb_ratio
-        # Keep cx strictly inside hull to avoid relying solely on clipPath
         margin = min(0.04, hull_hw * 0.15)
         half_range = hull_hw - margin
         cx = 0.5 + rng.uniform(-half_range, half_range)
 
-        # Shape size: small relative to beam, always fits inside hull
-        max_sz = min(0.06, hull_hw * 0.55)
-        sz = rng.uniform(max_sz * 0.3, max_sz)
-
-        # Colour: hull-toned with a noticeable but harmonious offset.
-        # Pick a signed shift so the shape is always distinguishable from hull.
-        sign = 1 if rng.random() < 0.5 else -1
-        offset = sign * rng.randint(18, 38)
-        # ~10% chance: accent colour (equipment / containers) — stays within
-        # a muted range to blend with the overall palette.
-        if rng.random() < 0.10:
-            hr, hg, hb = colors.hull
-            # Desaturate accent toward hull lightness to avoid eye-jarring pops
-            luma = int(hr * 0.3 + hg * 0.59 + hb * 0.11)
-            accent_shift = rng.randint(25, 55)
-            av = max(0, min(255, luma + accent_shift))
-            fill = f"rgb({av},{max(0, min(255, av - rng.randint(0, 20)))},{max(0, min(255, av - rng.randint(15, 45)))})"
-            stroke_color = colors.detail_css(offset - 10)
+        # ── Size tier selection ──────────────────────────────────────
+        # Tier 1 (60%): micro texture — stains, tie-downs, drains
+        # Tier 2 (30%): small equipment — vents, reels, foundations
+        # Tier 3 (10%): medium equipment — boxes, small hatches
+        tier_roll = rng.random()
+        if tier_roll < 0.60:
+            tier = 1
+            max_sz = min(0.012, hull_hw * 0.20)
+            sz = rng.uniform(max_sz * 0.3, max_sz)
+        elif tier_roll < 0.90:
+            tier = 2
+            max_sz = min(0.025, hull_hw * 0.35)
+            sz = rng.uniform(max_sz * 0.4, max_sz)
         else:
-            fill = colors.detail_css(offset)
-            stroke_color = colors.detail_css(offset - sign * 12)
+            tier = 3
+            max_sz = min(0.045, hull_hw * 0.50)
+            sz = rng.uniform(max_sz * 0.5, max_sz)
 
-        sw = sz * 0.12  # unified stroke width
+        # ── Colour — hull-toned, subtle offset ──────────────────────
+        sign = 1 if rng.random() < 0.5 else -1
+        # Smaller tiers = less colour contrast (nearly invisible marks)
+        contrast = {1: (5, 14), 2: (10, 22), 3: (14, 28)}[tier]
+        offset = sign * rng.randint(*contrast)
+        fill = colors.detail_css(offset)
 
-        kind = rng.choices(
-            ["rect", "circle", "line_h", "line_v"],
-            weights=[6, 2, 1, 1],
-        )[0]
+        # ── Shadow for tier 2+ ──────────────────────────────────────
+        if tier >= 2:
+            shadow_dx = sun_dx * 0.4
+            shadow_dy = sun_dy * 0.4
+            shadow_opacity = rng.uniform(0.10, 0.20)
+            _write_scatter_shadow(
+                out, cx, cy, sz, shadow_dx, shadow_dy, shadow_opacity, rng,
+            )
 
-        if kind == "rect":
-            w = sz * rng.uniform(0.7, 2.0)
-            h = sz * rng.uniform(0.7, 2.0)
-            out.write(
-                f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
-                f'width="{_f(w)}" height="{_f(h)}" '
-                f'fill="{fill}" stroke="{stroke_color}" stroke-width="{_f(sw)}"/>\n'
-            )
-        elif kind == "circle":
-            r = sz * 0.5
-            out.write(
-                f'  <circle cx="{_f(cx)}" cy="{_f(cy)}" r="{_f(r)}" '
-                f'fill="{fill}" stroke="{stroke_color}" stroke-width="{_f(sw)}"/>\n'
-            )
-        elif kind == "line_h":
-            hw_line = sz * rng.uniform(0.8, 2.2)
-            out.write(
-                f'  <line x1="{_f(cx - hw_line)}" y1="{_f(cy)}" '
-                f'x2="{_f(cx + hw_line)}" y2="{_f(cy)}" '
-                f'stroke="{fill}" stroke-width="{_f(sw * 1.3)}"/>\n'
-            )
-        elif kind == "line_v":
-            hl_line = sz * rng.uniform(0.8, 2.2)
-            out.write(
-                f'  <line x1="{_f(cx)}" y1="{_f(cy - hl_line)}" '
-                f'x2="{_f(cx)}" y2="{_f(cy + hl_line)}" '
-                f'stroke="{fill}" stroke-width="{_f(sw * 1.3)}"/>\n'
-            )
+        # ── Shape drawing ────────────────────────────────────────────
+        sw = sz * 0.06
+
+        if tier == 1:
+            # Micro marks: tiny rects and dots — no stroke
+            kind = rng.choices(["dot", "tick_v", "tick_h"], weights=[3, 2, 2])[0]
+            if kind == "dot":
+                r = sz * 0.4
+                out.write(
+                    f'  <circle cx="{_f(cx)}" cy="{_f(cy)}" r="{_f(r)}" '
+                    f'fill="{fill}"/>\n'
+                )
+            elif kind == "tick_v":
+                hl = sz * rng.uniform(0.6, 1.2)
+                out.write(
+                    f'  <line x1="{_f(cx)}" y1="{_f(cy - hl)}" '
+                    f'x2="{_f(cx)}" y2="{_f(cy + hl)}" '
+                    f'stroke="{fill}" stroke-width="{_f(sz * 0.25)}"/>\n'
+                )
+            else:  # tick_h
+                hw = sz * rng.uniform(0.5, 1.0)
+                out.write(
+                    f'  <line x1="{_f(cx - hw)}" y1="{_f(cy)}" '
+                    f'x2="{_f(cx + hw)}" y2="{_f(cy)}" '
+                    f'stroke="{fill}" stroke-width="{_f(sz * 0.25)}"/>\n'
+                )
+        elif tier == 2:
+            # Small equipment: rects aligned to ship axis, circles
+            stroke_color = colors.detail_css(offset - sign * 6)
+            kind = rng.choices(
+                ["rect", "rect_long", "circle"],
+                weights=[4, 3, 2],
+            )[0]
+            if kind == "rect":
+                w = sz * rng.uniform(0.6, 1.2)
+                h = sz * rng.uniform(0.6, 1.2)
+                out.write(
+                    f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+                    f'width="{_f(w)}" height="{_f(h)}" '
+                    f'fill="{fill}" stroke="{stroke_color}" '
+                    f'stroke-width="{_f(sw)}"/>\n'
+                )
+            elif kind == "rect_long":
+                w = sz * rng.uniform(0.3, 0.6)
+                h = sz * rng.uniform(1.5, 2.5)
+                out.write(
+                    f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+                    f'width="{_f(w)}" height="{_f(h)}" '
+                    f'fill="{fill}" stroke="{stroke_color}" '
+                    f'stroke-width="{_f(sw)}"/>\n'
+                )
+            else:  # circle
+                r = sz * 0.45
+                out.write(
+                    f'  <circle cx="{_f(cx)}" cy="{_f(cy)}" r="{_f(r)}" '
+                    f'fill="{fill}" stroke="{stroke_color}" '
+                    f'stroke-width="{_f(sw)}"/>\n'
+                )
+        else:
+            # Tier 3: medium equipment — boxes, small hatches with crosslines
+            stroke_color = colors.detail_css(offset - sign * 8)
+            kind = rng.choices(
+                ["box", "hatch_mini", "rect_long"],
+                weights=[4, 3, 2],
+            )[0]
+            if kind == "box":
+                w = sz * rng.uniform(0.7, 1.3)
+                h = sz * rng.uniform(0.7, 1.3)
+                out.write(
+                    f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+                    f'width="{_f(w)}" height="{_f(h)}" '
+                    f'fill="{fill}" stroke="{stroke_color}" '
+                    f'stroke-width="{_f(sw)}"/>\n'
+                )
+            elif kind == "hatch_mini":
+                w = sz * rng.uniform(0.8, 1.2)
+                h = sz * rng.uniform(0.6, 1.0)
+                inner = colors.detail_css(offset - sign * 14)
+                out.write(
+                    f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+                    f'width="{_f(w)}" height="{_f(h)}" '
+                    f'fill="{fill}" stroke="{stroke_color}" '
+                    f'stroke-width="{_f(sw)}"/>\n'
+                )
+                # Cross divider
+                out.write(
+                    f'  <line x1="{_f(cx - w / 2)}" y1="{_f(cy)}" '
+                    f'x2="{_f(cx + w / 2)}" y2="{_f(cy)}" '
+                    f'stroke="{inner}" stroke-width="{_f(sw * 0.6)}"/>\n'
+                )
+            else:  # rect_long
+                w = sz * rng.uniform(0.3, 0.5)
+                h = sz * rng.uniform(2.0, 3.5)
+                out.write(
+                    f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+                    f'width="{_f(w)}" height="{_f(h)}" '
+                    f'fill="{fill}" stroke="{stroke_color}" '
+                    f'stroke-width="{_f(sw)}"/>\n'
+                )
+
+
+def _write_scatter_shadow(
+    out: StringIO,
+    cx: float,
+    cy: float,
+    sz: float,
+    shadow_dx: float,
+    shadow_dy: float,
+    opacity: float,
+    rng: random.Random,
+) -> None:
+    """Render a tiny drop shadow for one deck scatter item."""
+    sx = cx + shadow_dx
+    sy = cy + shadow_dy
+    # Shadow is a slightly larger, offset dark shape
+    w = sz * rng.uniform(0.8, 1.3)
+    h = sz * rng.uniform(0.8, 1.3)
+    out.write(
+        f'  <rect x="{_f(sx - w / 2)}" y="{_f(sy - h / 2)}" '
+        f'width="{_f(w)}" height="{_f(h)}" '
+        f'fill="rgba(0,0,0,{opacity:.2f})" '
+        f'rx="{_f(min(w, h) * 0.15)}"/>\n'
+    )
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -542,7 +784,7 @@ def generate_ship_svg(
         f'data-lb-ratio="{_f(lb_ratio)}">\n'
     )
 
-    # ClipPath — used to constrain deck scatter to hull outline
+    # ClipPath — used to constrain deck scatter and edge effects to hull
     out.write(
         f'  <defs>\n'
         f'    <clipPath id="h">\n'
@@ -552,8 +794,8 @@ def generate_ship_svg(
     )
 
     # 1) Hull polygon
-    hull_stroke = colors.detail_css(-20)
-    hull_sw = 0.5 / lb_ratio * 0.4
+    hull_stroke = colors.detail_css(-25)
+    hull_sw = 0.5 / lb_ratio * 0.5
     out.write(
         f'  <polygon points="{_polygon_attr(hull_pts)}" '
         f'fill="{colors.hull_css()}" '
@@ -561,14 +803,37 @@ def generate_ship_svg(
         f'stroke-linejoin="round"/>\n'
     )
 
-    # 2) Superstructures
+    # 1b) Freeboard / waterline edge darkening — semi-transparent dark
+    # strip along the hull perimeter simulates the shadowed hull side
+    # visible in satellite imagery.
+    out.write('  <g clip-path="url(#h)">\n')
+    _write_hull_edge_darken(out, hull_pts, lb_ratio, half_widths, rng)
+    out.write('  </g>\n')
+
+    # 1c) Deck centreline highlight — slight brightness along midship axis
+    out.write('  <g clip-path="url(#h)">\n')
+    _write_deck_highlight(out, lb_ratio, half_widths, colors, rng)
+    out.write('  </g>\n')
+
+    # 2) Superstructures (with directional shadow)
+    # Pick a consistent sun angle for the whole ship
+    sun_dx = rng.uniform(-0.02, 0.02)
+    sun_dy = rng.uniform(0.01, 0.04) * lb_ratio  # shadow falls roughly aft/side
     for s in cls.structs:
         if rng.random() < s.prob:
+            _write_struct_shadow_svg(out, s, lb_ratio, half_widths, sun_dx, sun_dy, rng)
             _write_struct_svg(out, s, lb_ratio, half_widths, colors, rng)
 
+    # Compute approximate superstructure exclusion zones for scatter
+    # Use the outer bounds of each struct's x0/x1 ranges.
+    struct_zones = [(s.x0[0], s.x1[1]) for s in cls.structs]
+
     # 3) Deck scatter — random small shapes clipped to hull for visual texture
-    out.write('  <g clip-path="url(#h)">\n')
-    _write_deck_scatter_svg(out, lb_ratio, half_widths, colors, rng, deck_scatter_density)
+    out.write('  <g clip-path="url(#h)" id="scatter">\n')
+    _write_deck_scatter_svg(
+        out, lb_ratio, half_widths, colors, rng, deck_scatter_density,
+        struct_zones=struct_zones, sun_dx=sun_dx, sun_dy=sun_dy,
+    )
     out.write('  </g>\n')
 
     # 4) Details

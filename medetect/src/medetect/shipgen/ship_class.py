@@ -13,14 +13,15 @@ from dataclasses import dataclass
 # ── Colour system ────────────────────────────────────────────────────────
 
 _PALETTES: dict[str, list[tuple[int, int, int]]] = {
+    # Satellite-view palettes: atmospheric haze desaturates all colours.
     "navy_gray": [
         (140, 143, 146),  # USN Haze Gray
         (128, 132, 138),  # Medium gray
-        (120, 128, 140),  # Blue-gray (European navies)
-        (155, 158, 161),  # Light gray
+        (124, 130, 138),  # Blue-gray (European navies)
+        (150, 152, 156),  # Light gray
         (110, 115, 120),  # Dark gray
-        (135, 140, 148),  # JMSDF blue-gray
-        (95, 100, 108),   # Russian Navy dark
+        (132, 136, 142),  # JMSDF blue-gray
+        (98, 102, 108),   # Russian Navy dark
     ],
     "navy_dark": [
         (100, 105, 108),  # Non-skid flight deck
@@ -29,36 +30,38 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (105, 110, 115),  # Medium-dark
     ],
     "fishing_mixed": [
-        (195, 200, 205),  # White
-        (70, 110, 160),   # Light blue
-        (45, 75, 130),    # Medium blue
-        (30, 50, 90),     # Dark blue
-        (150, 55, 45),    # Red / rust
-        (40, 85, 55),     # Green
-        (180, 185, 195),  # Off-white
-        (40, 45, 50),     # Black (working vessel)
+        # Desaturated for satellite altitude — atmospheric scattering
+        (175, 178, 182),  # Off-white
+        (90, 110, 135),   # Muted blue
+        (70, 85, 110),    # Medium blue-gray
+        (55, 65, 82),     # Dark blue-gray
+        (120, 85, 78),    # Muted rust
+        (80, 95, 82),     # Muted green-gray
+        (160, 162, 168),  # Light gray
+        (55, 58, 62),     # Dark gray
     ],
     "fishing_white": [
-        (195, 200, 205),
-        (200, 205, 210),
-        (185, 190, 200),
-        (190, 195, 198),
+        (180, 183, 188),
+        (185, 188, 192),
+        (172, 176, 182),
+        (176, 180, 184),
     ],
     "work_mixed": [
-        (45, 55, 65),     # Dark navy / black
-        (150, 55, 45),    # Red / rust
-        (180, 180, 170),  # Off-white
-        (55, 80, 110),    # Steel blue
-        (80, 85, 90),     # Charcoal
-        (120, 80, 45),    # Brown
-        (40, 45, 50),     # Near-black
+        # Muted satellite-view tones
+        (55, 60, 68),     # Dark gray-blue
+        (115, 82, 75),    # Muted rust
+        (155, 155, 150),  # Off-white
+        (70, 82, 98),     # Steel blue-gray
+        (82, 85, 90),     # Charcoal
+        (100, 85, 72),    # Muted brown
+        (48, 50, 55),     # Near-black
     ],
     "barge_dull": [
-        (85, 80, 70),     # Rust brown
-        (70, 72, 68),     # Dark gray-green
-        (95, 90, 80),     # Weathered brown
-        (60, 58, 55),     # Dark steel
-        (110, 100, 85),   # Tan
+        (88, 84, 78),     # Weathered brown-gray
+        (74, 75, 72),     # Dark gray
+        (95, 92, 85),     # Weathered tan
+        (65, 64, 62),     # Dark steel
+        (105, 100, 92),   # Muted tan
     ],
 }
 
@@ -100,16 +103,22 @@ def sample_colors(family: str, rng: random.Random) -> ShipColors:
     """Sample a colour scheme from the given palette family."""
     base = rng.choice(_PALETTES[family])
     hull = (
-        _clamp(base[0] + rng.randint(-8, 8)),
-        _clamp(base[1] + rng.randint(-8, 8)),
-        _clamp(base[2] + rng.randint(-8, 8)),
+        _clamp(base[0] + rng.randint(-6, 6)),
+        _clamp(base[1] + rng.randint(-6, 6)),
+        _clamp(base[2] + rng.randint(-6, 6)),
     )
-    # Fishing vessels frequently have white superstructure on coloured hull
+    # Superstructure is typically brighter than the hull deck — visible
+    # even from satellite altitude as a lighter block.
+    struct_boost = rng.randint(18, 38)
     if family.startswith("fishing") and rng.random() < 0.5:
-        sb = _clamp(190 + rng.randint(-10, 15))
+        sb = _clamp(175 + rng.randint(-10, 15))
         struct_base = (sb, sb + rng.randint(-3, 3), sb + rng.randint(-3, 5))
     else:
-        struct_base = hull
+        struct_base = (
+            _clamp(hull[0] + struct_boost),
+            _clamp(hull[1] + struct_boost),
+            _clamp(hull[2] + struct_boost),
+        )
     return ShipColors(hull=hull, struct_base=struct_base)
 
 

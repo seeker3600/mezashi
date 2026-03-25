@@ -192,8 +192,12 @@ class TestGenerateShipSvg:
         """deck_scatter_density=0 のとき散布グループが空になる。"""
         svg = generate_ship_svg("frigate", rng=random.Random(42), deck_scatter_density=0)
         root = ET.fromstring(svg)
-        groups = [e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib]
-        total_children = sum(len(list(g)) for g in groups)
+        # Only count children in the scatter group (id="scatter"), not hull-effect groups
+        scatter_groups = [
+            e for e in root
+            if e.tag == f"{{{SVG_NS}}}g" and e.get("id") == "scatter"
+        ]
+        total_children = sum(len(list(g)) for g in scatter_groups)
         assert total_children == 0
 
     def test_deck_scatter_density_high_more_shapes(self) -> None:
