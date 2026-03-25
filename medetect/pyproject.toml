@@ -35,6 +35,9 @@ testpaths = ["tests"]
 
 [tool.pixi.activation.env]
 PYTHONUTF8 = "1"
+OPENCV_LOG_LEVEL = "ERROR"
+PYTORCH_ALLOC_CONF = "expandable_segments:True,max_split_size_mb:128"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,max_split_size_mb:128"
 
 [tool.pixi.tasks]
 # flatbuffers, ml-dtypes, onnx, onnxruntime-gpu, onnxslim のみ（[project] dependencies の直接指定パッケージ）。
