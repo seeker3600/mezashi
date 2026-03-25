@@ -79,6 +79,14 @@ def split_train_to_val(
     dataset_path = Path(data["path"]).resolve()
     train_path = dataset_path / data["train"]
 
+    # If the YAML references an autosplit .txt that doesn't exist yet,
+    # fall back to the directory that would contain the txt file (images/).
+    if train_path.suffix == ".txt" and not train_path.exists():
+        train_path = train_path.parent
+        logger.warning(
+            "train txt not found; using directory: %s", train_path
+        )
+
     hyp = _build_hyp()
 
     # YOLODataset.__init__ calls build_transforms(hyp), which uses

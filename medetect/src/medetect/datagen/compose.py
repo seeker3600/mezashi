@@ -790,13 +790,6 @@ def generate_dataset(
         stats["ships"] += len(labels)
         stats["clusters"] += n_clusters
 
-        if (i + 1) % 100 == 0 or (i + 1) == count:
-            logger.info(
-                "Progress %d/%d — images=%d ships=%d clusters=%d skipped=%d",
-                i + 1, count,
-                stats["images"], stats["ships"], stats["clusters"], stats["skipped"],
-            )
-
     # Write dataset YAML
     _write_dataset_yaml(output_dir, class_id)
 

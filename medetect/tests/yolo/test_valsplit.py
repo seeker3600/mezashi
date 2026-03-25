@@ -247,6 +247,44 @@ class TestSplitTrainToVal:
 
             split_train_to_val(config, fraction=0.2, seed=0)  # should not raise
 
+    def test_train_txt_missing_falls_back_to_directory(self, tmp_path: Path) -> None:
+        """trainがtxtファイル指定でファイルが存在しない場合は親ディレクトリで代替する。"""
+        images_dir = tmp_path / "images" / "train"
+        labels_dir = tmp_path / "labels" / "train"
+        images_dir.mkdir(parents=True)
+        labels_dir.mkdir(parents=True)
+        for i in range(5):
+            (images_dir / f"img_{i:04d}.png").write_bytes(b"fake")
+            (labels_dir / f"img_{i:04d}.txt").write_text("0 0.5 0.5 0.1 0.1")
+
+        config = tmp_path / "dataset.yaml"
+        config.write_text(
+            f"path: {tmp_path}\n"
+            "train: images/autosplit_train.txt\n"
+            "val: images/autosplit_val.txt\n"
+            "names:\n  0: ship\n"
+        )
+
+        # autosplit_*.txt は作成しない
+
+        captured: list[str] = []
+
+        def _fake_yolo_dataset(img_path, **kwargs):
+            captured.append(img_path)
+            mock = self._mock_dataset(images_dir, 5)
+            return mock
+
+        with (
+            patch("medetect.yolo.valsplit.YOLODataset", side_effect=_fake_yolo_dataset),
+            patch("medetect.yolo.valsplit._build_hyp", return_value=MagicMock()),
+        ):
+            from medetect.yolo.valsplit import split_train_to_val
+
+            split_train_to_val(config, fraction=0.2, seed=0)
+
+        # txt ではなくその親ディレクトリ（images/）が渡されていること
+        assert captured[0] == str(tmp_path / "images")
+
     def test_invalid_fraction_raises(self, tmp_path: Path) -> None:
         """不正な割合でValueErrorが送出される。"""
         config, _, _ = self._make_dataset(tmp_path)
