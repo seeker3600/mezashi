@@ -9,15 +9,23 @@ from medetect.datagen.render import parse_color, parse_svg_metadata, rasterize_s
 class TestParseColor:
     def test_rgb_format(self) -> None:
         """rgb(r,g,b) 形式をパースする。"""
-        assert parse_color("rgb(128,64,32)") == (128, 64, 32)
+        assert parse_color("rgb(128,64,32)") == (128, 64, 32, 255)
 
     def test_rgb_with_high_values(self) -> None:
         """rgb上限値をパースする。"""
-        assert parse_color("rgb(255,255,255)") == (255, 255, 255)
+        assert parse_color("rgb(255,255,255)") == (255, 255, 255, 255)
+
+    def test_rgba_format(self) -> None:
+        """rgba(r,g,b,a) 形式をパースする。"""
+        assert parse_color("rgba(0,0,0,0.5)") == (0, 0, 0, 128)
+
+    def test_rgba_opaque(self) -> None:
+        """rgba with alpha=1.0 returns fully opaque."""
+        assert parse_color("rgba(100,200,50,1.0)") == (100, 200, 50, 255)
 
     def test_none_returns_fallback(self) -> None:
         """未知の形式ではフォールバック色を返す。"""
-        r, g, b = parse_color("unknown")
+        r, g, b, a = parse_color("unknown")
         assert 0 <= r <= 255
 
 

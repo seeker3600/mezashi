@@ -55,8 +55,13 @@ def _write_struct_svg(
     half_widths: NDArray,
     colors: ShipColors,
     rng: random.Random,
+    sun_dx: float = 0.0,
 ) -> None:
-    """Append one superstructure <rect>, clipped to hull width."""
+    """Append one superstructure <rect>, clipped to hull width.
+
+    Includes a one-side darkening overlay to simulate directional
+    self-shadow on the structure face.
+    """
     x0 = rng.uniform(*spec.x0)
     x1 = rng.uniform(*spec.x1)
     if x0 >= x1:
@@ -84,6 +89,24 @@ def _write_struct_svg(
         f'width="{_f(er - el)}" height="{_f(y1 - y0)}" '
         f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sw)}"/>\n'
     )
+
+    # Self-shadow: darken one side of the structure based on sun direction
+    shadow_w = (er - el) * rng.uniform(0.25, 0.45)
+    shadow_opacity = rng.uniform(0.06, 0.14)
+    if sun_dx > 0:
+        # Sun from right → shadow on left side
+        out.write(
+            f'  <rect x="{_f(el)}" y="{_f(y0)}" '
+            f'width="{_f(shadow_w)}" height="{_f(y1 - y0)}" '
+            f'fill="rgba(0,0,0,{shadow_opacity:.2f})"/>\n'
+        )
+    else:
+        # Sun from left → shadow on right side
+        out.write(
+            f'  <rect x="{_f(er - shadow_w)}" y="{_f(y0)}" '
+            f'width="{_f(shadow_w)}" height="{_f(y1 - y0)}" '
+            f'fill="rgba(0,0,0,{shadow_opacity:.2f})"/>\n'
+        )
 
 
 def _write_detail_svg(
@@ -463,6 +486,359 @@ def _write_deck_highlight(
     )
 
 
+def _write_hull_mottling(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    rng: random.Random,
+) -> None:
+    """Overlay large irregular patches of slight brightness variation.
+
+    Breaks up the flat hull colour into 3-6 tonal zones, giving the
+    appearance of paint wear, panel boundaries, and deck surface
+    variation that are visible even in low-resolution satellite imagery.
+    """
+    import math
+
+    n = len(half_widths)
+
+    # ── Large tonal patches (3-6) ────────────────────────────────────
+    n_patches = rng.randint(3, 6)
+
+    for _ in range(n_patches):
+        # Random centre on the hull
+        ct = rng.uniform(0.10, 0.90)
+        idx = min(int(ct * (n - 1)), n - 1)
+        hw = float(half_widths[idx])
+        if hw < 0.05:
+            continue
+        cy = ct * lb_ratio
+        cx = 0.5 + rng.uniform(-hw * 0.5, hw * 0.5)
+
+        # Blob radius relative to hull size
+        r_y = rng.uniform(0.08, 0.25) * lb_ratio
+        r_x = rng.uniform(0.06, 0.18)
+
+        # Build irregular blob polygon (8 vertices)
+        n_verts = 8
+        pts: list[tuple[float, float]] = []
+        for vi in range(n_verts):
+            angle = 2 * math.pi * vi / n_verts
+            jitter = rng.uniform(0.7, 1.3)
+            px = cx + r_x * jitter * math.cos(angle)
+            py = cy + r_y * jitter * math.sin(angle)
+            pts.append((px, py))
+
+        # Randomly lighten or darken
+        if rng.random() < 0.5:
+            opacity = rng.uniform(0.03, 0.08)
+            fill = f"rgba(0,0,0,{opacity:.2f})"
+        else:
+            opacity = rng.uniform(0.03, 0.07)
+            fill = f"rgba(255,255,255,{opacity:.2f})"
+
+        out.write(
+            f'  <polygon points="{_polygon_attr(pts)}" fill="{fill}"/>\n'
+        )
+
+    # ── Fine-scale surface noise (many small patches) ────────────────
+    # Dense layer of small, very faint marks that provide overall
+    # surface texture — simulates paint grain, minor irregularities.
+    n_fine = rng.randint(max(4, int(lb_ratio * 2)), max(6, int(lb_ratio * 4)))
+    for _ in range(n_fine):
+        ct = rng.uniform(0.04, 0.96)
+        idx = min(int(ct * (n - 1)), n - 1)
+        hw = float(half_widths[idx])
+        if hw < 0.04:
+            continue
+        cy = ct * lb_ratio
+        cx = 0.5 + rng.uniform(-hw * 0.7, hw * 0.7)
+
+        # Small blobs: 4-6 vertices
+        r_y = rng.uniform(0.02, 0.06) * lb_ratio
+        r_x = rng.uniform(0.015, 0.05)
+        n_verts = rng.randint(4, 6)
+        pts = []
+        for vi in range(n_verts):
+            angle = 2 * math.pi * vi / n_verts
+            jitter = rng.uniform(0.6, 1.4)
+            px = cx + r_x * jitter * math.cos(angle)
+            py = cy + r_y * jitter * math.sin(angle)
+            pts.append((px, py))
+
+        opacity = rng.uniform(0.02, 0.05)
+        if rng.random() < 0.55:
+            fill = f"rgba(0,0,0,{opacity:.2f})"
+        else:
+            fill = f"rgba(255,255,255,{opacity:.2f})"
+        out.write(
+            f'  <polygon points="{_polygon_attr(pts)}" fill="{fill}"/>\n'
+        )
+
+
+def _write_bow_stern_shading(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    rng: random.Random,
+) -> None:
+    """Darken bow and stern extremities to simulate curvature shading.
+
+    Real vessels appear darker near the narrowing bow/stern due to
+    surface angle relative to satellite view and paint weathering.
+    """
+    n = len(half_widths)
+    bow_len = rng.uniform(0.08, 0.15)  # fraction of total length
+    stern_len = rng.uniform(0.08, 0.18)
+    bow_opacity = rng.uniform(0.06, 0.14)
+    stern_opacity = rng.uniform(0.05, 0.12)
+
+    # Bow zone — multiple strips with decreasing opacity (gradient approx)
+    n_strips = 4
+    for si in range(n_strips):
+        t_end = bow_len * (n_strips - si) / n_strips
+        strip_opacity = bow_opacity * (si + 1) / n_strips
+        pts: list[tuple[float, float]] = []
+        i_end = min(int(t_end * (n - 1)), n - 1) + 1
+        for i in range(i_end):
+            t = i / (n - 1)
+            y = t * lb_ratio
+            hw = float(half_widths[i])
+            pts.append((0.5 + hw, y))
+        for i in range(i_end - 1, -1, -1):
+            t = i / (n - 1)
+            y = t * lb_ratio
+            hw = float(half_widths[i])
+            pts.append((0.5 - hw, y))
+        if len(pts) >= 3:
+            out.write(
+                f'  <polygon points="{_polygon_attr(pts)}" '
+                f'fill="rgba(0,0,0,{strip_opacity:.2f})"/>\n'
+            )
+
+    # Stern zone
+    for si in range(n_strips):
+        t_start = 1.0 - stern_len * (n_strips - si) / n_strips
+        strip_opacity = stern_opacity * (si + 1) / n_strips
+        pts = []
+        i_start = max(int(t_start * (n - 1)), 0)
+        for i in range(i_start, n):
+            t = i / (n - 1)
+            y = t * lb_ratio
+            hw = float(half_widths[i])
+            pts.append((0.5 + hw, y))
+        for i in range(n - 1, i_start - 1, -1):
+            t = i / (n - 1)
+            y = t * lb_ratio
+            hw = float(half_widths[i])
+            pts.append((0.5 - hw, y))
+        if len(pts) >= 3:
+            out.write(
+                f'  <polygon points="{_polygon_attr(pts)}" '
+                f'fill="rgba(0,0,0,{strip_opacity:.2f})"/>\n'
+            )
+
+
+def _write_sun_side_shadow(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    sun_dx: float,
+    rng: random.Random,
+) -> None:
+    """Darken the hull side opposite to the sun for self-shadow effect.
+
+    Creates a gentle brightness asymmetry across the beam, simulating
+    the way one side of a vessel appears slightly darker in satellite
+    imagery depending on the sun angle.
+    """
+    n = len(half_widths)
+    # Shadow falls on the side opposite to the sun
+    shadow_side = "port" if sun_dx > 0 else "starboard"
+    opacity = rng.uniform(0.04, 0.10)
+    width_frac = rng.uniform(0.30, 0.55)  # how far inward the shadow reaches
+
+    pts: list[tuple[float, float]] = []
+    if shadow_side == "port":
+        # Port side (left) — outer edge to inner boundary
+        for i in range(n):
+            t = i / (n - 1)
+            y = t * lb_ratio
+            hw = float(half_widths[i])
+            pts.append((0.5 - hw, y))
+        for i in range(n - 1, -1, -1):
+            t = i / (n - 1)
+            y = t * lb_ratio
+            hw = float(half_widths[i])
+            pts.append((0.5 - hw * (1.0 - width_frac), y))
+    else:
+        # Starboard side (right)
+        for i in range(n):
+            t = i / (n - 1)
+            y = t * lb_ratio
+            hw = float(half_widths[i])
+            pts.append((0.5 + hw * (1.0 - width_frac), y))
+        for i in range(n - 1, -1, -1):
+            t = i / (n - 1)
+            y = t * lb_ratio
+            hw = float(half_widths[i])
+            pts.append((0.5 + hw, y))
+
+    if len(pts) >= 3:
+        out.write(
+            f'  <polygon points="{_polygon_attr(pts)}" '
+            f'fill="rgba(0,0,0,{opacity:.2f})"/>\n'
+        )
+
+
+def _write_deck_panels(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    colors: ShipColors,
+    rng: random.Random,
+    struct_zones: list[tuple[float, float]] | None = None,
+) -> None:
+    """Draw large-scale deck panel divisions and centreline markings.
+
+    Adds the "big structural" appearance — panel seam lines running
+    across the deck, longitudinal centreline, and occasional large
+    rectangular zone fills that break the hull into distinct deck areas.
+    These are the coarse features most visible in satellite imagery.
+    """
+    n = len(half_widths)
+    sz_zones = struct_zones or []
+
+    # ── Centreline ───────────────────────────────────────────────────
+    # Thin darker/lighter line running bow to stern along the midship axis
+    cl_opacity = rng.uniform(0.04, 0.10)
+    cl_bright = rng.choice([True, False])
+    cl_colour = f"rgba(255,255,255,{cl_opacity:.2f})" if cl_bright else f"rgba(0,0,0,{cl_opacity:.2f})"
+    cl_hw = rng.uniform(0.008, 0.015)
+    # Build a thin strip polygon
+    cl_pts: list[tuple[float, float]] = []
+    for i in range(n):
+        t = i / (n - 1)
+        y = t * lb_ratio
+        cl_pts.append((0.5 - cl_hw, y))
+    for i in range(n - 1, -1, -1):
+        t = i / (n - 1)
+        y = t * lb_ratio
+        cl_pts.append((0.5 + cl_hw, y))
+    out.write(
+        f'  <polygon points="{_polygon_attr(cl_pts)}" fill="{cl_colour}"/>\n'
+    )
+
+    # ── Transverse seam lines ────────────────────────────────────────
+    # Horizontal lines across the deck at irregular intervals
+    n_seams = rng.randint(3, max(4, int(lb_ratio * 1.2)))
+    seam_opacity = rng.uniform(0.03, 0.08)
+    for _ in range(n_seams):
+        t = rng.uniform(0.08, 0.92)
+        # Skip if inside a structure zone
+        in_struct = any(zs <= t <= ze for zs, ze in sz_zones)
+        if in_struct:
+            continue
+        idx = min(int(t * (n - 1)), n - 1)
+        hw = float(half_widths[idx])
+        if hw < 0.05:
+            continue
+        y = t * lb_ratio
+        seam_h = rng.uniform(0.003, 0.008) * lb_ratio
+        out.write(
+            f'  <rect x="{_f(0.5 - hw * 0.92)}" y="{_f(y)}" '
+            f'width="{_f(hw * 1.84)}" height="{_f(seam_h)}" '
+            f'fill="rgba(0,0,0,{seam_opacity:.2f})"/>\n'
+        )
+
+    # ── Large deck zone fills ────────────────────────────────────────
+    # 1-3 large rectangles covering different deck areas with subtle
+    # tone differences, simulating different deck surface materials.
+    n_zones = rng.randint(1, 3)
+    for _ in range(n_zones):
+        t0 = rng.uniform(0.10, 0.70)
+        t1 = t0 + rng.uniform(0.08, 0.25)
+        if t1 > 0.95:
+            continue
+        # Skip if overlapping structures
+        in_struct = any(
+            not (t1 < zs or t0 > ze) for zs, ze in sz_zones
+        )
+        if in_struct:
+            continue
+        idx0 = min(int(t0 * (n - 1)), n - 1)
+        idx1 = min(int(t1 * (n - 1)), n - 1)
+        # Use narrower than full hull width for panel effect
+        w_frac = rng.uniform(0.6, 0.90)
+        zone_pts: list[tuple[float, float]] = []
+        for i in range(idx0, idx1 + 1):
+            ti = i / (n - 1)
+            y = ti * lb_ratio
+            hw = float(half_widths[i])
+            zone_pts.append((0.5 + hw * w_frac, y))
+        for i in range(idx1, idx0 - 1, -1):
+            ti = i / (n - 1)
+            y = ti * lb_ratio
+            hw = float(half_widths[i])
+            zone_pts.append((0.5 - hw * w_frac, y))
+        if len(zone_pts) >= 3:
+            zone_opacity = rng.uniform(0.02, 0.06)
+            if rng.random() < 0.5:
+                fill = f"rgba(0,0,0,{zone_opacity:.2f})"
+            else:
+                fill = f"rgba(255,255,255,{zone_opacity:.2f})"
+            out.write(
+                f'  <polygon points="{_polygon_attr(zone_pts)}" fill="{fill}"/>\n'
+            )
+
+
+def _write_deck_wear(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    rng: random.Random,
+    struct_zones: list[tuple[float, float]] | None = None,
+) -> None:
+    """Add low-frequency deck surface wear and stain marks.
+
+    Larger and softer than deck scatter — simulates paint wear, rust
+    streaks, and surface discoloration visible from satellite altitude.
+    """
+    n = len(half_widths)
+    sz_zones = struct_zones or []
+    n_stains = rng.randint(2, max(3, int(lb_ratio * 0.8)))
+
+    for _ in range(n_stains):
+        t = rng.uniform(0.06, 0.94)
+        in_struct = any(zs <= t <= ze for zs, ze in sz_zones)
+        if in_struct:
+            continue
+        idx = min(int(t * (n - 1)), n - 1)
+        hw = float(half_widths[idx])
+        if hw < 0.05:
+            continue
+        cy = t * lb_ratio
+        cx = 0.5 + rng.uniform(-hw * 0.6, hw * 0.6)
+
+        # Elliptical or rectangular stain
+        w = rng.uniform(0.03, 0.10)
+        h = rng.uniform(0.02, 0.08) * lb_ratio
+        opacity = rng.uniform(0.03, 0.08)
+
+        if rng.random() < 0.6:
+            # Dark stain (wear, oil, dirt)
+            fill = f"rgba(0,0,0,{opacity:.2f})"
+        else:
+            # Light residue
+            fill = f"rgba(255,255,255,{opacity * 0.7:.2f})"
+
+        out.write(
+            f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
+            f'width="{_f(w)}" height="{_f(h)}" '
+            f'fill="{fill}" rx="{_f(min(w, h) * 0.3)}"/>\n'
+        )
+
+
 def _write_struct_shadow_svg(
     out: StringIO,
     spec: Struct,
@@ -815,18 +1191,45 @@ def generate_ship_svg(
     _write_deck_highlight(out, lb_ratio, half_widths, colors, rng)
     out.write('  </g>\n')
 
+    # 1d) Hull colour mottling — large irregular patches break up the
+    # flat base colour into multiple tonal zones.
+    out.write('  <g clip-path="url(#h)">\n')
+    _write_hull_mottling(out, lb_ratio, half_widths, rng)
+    out.write('  </g>\n')
+
+    # 1e) Bow / stern gradient shading — darken toward extremities
+    out.write('  <g clip-path="url(#h)">\n')
+    _write_bow_stern_shading(out, lb_ratio, half_widths, rng)
+    out.write('  </g>\n')
+
     # 2) Superstructures (with directional shadow)
     # Pick a consistent sun angle for the whole ship
     sun_dx = rng.uniform(-0.02, 0.02)
     sun_dy = rng.uniform(0.01, 0.04) * lb_ratio  # shadow falls roughly aft/side
+
+    # 1f) Sun-side self-shadow — one half of the hull slightly darker
+    out.write('  <g clip-path="url(#h)">\n')
+    _write_sun_side_shadow(out, lb_ratio, half_widths, sun_dx, rng)
+    out.write('  </g>\n')
+
+    # Compute approximate superstructure exclusion zones early (used by
+    # panel divisions, deck wear, and scatter).
+    struct_zones = [(s.x0[0], s.x1[1]) for s in cls.structs]
+
+    # 1g) Deck panel divisions — centreline, seam lines, zone fills
+    out.write('  <g clip-path="url(#h)">\n')
+    _write_deck_panels(out, lb_ratio, half_widths, colors, rng, struct_zones)
+    out.write('  </g>\n')
+
+    # 1h) Deck surface wear — low-frequency stains and discoloration
+    out.write('  <g clip-path="url(#h)">\n')
+    _write_deck_wear(out, lb_ratio, half_widths, rng, struct_zones)
+    out.write('  </g>\n')
+
     for s in cls.structs:
         if rng.random() < s.prob:
             _write_struct_shadow_svg(out, s, lb_ratio, half_widths, sun_dx, sun_dy, rng)
-            _write_struct_svg(out, s, lb_ratio, half_widths, colors, rng)
-
-    # Compute approximate superstructure exclusion zones for scatter
-    # Use the outer bounds of each struct's x0/x1 ranges.
-    struct_zones = [(s.x0[0], s.x1[1]) for s in cls.structs]
+            _write_struct_svg(out, s, lb_ratio, half_widths, colors, rng, sun_dx)
 
     # 3) Deck scatter — random small shapes clipped to hull for visual texture
     out.write('  <g clip-path="url(#h)" id="scatter">\n')

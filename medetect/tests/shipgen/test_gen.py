@@ -220,6 +220,45 @@ class TestGenerateShipSvg:
         root = ET.fromstring(svg)
         assert root.tag == f"{{{SVG_NS}}}svg"
 
+    def test_hull_has_multiple_clipped_groups(self) -> None:
+        """船体エフェクト用の clip-path グループが複数存在する。"""
+        svg = generate_ship_svg("destroyer", rng=random.Random(42))
+        root = ET.fromstring(svg)
+        clipped = [e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib]
+        # At minimum: edge darken, deck highlight, mottling, bow/stern,
+        # sun-side shadow, panels, wear, scatter
+        assert len(clipped) >= 7
+
+    def test_hull_mottling_adds_polygons(self) -> None:
+        """船体ムラ処理で半透明ポリゴンが追加される。"""
+        svg = generate_ship_svg("frigate", rng=random.Random(42))
+        # Mottling polygons use rgba fills
+        assert "rgba(" in svg
+
+    def test_bow_stern_shading_present(self) -> None:
+        """船首・船尾の陰影が存在する。"""
+        svg = generate_ship_svg("destroyer", rng=random.Random(42))
+        root = ET.fromstring(svg)
+        # Bow/stern shading adds multiple rgba(0,0,0,...) polygons
+        clipped_groups = [e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib]
+        rgba_polygons = 0
+        for g in clipped_groups:
+            for child in g:
+                if child.tag == f"{{{SVG_NS}}}polygon":
+                    fill = child.get("fill", "")
+                    if "rgba(" in fill:
+                        rgba_polygons += 1
+        assert rgba_polygons >= 5  # at minimum several overlay patches
+
+    def test_struct_self_shadow_present(self) -> None:
+        """上部構造物の片側に自己影がある。"""
+        svg = generate_ship_svg("destroyer", rng=random.Random(42))
+        root = ET.fromstring(svg)
+        # Struct self-shadow rects appear as rgba(0,0,0,...) fills
+        rects = root.findall(f"{{{SVG_NS}}}rect")
+        shadow_rects = [r for r in rects if "rgba(0,0,0" in r.get("fill", "")]
+        assert len(shadow_rects) >= 1
+
 
 # ── Ship class registry ──────────────────────────────────────────────────
 

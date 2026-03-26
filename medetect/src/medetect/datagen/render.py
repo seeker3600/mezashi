@@ -15,15 +15,18 @@ from numpy.typing import NDArray
 from PIL import Image, ImageDraw
 
 
-def parse_color(css: str) -> tuple[int, int, int]:
-    """Parse ``rgb(r,g,b)`` CSS colour string.
+def parse_color(css: str) -> tuple[int, int, int, int]:
+    """Parse ``rgb(r,g,b)`` or ``rgba(r,g,b,a)`` CSS colour string.
 
-    Returns a fallback gray for unrecognised formats.
+    Returns ``(r, g, b, a)`` where *a* is 0–255.
+    Falls back to opaque gray for unrecognised formats.
     """
-    m = re.match(r"rgb\((\d+),(\d+),(\d+)\)", css)
+    m = re.match(r"rgba?\((\d+),(\d+),(\d+)(?:,([\d.]+))?\)", css)
     if m:
-        return int(m.group(1)), int(m.group(2)), int(m.group(3))
-    return (128, 128, 128)
+        r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        a = round(float(m.group(4)) * 255) if m.group(4) is not None else 255
+        return r, g, b, a
+    return (128, 128, 128, 255)
 
 
 def parse_svg_metadata(svg_text: str) -> tuple[str, float]:
@@ -89,8 +92,8 @@ def _draw_polygon(
             px, py = _rotate_point(px, py, cx_center, cy_center, cos_a, sin_a)
             points.append((px, py))
     if len(points) >= 3:
-        r, g, b = parse_color(fill)
-        draw.polygon(points, fill=(r, g, b, 255))
+        r, g, b, a = parse_color(fill)
+        draw.polygon(points, fill=(r, g, b, a))
 
 
 def _draw_rect(
@@ -118,12 +121,12 @@ def _draw_rect(
     fill = el.get("fill", "")
     stroke = el.get("stroke", "")
     if fill and fill != "none":
-        r, g, b = parse_color(fill)
-        draw.polygon(corners, fill=(r, g, b, 255))
+        r, g, b, a = parse_color(fill)
+        draw.polygon(corners, fill=(r, g, b, a))
     if stroke and stroke != "none":
-        r, g, b = parse_color(stroke)
+        r, g, b, a = parse_color(stroke)
         sw = max(1, int(float(el.get("stroke-width", "1")) * min(sx, sy)))
-        draw.polygon(corners, outline=(r, g, b, 255), width=sw)
+        draw.polygon(corners, outline=(r, g, b, a), width=sw)
 
 
 def _draw_circle(
@@ -146,17 +149,17 @@ def _draw_circle(
     fill = el.get("fill", "")
     stroke = el.get("stroke", "")
     if fill and fill != "none":
-        r, g, b = parse_color(fill)
+        r, g, b, a = parse_color(fill)
         draw.ellipse(
             [cx - r_val, cy - r_val, cx + r_val, cy + r_val],
-            fill=(r, g, b, 255),
+            fill=(r, g, b, a),
         )
     if stroke and stroke != "none":
-        r, g, b = parse_color(stroke)
+        r, g, b, a = parse_color(stroke)
         sw = max(1, int(float(el.get("stroke-width", "1")) * min(sx, sy)))
         draw.ellipse(
             [cx - r_val, cy - r_val, cx + r_val, cy + r_val],
-            outline=(r, g, b, 255),
+            outline=(r, g, b, a),
             width=sw,
         )
 
@@ -182,8 +185,8 @@ def _draw_line(
     x2, y2 = _rotate_point(x2, y2, cx_center, cy_center, cos_a, sin_a)
     stroke = el.get("stroke", "rgb(128,128,128)")
     sw = max(1, int(float(el.get("stroke-width", "1")) * min(sx, sy)))
-    r, g, b = parse_color(stroke)
-    draw.line([(x1, y1), (x2, y2)], fill=(r, g, b, 255), width=sw)
+    r, g, b, a = parse_color(stroke)
+    draw.line([(x1, y1), (x2, y2)], fill=(r, g, b, a), width=sw)
 
 
 _DRAWER = {
