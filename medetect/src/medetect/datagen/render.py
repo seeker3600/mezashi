@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -68,8 +69,18 @@ def _rotate_point(
     )
 
 
+def _composite_over(
+    img: Image.Image,
+    draw_fn: "Callable[[ImageDraw.ImageDraw], None]",
+) -> None:
+    """Porter-Duff 'over' compositing: draw to a temp layer and composite onto img."""
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw_fn(ImageDraw.Draw(layer))
+    img.alpha_composite(layer)
+
+
 def _draw_polygon(
-    draw: ImageDraw.ImageDraw,
+    img: Image.Image,
     el: ET.Element,
     sx: float,
     sy: float,
@@ -93,11 +104,14 @@ def _draw_polygon(
             points.append((px, py))
     if len(points) >= 3:
         r, g, b, a = parse_color(fill)
-        draw.polygon(points, fill=(r, g, b, a))
+        if a == 255:
+            ImageDraw.Draw(img).polygon(points, fill=(r, g, b, a))
+        else:
+            _composite_over(img, lambda d: d.polygon(points, fill=(r, g, b, a)))
 
 
 def _draw_rect(
-    draw: ImageDraw.ImageDraw,
+    img: Image.Image,
     el: ET.Element,
     sx: float,
     sy: float,
@@ -122,15 +136,21 @@ def _draw_rect(
     stroke = el.get("stroke", "")
     if fill and fill != "none":
         r, g, b, a = parse_color(fill)
-        draw.polygon(corners, fill=(r, g, b, a))
+        if a == 255:
+            ImageDraw.Draw(img).polygon(corners, fill=(r, g, b, a))
+        else:
+            _composite_over(img, lambda d: d.polygon(corners, fill=(r, g, b, a)))
     if stroke and stroke != "none":
         r, g, b, a = parse_color(stroke)
         sw = max(1, int(float(el.get("stroke-width", "1")) * min(sx, sy)))
-        draw.polygon(corners, outline=(r, g, b, a), width=sw)
+        if a == 255:
+            ImageDraw.Draw(img).polygon(corners, outline=(r, g, b, a), width=sw)
+        else:
+            _composite_over(img, lambda d: d.polygon(corners, outline=(r, g, b, a), width=sw))
 
 
 def _draw_circle(
-    draw: ImageDraw.ImageDraw,
+    img: Image.Image,
     el: ET.Element,
     sx: float,
     sy: float,
@@ -146,26 +166,26 @@ def _draw_circle(
     r_val = float(el.get("r", "0")) * min(sx, sy)
     # Rotate circle center
     cx, cy = _rotate_point(cx, cy, cx_center, cy_center, cos_a, sin_a)
+    bbox = [cx - r_val, cy - r_val, cx + r_val, cy + r_val]
     fill = el.get("fill", "")
     stroke = el.get("stroke", "")
     if fill and fill != "none":
         r, g, b, a = parse_color(fill)
-        draw.ellipse(
-            [cx - r_val, cy - r_val, cx + r_val, cy + r_val],
-            fill=(r, g, b, a),
-        )
+        if a == 255:
+            ImageDraw.Draw(img).ellipse(bbox, fill=(r, g, b, a))
+        else:
+            _composite_over(img, lambda d: d.ellipse(bbox, fill=(r, g, b, a)))
     if stroke and stroke != "none":
         r, g, b, a = parse_color(stroke)
         sw = max(1, int(float(el.get("stroke-width", "1")) * min(sx, sy)))
-        draw.ellipse(
-            [cx - r_val, cy - r_val, cx + r_val, cy + r_val],
-            outline=(r, g, b, a),
-            width=sw,
-        )
+        if a == 255:
+            ImageDraw.Draw(img).ellipse(bbox, outline=(r, g, b, a), width=sw)
+        else:
+            _composite_over(img, lambda d: d.ellipse(bbox, outline=(r, g, b, a), width=sw))
 
 
 def _draw_line(
-    draw: ImageDraw.ImageDraw,
+    img: Image.Image,
     el: ET.Element,
     sx: float,
     sy: float,
@@ -186,7 +206,11 @@ def _draw_line(
     stroke = el.get("stroke", "rgb(128,128,128)")
     sw = max(1, int(float(el.get("stroke-width", "1")) * min(sx, sy)))
     r, g, b, a = parse_color(stroke)
-    draw.line([(x1, y1), (x2, y2)], fill=(r, g, b, a), width=sw)
+    pts = [(x1, y1), (x2, y2)]
+    if a == 255:
+        ImageDraw.Draw(img).line(pts, fill=(r, g, b, a), width=sw)
+    else:
+        _composite_over(img, lambda d: d.line(pts, fill=(r, g, b, a), width=sw))
 
 
 _DRAWER = {
@@ -195,6 +219,29 @@ _DRAWER = {
     "circle": _draw_circle,
     "line": _draw_line,
 }
+
+
+def _draw_elements(
+    img: Image.Image,
+    parent: ET.Element,
+    sx: float,
+    sy: float,
+    vb_x: float,
+    vb_y: float,
+    cos_a: float,
+    sin_a: float,
+    cx_center: float,
+    cy_center: float,
+) -> None:
+    """Recursively render child elements, descending into ``<g>`` groups."""
+    for el in parent:
+        tag = el.tag.split("}")[-1]  # strip XML namespace
+        if tag == "g":
+            _draw_elements(img, el, sx, sy, vb_x, vb_y, cos_a, sin_a, cx_center, cy_center)
+        else:
+            drawer = _DRAWER.get(tag)
+            if drawer is not None:
+                drawer(img, el, sx, sy, vb_x, vb_y, cos_a, sin_a, cx_center, cy_center)
 
 
 def rasterize_ship_svg(
@@ -263,7 +310,6 @@ def rasterize_ship_svg(
         rotated_h = render_h
 
     img = Image.new("RGBA", (rotated_w, rotated_h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
 
     sx = render_w / vb_w
     sy = render_h / vb_h
@@ -280,35 +326,7 @@ def rasterize_ship_svg(
     cx_center = rotated_w / 2.0
     cy_center = rotated_h / 2.0
 
-    for el in root:
-        tag = el.tag.split("}")[-1]  # strip XML namespace
-        drawer = _DRAWER.get(tag)
-        if drawer is not None:
-            drawer(draw, el, sx, sy, adj_vb_x, adj_vb_y, cos_a, sin_a, cx_center, cy_center)
-
-    # Make ship pixels fully opaque.
-    # The hull polygon is the first polygon in the SVG and defines the ship
-    # interior.  Re-rendering it to a separate mask and applying that mask
-    # as the alpha channel achieves two things:
-    #   1. Shadow/overlay elements that extend past the hull edge are clipped.
-    #   2. If Pillow's ImageDraw writes rgba alpha values directly (older
-    #      versions), hull pixels are restored to alpha=255.
-    # Overall ship transparency is controlled externally by blend_ship().
-    hull_polygon_el: ET.Element | None = None
-    for el in root:
-        if el.tag.split("}")[-1] == "polygon":
-            hull_polygon_el = el
-            break
-    if hull_polygon_el is not None:
-        hull_mask = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        _draw_polygon(
-            ImageDraw.Draw(hull_mask),
-            hull_polygon_el, sx, sy, adj_vb_x, adj_vb_y,
-            cos_a, sin_a, cx_center, cy_center,
-        )
-        arr = np.array(img)
-        arr[:, :, 3] = np.array(hull_mask)[:, :, 3]
-        img = Image.fromarray(arr)
+    _draw_elements(img, root, sx, sy, adj_vb_x, adj_vb_y, cos_a, sin_a, cx_center, cy_center)
 
     # Output size = rotated bounding-box of (width_px, height_px)
     if angle_deg != 0.0:

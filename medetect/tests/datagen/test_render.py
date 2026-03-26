@@ -65,11 +65,31 @@ class TestRasterizeShipSvg:
         assert result.dtype == np.uint8
 
     def test_hull_pixels_opaque(self) -> None:
-        """船体中央のピクセルが不透明。"""
+        """船体中央のピクセルが完全に不透明（alpha==255）。"""
         result = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80)
-        # Center of the hull should have alpha > 0
         center_alpha = result[40, 10, 3]
-        assert center_alpha > 0
+        assert center_alpha == 255
+
+    def test_rgba_overlay_hull_stays_opaque(self) -> None:
+        """rgba()オーバーレイを重ねた後も船体ベースのalphaが255のまま。
+
+        Porter-Duff 'over' 合成では不透明なベースの上に半透明レイヤーを重ねても
+        アルファ値は 1.0 を保つ。以前の実装は直接上書きを行ったため割れていた。
+        """
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
+            # 不透明ベース
+            '  <rect x="0" y="0" width="1" height="1" fill="rgb(100,80,60)"/>'
+            # 半透明オーバーレイ（エッジダーケン相当）
+            '  <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.40)"/>'
+            "</svg>"
+        )
+        result = rasterize_ship_svg(svg, 20, 20)
+        # 全ピクセルが alpha == 255 であること
+        center_alpha = result[10, 10, 3]
+        assert center_alpha == 255
+        # 色は暗くなっているはず (100 * 0.6 ≈ 60)
+        assert result[10, 10, 0] < 100
 
     def test_corner_pixels_transparent(self) -> None:
         """角のピクセルが透明。"""

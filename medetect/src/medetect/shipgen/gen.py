@@ -421,8 +421,8 @@ def _write_hull_edge_darken(
     imagery — the hull side is darker than the deck surface.
     """
     n = len(half_widths)
-    opacity = rng.uniform(0.10, 0.22)
-    edge_frac = rng.uniform(0.06, 0.12)  # fraction of hull half-width
+    opacity = rng.uniform(0.30, 0.52)
+    edge_frac = rng.uniform(0.12, 0.22)  # fraction of hull half-width
 
     # Port edge strip (left side)
     port_pts: list[tuple[float, float]] = []
@@ -470,8 +470,8 @@ def _write_deck_highlight(
 ) -> None:
     """Subtle centreline brightness gradient to simulate deck curvature."""
     n = len(half_widths)
-    opacity = rng.uniform(0.04, 0.10)
-    width_frac = rng.uniform(0.25, 0.40)
+    opacity = rng.uniform(0.16, 0.32)
+    width_frac = rng.uniform(0.32, 0.52)
 
     pts: list[tuple[float, float]] = []
     # Forward pass — left edge of highlight strip
@@ -538,10 +538,10 @@ def _write_hull_mottling(
 
         # Randomly lighten or darken
         if rng.random() < 0.5:
-            opacity = rng.uniform(0.03, 0.08)
+            opacity = rng.uniform(0.09, 0.20)
             fill = f"rgba(0,0,0,{opacity:.2f})"
         else:
-            opacity = rng.uniform(0.03, 0.07)
+            opacity = rng.uniform(0.08, 0.17)
             fill = f"rgba(255,255,255,{opacity:.2f})"
 
         out.write(
@@ -573,7 +573,7 @@ def _write_hull_mottling(
             py = cy + r_y * jitter * math.sin(angle)
             pts.append((px, py))
 
-        opacity = rng.uniform(0.02, 0.05)
+        opacity = rng.uniform(0.05, 0.10)
         if rng.random() < 0.55:
             fill = f"rgba(0,0,0,{opacity:.2f})"
         else:
@@ -595,10 +595,10 @@ def _write_bow_stern_shading(
     surface angle relative to satellite view and paint weathering.
     """
     n = len(half_widths)
-    bow_len = rng.uniform(0.08, 0.15)  # fraction of total length
-    stern_len = rng.uniform(0.08, 0.18)
-    bow_opacity = rng.uniform(0.06, 0.14)
-    stern_opacity = rng.uniform(0.05, 0.12)
+    bow_len = rng.uniform(0.10, 0.18)  # fraction of total length
+    stern_len = rng.uniform(0.10, 0.22)
+    bow_opacity = rng.uniform(0.20, 0.42)
+    stern_opacity = rng.uniform(0.16, 0.36)
 
     # Bow zone — multiple strips with decreasing opacity (gradient approx)
     n_strips = 4
@@ -662,8 +662,8 @@ def _write_sun_side_shadow(
     n = len(half_widths)
     # Shadow falls on the side opposite to the sun
     shadow_side = "port" if sun_dx > 0 else "starboard"
-    opacity = rng.uniform(0.04, 0.10)
-    width_frac = rng.uniform(0.30, 0.55)  # how far inward the shadow reaches
+    opacity = rng.uniform(0.14, 0.28)
+    width_frac = rng.uniform(0.35, 0.62)  # how far inward the shadow reaches
 
     pts: list[tuple[float, float]] = []
     if shadow_side == "port":
@@ -718,10 +718,10 @@ def _write_deck_panels(
 
     # ── Centreline ───────────────────────────────────────────────────
     # Thin darker/lighter line running bow to stern along the midship axis
-    cl_opacity = rng.uniform(0.04, 0.10)
+    cl_opacity = rng.uniform(0.16, 0.30)
     cl_bright = rng.choice([True, False])
     cl_colour = f"rgba(255,255,255,{cl_opacity:.2f})" if cl_bright else f"rgba(0,0,0,{cl_opacity:.2f})"
-    cl_hw = rng.uniform(0.008, 0.015)
+    cl_hw = rng.uniform(0.016, 0.028)
     # Build a thin strip polygon
     cl_pts: list[tuple[float, float]] = []
     for i in range(n):
@@ -739,7 +739,7 @@ def _write_deck_panels(
     # ── Transverse seam lines ────────────────────────────────────────
     # Horizontal lines across the deck at irregular intervals
     n_seams = rng.randint(3, max(4, int(lb_ratio * 1.2)))
-    seam_opacity = rng.uniform(0.03, 0.08)
+    seam_opacity = rng.uniform(0.14, 0.28)
     for _ in range(n_seams):
         t = rng.uniform(0.08, 0.92)
         # Skip if inside a structure zone
@@ -751,7 +751,7 @@ def _write_deck_panels(
         if hw < 0.05:
             continue
         y = t * lb_ratio
-        seam_h = rng.uniform(0.003, 0.008) * lb_ratio
+        seam_h = rng.uniform(0.008, 0.018) * lb_ratio
         out.write(
             f'  <rect x="{_f(0.5 - hw * 0.92)}" y="{_f(y)}" '
             f'width="{_f(hw * 1.84)}" height="{_f(seam_h)}" '
@@ -789,7 +789,7 @@ def _write_deck_panels(
             hw = float(half_widths[i])
             zone_pts.append((0.5 - hw * w_frac, y))
         if len(zone_pts) >= 3:
-            zone_opacity = rng.uniform(0.02, 0.06)
+            zone_opacity = rng.uniform(0.08, 0.18)
             if rng.random() < 0.5:
                 fill = f"rgba(0,0,0,{zone_opacity:.2f})"
             else:
@@ -828,16 +828,16 @@ def _write_deck_wear(
         cx = 0.5 + rng.uniform(-hw * 0.6, hw * 0.6)
 
         # Elliptical or rectangular stain
-        w = rng.uniform(0.03, 0.10)
-        h = rng.uniform(0.02, 0.08) * lb_ratio
-        opacity = rng.uniform(0.03, 0.08)
+        w = rng.uniform(0.04, 0.12)
+        h = rng.uniform(0.03, 0.10) * lb_ratio
+        opacity = rng.uniform(0.10, 0.22)
 
         if rng.random() < 0.6:
             # Dark stain (wear, oil, dirt)
             fill = f"rgba(0,0,0,{opacity:.2f})"
         else:
             # Light residue
-            fill = f"rgba(255,255,255,{opacity * 0.7:.2f})"
+            fill = f"rgba(255,255,255,{opacity * 0.8:.2f})"
 
         out.write(
             f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
