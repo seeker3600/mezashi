@@ -1,8 +1,9 @@
 """Ship class definitions, colour palettes, and the class registry.
 
-Colour palettes are based on real-world ship paint schemes observed in
-satellite imagery.  Military vessels use variants of haze gray / dark gray;
-fishing vessels use a wider range including blue, white, red, and green.
+Colour palettes are based on real-world ship paint schemes visible in
+high-resolution aerial / satellite imagery.  Military vessels use variants
+of haze gray; civilian vessels span a wide range — white, blue, red, dark,
+and earthy tones that are clearly distinguishable at 0.3 m/px resolution.
 """
 
 from __future__ import annotations
@@ -13,12 +14,12 @@ from dataclasses import dataclass
 # ── Colour system ────────────────────────────────────────────────────────
 
 _PALETTES: dict[str, list[tuple[int, int, int]]] = {
-    # Satellite-view palettes: atmospheric haze desaturates all colours.
+    # Military: all variants stay in the blueish-gray band.
     "navy_gray": [
         (140, 143, 146),  # USN Haze Gray
         (128, 132, 138),  # Medium gray
         (124, 130, 138),  # Blue-gray (European navies)
-        (150, 152, 156),  # Light gray
+        (150, 152, 156),  # Light gray (coast guard variant)
         (110, 115, 120),  # Dark gray
         (132, 136, 142),  # JMSDF blue-gray
         (98, 102, 108),   # Russian Navy dark
@@ -29,39 +30,58 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (85, 90, 98),     # Dark blue-gray
         (105, 110, 115),  # Medium-dark
     ],
+    # Fishing: broad real-world palette — white, blue, red, dark, and
+    # everything in between.  At 0.3 m/px these colours are clearly visible.
     "fishing_mixed": [
-        # Desaturated for satellite altitude — atmospheric scattering
-        (175, 178, 182),  # Off-white
-        (90, 110, 135),   # Muted blue
-        (70, 85, 110),    # Medium blue-gray
-        (55, 65, 82),     # Dark blue-gray
-        (120, 85, 78),    # Muted rust
-        (80, 95, 82),     # Muted green-gray
-        (160, 162, 168),  # Light gray
-        (55, 58, 62),     # Dark gray
+        # White / off-white (most common globally)
+        (208, 208, 204),  # Weathered white
+        (218, 217, 212),  # Clean white
+        (195, 198, 202),  # Bluish off-white
+        # Blue hulls (common in Asia, Mediterranean, N. Europe)
+        (52, 82, 128),    # Medium blue
+        (36, 58, 102),    # Deep blue
+        (62, 98, 148),    # Cornflower blue
+        (28, 46, 86),     # Dark navy blue
+        # Red / rust hulls (anti-fouling, traditional)
+        (150, 52, 42),    # Hull red
+        (132, 72, 50),    # Rust red
+        (165, 80, 44),    # Orange-red
+        # Dark hulls
+        (42, 44, 50),     # Near-black
+        (46, 70, 60),     # Dark green-black
     ],
+    # Longliners / small white-painted fishing vessels.
     "fishing_white": [
-        (180, 183, 188),
-        (185, 188, 192),
-        (172, 176, 182),
-        (176, 180, 184),
+        (218, 218, 214),  # Bright white
+        (208, 210, 210),  # Cool white
+        (213, 212, 207),  # Warm white
+        (200, 203, 202),  # Weathered white
+        (225, 222, 218),  # Very bright white
     ],
+    # Work vessels (tugs, pilot boats, workboats, pushers):
+    # safety/visibility colours dominate — high-chroma red/orange as well
+    # as near-black are both authentic.
     "work_mixed": [
-        # Muted satellite-view tones
-        (55, 60, 68),     # Dark gray-blue
-        (115, 82, 75),    # Muted rust
-        (155, 155, 150),  # Off-white
-        (70, 82, 98),     # Steel blue-gray
-        (82, 85, 90),     # Charcoal
-        (100, 85, 72),    # Muted brown
-        (48, 50, 55),     # Near-black
+        (178, 60, 36),    # International orange-red (tug classic)
+        (192, 86, 30),    # Safety orange
+        (158, 46, 40),    # Fire-engine red
+        (30, 34, 42),     # Near-black (classic harbour tug)
+        (36, 50, 72),     # Dark navy
+        (42, 58, 50),     # Dark green (port authority)
+        (82, 72, 58),     # Weathered brown-gray
+        (112, 108, 104),  # Mid-gray utility vessel
+        (148, 144, 138),  # Light gray work vessel
     ],
+    # Barges: primarily dark steel, rust, and earthy tones.
     "barge_dull": [
-        (88, 84, 78),     # Weathered brown-gray
-        (74, 75, 72),     # Dark gray
-        (95, 92, 85),     # Weathered tan
-        (65, 64, 62),     # Dark steel
-        (105, 100, 92),   # Muted tan
+        (68, 64, 58),     # Dark gray-brown
+        (55, 52, 50),     # Dark steel
+        (92, 76, 56),     # Rust brown
+        (108, 78, 50),    # Oxidised orange-brown
+        (46, 60, 54),     # Dark green-gray (river barge)
+        (86, 84, 80),     # Medium steel gray
+        (44, 44, 46),     # Near-black steel
+        (78, 62, 50),     # Weathered brown
     ],
 }
 
@@ -139,22 +159,63 @@ def sample_colors(family: str, rng: random.Random) -> ShipColors:
     """Sample a colour scheme from the given palette family."""
     base = rng.choice(_PALETTES[family])
     hull = (
-        _clamp(base[0] + rng.randint(-6, 6)),
-        _clamp(base[1] + rng.randint(-6, 6)),
-        _clamp(base[2] + rng.randint(-6, 6)),
+        _clamp(base[0] + rng.randint(-8, 8)),
+        _clamp(base[1] + rng.randint(-8, 8)),
+        _clamp(base[2] + rng.randint(-8, 8)),
     )
-    # Superstructure is typically brighter than the hull deck — visible
-    # even from satellite altitude as a lighter block.
-    struct_boost = rng.randint(18, 38)
-    if family.startswith("fishing") and rng.random() < 0.5:
-        sb = _clamp(175 + rng.randint(-10, 15))
-        struct_base = (sb, sb + rng.randint(-3, 3), sb + rng.randint(-3, 5))
-    else:
+
+    # Superstructure / wheelhouse colour strategy:
+    #
+    # Military:   same gray family, just brighter (uniform hull/struct colouring).
+    # Light hull: slight brightness boost — e.g. white hull → pale white struct.
+    # Dark / saturated hull: superstructure is almost always white or off-white.
+    #   Wheelhouses and accommodation blocks are painted white on virtually all
+    #   commercial and fishing vessels regardless of hull colour, both for
+    #   reflectivity and as a visibility convention.
+    hull_lum = 0.299 * hull[0] + 0.587 * hull[1] + 0.114 * hull[2]
+
+    struct_base: tuple[int, int, int]
+    if family in ("navy_gray", "navy_dark"):
+        # All-gray military finish.
+        boost = rng.randint(18, 38)
         struct_base = (
-            _clamp(hull[0] + struct_boost),
-            _clamp(hull[1] + struct_boost),
-            _clamp(hull[2] + struct_boost),
+            _clamp(hull[0] + boost),
+            _clamp(hull[1] + boost),
+            _clamp(hull[2] + boost),
         )
+    elif hull_lum < 130:
+        # Dark or strongly saturated hull — white / off-white struct (80 %).
+        if rng.random() < 0.80:
+            sb = _clamp(195 + rng.randint(-12, 22))
+            struct_base = (
+                sb,
+                sb + rng.randint(-4, 4),
+                sb + rng.randint(-4, 6),
+            )
+        else:
+            # Minority case: same hue, strongly boosted.
+            boost = rng.randint(30, 58)
+            struct_base = (
+                _clamp(hull[0] + boost),
+                _clamp(hull[1] + boost),
+                _clamp(hull[2] + boost),
+            )
+    else:
+        # Light hull — subtle brightness variation.
+        if rng.random() < 0.50:
+            sb = _clamp(185 + rng.randint(-10, 18))
+            struct_base = (
+                sb,
+                sb + rng.randint(-3, 3),
+                sb + rng.randint(-3, 5),
+            )
+        else:
+            boost = rng.randint(10, 28)
+            struct_base = (
+                _clamp(hull[0] + boost),
+                _clamp(hull[1] + boost),
+                _clamp(hull[2] + boost),
+            )
     return ShipColors(hull=hull, struct_base=struct_base)
 
 
