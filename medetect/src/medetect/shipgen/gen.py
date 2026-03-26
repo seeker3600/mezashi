@@ -31,6 +31,7 @@ from medetect.shipgen.ship_class import (
     sample_colors,
 )
 
+
 logger = logging.getLogger(__name__)
 
 # ── SVG formatting helpers ───────────────────────────────────────────────
@@ -90,22 +91,25 @@ def _write_struct_svg(
         f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sw)}"/>\n'
     )
 
-    # Self-shadow: darken one side of the structure based on sun direction
+    # Self-shadow: darken one face of the structure toward the sun direction.
+    # The shadow colour is derived from the structure's own base colour so the
+    # shaded face looks like the same material under reduced illumination rather
+    # than a pure-black overlay.
     shadow_w = (er - el) * rng.uniform(0.25, 0.45)
-    shadow_opacity = rng.uniform(0.06, 0.14)
+    shadow_fill = colors.struct_shadow_css(spec.brightness_off, rng)
     if sun_dx > 0:
         # Sun from right → shadow on left side
         out.write(
             f'  <rect x="{_f(el)}" y="{_f(y0)}" '
             f'width="{_f(shadow_w)}" height="{_f(y1 - y0)}" '
-            f'fill="rgba(0,0,0,{shadow_opacity:.2f})"/>\n'
+            f'fill="{shadow_fill}"/>\n'
         )
     else:
         # Sun from left → shadow on right side
         out.write(
             f'  <rect x="{_f(er - shadow_w)}" y="{_f(y0)}" '
             f'width="{_f(shadow_w)}" height="{_f(y1 - y0)}" '
-            f'fill="rgba(0,0,0,{shadow_opacity:.2f})"/>\n'
+            f'fill="{shadow_fill}"/>\n'
         )
 
 
@@ -278,13 +282,16 @@ def _write_detail_svg(
         )
 
     elif kind == "shadow":
-        # Dark shadow cast by nearby structure
+        # Dark shadow cast by nearby structure.
+        # Use a darkened, sky-ambient-tinted version of the hull colour rather
+        # than pure black so the shadow looks like shaded deck surface.
         w = sz * 1.2
         h = sz * 0.6
+        shadow_fill = colors.shadow_css(rng)
         out.write(
             f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy)}" '
             f'width="{_f(w)}" height="{_f(h)}" '
-            f'fill="rgba(0,0,0,0.18)" rx="{_f(h * 0.15)}"/>\n'
+            f'fill="{shadow_fill}" rx="{_f(h * 0.15)}"/>\n'
         )
 
     elif kind == "vent":
@@ -846,9 +853,15 @@ def _write_struct_shadow_svg(
     half_widths: NDArray,
     sun_dx: float,
     sun_dy: float,
+    colors: ShipColors,
     rng: random.Random,
 ) -> None:
-    """Draw a dark shadow offset from a superstructure block."""
+    """Draw a cast shadow offset from a superstructure block.
+
+    The shadow colour is derived from the hull colour — darkened and
+    sky-ambient-tinted — rather than pure black.  The element is a solid
+    opaque rectangle; overall ship transparency is set externally.
+    """
     x0 = rng.uniform(*spec.x0)
     x1 = rng.uniform(*spec.x1)
     if x0 >= x1:
@@ -870,10 +883,11 @@ def _write_struct_shadow_svg(
     y1 = x1 * lb_ratio + sun_dy
     el_s = el + sun_dx
     er_s = er + sun_dx
+    shadow_fill = colors.shadow_css(rng)
     out.write(
         f'  <rect x="{_f(el_s)}" y="{_f(y0)}" '
         f'width="{_f(er_s - el_s)}" height="{_f(y1 - y0)}" '
-        f'fill="rgba(0,0,0,0.15)" rx="{_f((y1 - y0) * 0.05)}"/>\n'
+        f'fill="{shadow_fill}" rx="{_f((y1 - y0) * 0.05)}"/>\n'
     )
 
 
@@ -964,9 +978,8 @@ def _write_deck_scatter_svg(
         if tier >= 2:
             shadow_dx = sun_dx * 0.4
             shadow_dy = sun_dy * 0.4
-            shadow_opacity = rng.uniform(0.10, 0.20)
             _write_scatter_shadow(
-                out, cx, cy, sz, shadow_dx, shadow_dy, shadow_opacity, rng,
+                out, cx, cy, sz, shadow_dx, shadow_dy, colors, rng,
             )
 
         # ── Shape drawing ────────────────────────────────────────────
@@ -1077,19 +1090,19 @@ def _write_scatter_shadow(
     sz: float,
     shadow_dx: float,
     shadow_dy: float,
-    opacity: float,
+    colors: ShipColors,
     rng: random.Random,
 ) -> None:
     """Render a tiny drop shadow for one deck scatter item."""
     sx = cx + shadow_dx
     sy = cy + shadow_dy
-    # Shadow is a slightly larger, offset dark shape
     w = sz * rng.uniform(0.8, 1.3)
     h = sz * rng.uniform(0.8, 1.3)
+    shadow_fill = colors.shadow_css(rng)
     out.write(
         f'  <rect x="{_f(sx - w / 2)}" y="{_f(sy - h / 2)}" '
         f'width="{_f(w)}" height="{_f(h)}" '
-        f'fill="rgba(0,0,0,{opacity:.2f})" '
+        f'fill="{shadow_fill}" '
         f'rx="{_f(min(w, h) * 0.15)}"/>\n'
     )
 
@@ -1228,7 +1241,7 @@ def generate_ship_svg(
 
     for s in cls.structs:
         if rng.random() < s.prob:
-            _write_struct_shadow_svg(out, s, lb_ratio, half_widths, sun_dx, sun_dy, rng)
+            _write_struct_shadow_svg(out, s, lb_ratio, half_widths, sun_dx, sun_dy, colors, rng)
             _write_struct_svg(out, s, lb_ratio, half_widths, colors, rng, sun_dx)
 
     # 3) Deck scatter — random small shapes clipped to hull for visual texture

@@ -254,10 +254,14 @@ class TestGenerateShipSvg:
         """上部構造物の片側に自己影がある。"""
         svg = generate_ship_svg("destroyer", rng=random.Random(42))
         root = ET.fromstring(svg)
-        # Struct self-shadow rects appear as rgba(0,0,0,...) fills
+        # Self-shadow rects are now solid rgb(...) fills derived from the
+        # structure colour — they are NOT pure black and do NOT use rgba().
         rects = root.findall(f"{{{SVG_NS}}}rect")
-        shadow_rects = [r for r in rects if "rgba(0,0,0" in r.get("fill", "")]
-        assert len(shadow_rects) >= 1
+        # At least one direct-child <rect> should exist (struct or shadow)
+        assert len(rects) >= 1
+        # No shadow or struct rect should use pure-black rgba fill
+        black_rgba_rects = [r for r in rects if r.get("fill", "").startswith("rgba(0,0,0")]
+        assert len(black_rgba_rects) == 0, "shadows should not use pure-black rgba"
 
 
 # ── Ship class registry ──────────────────────────────────────────────────

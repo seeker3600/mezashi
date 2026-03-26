@@ -98,6 +98,42 @@ class ShipColors:
         b = _clamp(self.hull[2] + offset)
         return f"rgb({r},{g},{b})"
 
+    def shadow_css(self, rng: random.Random | None = None) -> str:
+        """Opaque cast-shadow colour — hull tone darkened with sky-ambient lift.
+
+        Real shadows under diffuse sky illumination are not black: they receive
+        scattered blue sky light and retain a faint version of the surface
+        colour.  Returns a solid ``rgb(r,g,b)`` string so the ship body stays
+        fully opaque; overall ship transparency is set externally by the caller.
+        """
+        dark = rng.uniform(0.58, 0.72) if rng else 0.65
+        jitter = rng.randint(-6, 6) if rng else 0
+        r, g, b = self.hull
+        sr = _clamp(int(r * dark) + jitter)
+        sg = _clamp(int(g * dark) + jitter)
+        sb = _clamp(int(b * (dark + 0.08)) + 8 + jitter)  # sky ambient blue lift
+        return f"rgb({sr},{sg},{sb})"
+
+    def struct_shadow_css(
+        self,
+        brightness_off: int = 30,
+        rng: random.Random | None = None,
+    ) -> str:
+        """Opaque self-shadow colour for the shaded face of a superstructure.
+
+        The face turned away from the sun is a darker, slightly cooler version
+        of the lit struct face colour.  Returns a solid ``rgb(r,g,b)`` string.
+        """
+        dark = rng.uniform(0.84, 0.94) if rng else 0.89
+        jitter = rng.randint(-4, 4) if rng else 0
+        r = _clamp(self.struct_base[0] + brightness_off + jitter)
+        g = _clamp(self.struct_base[1] + brightness_off + jitter)
+        b = _clamp(self.struct_base[2] + brightness_off + jitter)
+        sr = _clamp(int(r * dark))
+        sg = _clamp(int(g * dark))
+        sb = _clamp(int(b * dark + 4))  # slight blue for sky ambient in shadow
+        return f"rgb({sr},{sg},{sb})"
+
 
 def sample_colors(family: str, rng: random.Random) -> ShipColors:
     """Sample a colour scheme from the given palette family."""

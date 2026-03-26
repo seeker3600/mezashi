@@ -286,6 +286,30 @@ def rasterize_ship_svg(
         if drawer is not None:
             drawer(draw, el, sx, sy, adj_vb_x, adj_vb_y, cos_a, sin_a, cx_center, cy_center)
 
+    # Make ship pixels fully opaque.
+    # The hull polygon is the first polygon in the SVG and defines the ship
+    # interior.  Re-rendering it to a separate mask and applying that mask
+    # as the alpha channel achieves two things:
+    #   1. Shadow/overlay elements that extend past the hull edge are clipped.
+    #   2. If Pillow's ImageDraw writes rgba alpha values directly (older
+    #      versions), hull pixels are restored to alpha=255.
+    # Overall ship transparency is controlled externally by blend_ship().
+    hull_polygon_el: ET.Element | None = None
+    for el in root:
+        if el.tag.split("}")[-1] == "polygon":
+            hull_polygon_el = el
+            break
+    if hull_polygon_el is not None:
+        hull_mask = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        _draw_polygon(
+            ImageDraw.Draw(hull_mask),
+            hull_polygon_el, sx, sy, adj_vb_x, adj_vb_y,
+            cos_a, sin_a, cx_center, cy_center,
+        )
+        arr = np.array(img)
+        arr[:, :, 3] = np.array(hull_mask)[:, :, 3]
+        img = Image.fromarray(arr)
+
     # Output size = rotated bounding-box of (width_px, height_px)
     if angle_deg != 0.0:
         out_w = max(1, round(width_px * abs_cos + height_px * abs_sin))
