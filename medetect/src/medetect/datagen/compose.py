@@ -499,6 +499,7 @@ def _place_cluster(
     background: NDArray[np.uint8],
     length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
+    size_threshold: float | None = None,
 ) -> list[str]:
     """Place a cluster of ships side-by-side.  Returns label lines.
 
@@ -538,7 +539,7 @@ def _place_cluster(
     # Accumulate all cluster ships into an RGBA buffer, then blend once.
     # This avoids double-blending artefacts in the gaps between hulls.
     cluster_buf = np.zeros((image_size, image_size, 4), dtype=np.uint8)
-    placed: list[tuple[int, int, int, int, float]] = []  # (cx, cy, bw, lh, angle_rad)
+    placed: list[tuple[int, int, int, int, float, int]] = []  # (cx, cy, bw, lh, angle_rad, cid)
 
     # Snapshot of occupancy BEFORE this cluster starts.
     # Each ship checks against this to avoid landing on OTHER clusters/ships,
@@ -602,18 +603,19 @@ def _place_cluster(
 
         # Porter-Duff source-over onto cluster buffer (no background yet)
         _composite_rgba(cluster_buf, rotated, cx - rw // 2, cy - rh // 2)
-        placed.append((cx, cy, bw, lh, angle_rad))
+        cid = _ship_class_id(lh, resolution_m, class_id, size_threshold)
+        placed.append((cx, cy, bw, lh, angle_rad, cid))
         # Update occupancy immediately to prevent within-cluster overlap
         _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
 
     # Blend the combined cluster layer onto the background once.
     if placed:
         _blend_rgba_layer(background, cluster_buf, cluster_alpha, water_tint)
-        for cx, cy, bw, lh, angle_rad in placed:
+        for cx, cy, bw, lh, angle_rad, cid in placed:
             corners = compute_obb_corners(
                 float(cx), float(cy), float(bw), float(lh), angle_rad,
             )
-            labels.append(format_obb_label(class_id, corners, image_size, image_size))
+            labels.append(format_obb_label(cid, corners, image_size, image_size))
 
     return labels
 
@@ -659,6 +661,7 @@ def generate_dataset(
     ship_length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     seed: int | None = None,
+    size_threshold: float | None = None,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format.
 
@@ -710,6 +713,11 @@ def generate_dataset(
         (default), ``> 1.0`` = more small ships, ``< 1.0`` = more uniform.
     seed
         Random seed for reproducibility.
+    size_threshold
+        Ship length threshold in metres for two-class labelling.  Ships
+        shorter than this are labelled ``ship_small`` (class *class_id*),
+        ships at or above are ``ship_large`` (class ``class_id + 1``).
+        *None* keeps the single ``ship`` class (backward compatible).
 
     Returns
     -------
@@ -765,6 +773,7 @@ def generate_dataset(
                 ship_length_range=ship_length_range,
                 length_exponent=length_exponent,
                 rng=rng,
+                size_threshold=size_threshold,
             )
         except Exception:
             logger.warning(
@@ -791,7 +800,32 @@ def generate_dataset(
         stats["clusters"] += n_clusters
 
     # Write dataset YAML
-    _write_dataset_yaml(output_dir, class_id)
+    gen_params: dict[str, object] = {
+        "count": count,
+        "image_size": image_size,
+        "resolution": resolution,
+        "geo_scale": geo_scale,
+        "ships_per_image": f"{ships_per_image[0]}:{ships_per_image[1]}",
+        "cluster_prob": cluster_prob,
+        "cluster_size": f"{cluster_size[0]}:{cluster_size[1]}",
+        "class_id": class_id,
+        "erode_coast": erode_coast,
+        "min_water_ratio": min_water_ratio,
+        "ship_blur_sigma": ship_blur_sigma,
+        "ship_alpha": f"{ship_alpha[0]}:{ship_alpha[1]}",
+        "ship_length_range": (
+            f"{ship_length_range[0]}:{ship_length_range[1]}"
+            if ship_length_range is not None
+            else None
+        ),
+        "length_exponent": length_exponent,
+        "seed": seed,
+        "size_threshold": size_threshold,
+    }
+    _write_dataset_yaml(
+        output_dir, class_id,
+        size_threshold=size_threshold, params=gen_params,
+    )
 
     logger.info("Dataset complete: %s", stats)
     return stats
@@ -819,6 +853,7 @@ def _compose_one(
     length_exponent: float,
     rng: random.Random,
     max_crop_attempts: int = 20,
+    size_threshold: float | None = None,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image.  Returns ``(tile, labels, n_clusters)``."""
     with rasterio.open(tif_path) as src:
@@ -907,7 +942,7 @@ def _compose_one(
                 water_mask, occupancy, svg_metas, ship_resolution, rng,
                 cluster_size, ship_blur_sigma, ship_alpha,
                 class_id, image_size, tile, ship_length_range,
-                length_exponent,
+                length_exponent, size_threshold,
             )
             labels.extend(new_labels)
             if new_labels:
@@ -934,8 +969,9 @@ def _compose_one(
                 corners = compute_obb_corners(
                     float(cx), float(cy), float(bw), float(lh), angle_rad,
                 )
+                cid = _ship_class_id(lh, ship_resolution, class_id, size_threshold)
                 labels.append(
-                    format_obb_label(class_id, corners, image_size, image_size),
+                    format_obb_label(cid, corners, image_size, image_size),
                 )
 
     return tile, labels, n_clusters
@@ -944,15 +980,58 @@ def _compose_one(
 # ── Dataset YAML ──────────────────────────────────────────────────────────
 
 
-def _write_dataset_yaml(output_dir: Path, class_id: int) -> None:
-    """Write a minimal YOLO dataset YAML config."""
+def _ship_class_id(
+    length_px: int,
+    resolution_m: float,
+    class_id: int,
+    size_threshold: float | None,
+) -> int:
+    """Return the YOLO class ID for a ship based on its physical length.
+
+    When *size_threshold* is ``None``, all ships get *class_id*.  When set,
+    ships shorter than the threshold get *class_id* (small) and ships at or
+    above get ``class_id + 1`` (large).
+    """
+    if size_threshold is None:
+        return class_id
+    length_m = length_px * resolution_m
+    if length_m >= size_threshold:
+        return class_id + 1  # large
+    return class_id  # small
+
+
+def _write_dataset_yaml(
+    output_dir: Path,
+    class_id: int,
+    *,
+    size_threshold: float | None = None,
+    params: dict[str, object] | None = None,
+) -> None:
+    """Write a YOLO dataset YAML config.
+
+    When *size_threshold* is set, two classes (``ship_small`` / ``ship_large``)
+    are written.  Generation parameters in *params* are prepended as YAML
+    comments for reproducibility.
+    """
     yaml_path = output_dir / "dataset.yaml"
-    content = (
-        f"path: {output_dir.resolve().as_posix()}\n"
-        f"train: images/autosplit_train.txt\n"
-        f"val: images/autosplit_val.txt\n"
-        f"\n"
-        f"names:\n"
-        f"  {class_id}: ship\n"
-    )
-    yaml_path.write_text(content, encoding="utf-8")
+    lines: list[str] = []
+
+    # Generation parameters as comments
+    if params:
+        lines.append("# Generation parameters:")
+        for key, value in params.items():
+            lines.append(f"#   {key}: {value}")
+        lines.append("")
+
+    lines.append(f"path: {output_dir.resolve().as_posix()}")
+    lines.append("train: images/autosplit_train.txt")
+    lines.append("val: images/autosplit_val.txt")
+    lines.append("")
+    lines.append("names:")
+    if size_threshold is not None:
+        lines.append(f"  {class_id}: ship_small")
+        lines.append(f"  {class_id + 1}: ship_large")
+    else:
+        lines.append(f"  {class_id}: ship")
+
+    yaml_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

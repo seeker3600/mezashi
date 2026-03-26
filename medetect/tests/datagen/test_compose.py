@@ -14,8 +14,10 @@ from medetect.datagen.compose import (
     _composite_rgba,
     _load_svg_metas,
     _natural_lb_ratio,
+    _ship_class_id,
     _stamp_occupancy,
     _svg_lb_weight,
+    _write_dataset_yaml,
     blend_ship,
     compute_obb_corners,
     compute_ship_pixel_size,
@@ -804,3 +806,73 @@ class TestLoadSvgMetas:
 
         metas = _load_svg_metas(paths)
         assert [m.lb_ratio for m in metas] == lb_values
+
+
+class TestShipClassId:
+    """_ship_class_id による大小クラス判定の検証。"""
+
+    def test_no_threshold_returns_base_id(self) -> None:
+        """しきい値なしのとき、常に base class_id を返す。"""
+        assert _ship_class_id(100, 10.0, 0, None) == 0
+
+    def test_below_threshold_returns_small(self) -> None:
+        """長さがしきい値未満なら small (class_id) を返す。"""
+        # 5 px * 10 m/px = 50 m < 100 m threshold
+        assert _ship_class_id(5, 10.0, 0, 100.0) == 0
+
+    def test_at_threshold_returns_large(self) -> None:
+        """長さがしきい値ちょうどなら large (class_id + 1) を返す。"""
+        # 10 px * 10 m/px = 100 m == 100 m threshold
+        assert _ship_class_id(10, 10.0, 0, 100.0) == 1
+
+    def test_above_threshold_returns_large(self) -> None:
+        """長さがしきい値超なら large (class_id + 1) を返す。"""
+        # 15 px * 10 m/px = 150 m > 100 m threshold
+        assert _ship_class_id(15, 10.0, 0, 100.0) == 1
+
+    def test_custom_base_class_id(self) -> None:
+        """base class_id が 0 以外でも正しく動作する。"""
+        assert _ship_class_id(5, 10.0, 2, 100.0) == 2   # small
+        assert _ship_class_id(15, 10.0, 2, 100.0) == 3   # large
+
+
+class TestWriteDatasetYaml:
+    """_write_dataset_yaml の出力検証。"""
+
+    def test_single_class_without_threshold(self, tmp_path) -> None:
+        """しきい値なしのとき、単一クラス ship を出力する。"""
+        _write_dataset_yaml(tmp_path, 0)
+        content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
+        assert "  0: ship\n" in content
+        assert "ship_small" not in content
+        assert "ship_large" not in content
+
+    def test_two_classes_with_threshold(self, tmp_path) -> None:
+        """しきい値ありのとき、ship_small と ship_large の2クラスを出力する。"""
+        _write_dataset_yaml(tmp_path, 0, size_threshold=100.0)
+        content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
+        assert "  0: ship_small\n" in content
+        assert "  1: ship_large\n" in content
+
+    def test_params_written_as_comments(self, tmp_path) -> None:
+        """生成パラメータがコメントとして書き込まれる。"""
+        params = {"count": 100, "resolution": 10.0, "size_threshold": 80.0}
+        _write_dataset_yaml(tmp_path, 0, size_threshold=80.0, params=params)
+        content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
+        assert "# Generation parameters:" in content
+        assert "#   count: 100" in content
+        assert "#   resolution: 10.0" in content
+        assert "#   size_threshold: 80.0" in content
+
+    def test_no_params_no_comment(self, tmp_path) -> None:
+        """パラメータなしのとき、コメント行がない。"""
+        _write_dataset_yaml(tmp_path, 0)
+        content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
+        assert "# Generation parameters:" not in content
+
+    def test_custom_class_id_with_threshold(self, tmp_path) -> None:
+        """class_id が 0 以外のとき、正しい ID で出力される。"""
+        _write_dataset_yaml(tmp_path, 3, size_threshold=50.0)
+        content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
+        assert "  3: ship_small\n" in content
+        assert "  4: ship_large\n" in content

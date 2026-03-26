@@ -162,6 +162,16 @@ def main() -> None:
         metavar="MIN:MAX",
         help="Ship opacity range for blending (default: 0.7:0.95).",
     )
+    parser.add_argument(
+        "--size_threshold",
+        type=float,
+        default=None,
+        help=(
+            "Ship length threshold in metres for two-class labelling. "
+            "Ships shorter than this → ship_small, at or above → ship_large. "
+            "Omit for single 'ship' class (default)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -184,6 +194,7 @@ def main() -> None:
         ship_length_range=args.ship_length,
         length_exponent=args.length_exponent,
         seed=args.seed,
+        size_threshold=args.size_threshold,
     )
 
     print(f"Done: {stats}")
