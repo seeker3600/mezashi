@@ -22,7 +22,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Launch FiftyOne viewer for a YOLO-format dataset YAML."
     )
-    parser.add_argument("yaml", type=Path, help="Dataset YAML path (YOLO format).")
+    parser.add_argument("--yaml", type=Path, help="Dataset YAML path (YOLO format).")
+    parser.add_argument("--split", type=str, default="val", help="Dataset split to view (e.g. 'val', 'train').")
+
     args = parser.parse_args()
 
     yaml_path: Path = args.yaml.resolve()
@@ -36,6 +38,7 @@ def main() -> None:
     dataset = fo.Dataset.from_dir(
         yaml_path=str(yaml_dst),
         dataset_type=fo.types.YOLOv5Dataset,
+        split=args.split,
     )
 
     session = fo.launch_app(dataset)
