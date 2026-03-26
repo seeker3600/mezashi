@@ -3,14 +3,15 @@ from ultralytics import YOLO
 
 from medetect.yolo.augment import RandomCloudOverlay
 
+model = "yolo26m-obb.pt"
 
 custom_transforms = [
-    A.RandomFog(fog_coef_range=(0.03, 0.10), alpha_coef=0.05, p=0.5),
-    RandomCloudOverlay(r"datasets/cloud_overlays_png_640", alpha_range=(0.2, 0.5), p=0.65),
+    A.RandomFog(fog_coef_range=(0.03, 0.10), alpha_coef=0.05, p=0.25),
+    RandomCloudOverlay(r"datasets/cloud_overlays_png_640", alpha_range=(0.1, 0.3), p=0.25),
     A.OneOf(
         [
-            A.Blur(blur_limit=(3, 30)),
-            A.GaussianBlur(blur_limit=(3, 30)),
+            A.Blur(blur_limit=(3, 15)),
+            A.GaussianBlur(blur_limit=(3, 15)),
         ],
         p=1.0,
     ),
@@ -22,7 +23,7 @@ custom_transforms = [
     A.ImageCompression(
         quality_range=(60, 95),
         compression_type="jpeg",
-        p=0.25,
+        p=0.3,
     ),
     A.RandomBrightnessContrast(
         brightness_limit=0.12,
@@ -70,4 +71,4 @@ train_kwargs: dict = dict(
 
 
 def train_yolo_model() -> None:
-    YOLO("yolo26m.pt").train(**train_kwargs)
+    YOLO(model).train(**train_kwargs)
