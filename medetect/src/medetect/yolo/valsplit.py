@@ -12,6 +12,7 @@ import yaml
 from ultralytics.cfg import get_cfg
 from ultralytics.data.dataset import YOLODataset
 from ultralytics.data.utils import img2label_paths
+from ultralytics.utils.ops import xywhr2xyxyxyxy
 
 from medetect.yolo.train import train_kwargs
 
@@ -48,12 +49,26 @@ def _build_hyp():
     return hyp
 
 
+def _detect_task(label_dir: Path) -> str:
+    """Return ``'obb'`` if labels use 8-coord OBB format, else ``'detect'``."""
+    for txt in sorted(label_dir.glob("*.txt")):
+        text = txt.read_text().strip()
+        if not text:
+            continue
+        n_values = len(text.split("\n")[0].split())
+        if n_values == 9:  # class + 4 xy-pairs
+            return "obb"
+        return "detect"
+    return "detect"
+
+
 def _save_yolo_labels(path: Path, cls: np.ndarray, bboxes: np.ndarray) -> None:
-    """Write YOLO detection labels (``cls cx cy w h``) to *path*."""
+    """Write YOLO labels to *path* (supports both detect and OBB formats)."""
     lines: list[str] = []
     for c, b in zip(cls, bboxes):
         c_val = int(c[0]) if c.ndim > 0 else int(c)
-        lines.append(f"{c_val} {b[0]:.6f} {b[1]:.6f} {b[2]:.6f} {b[3]:.6f}")
+        coords = " ".join(f"{v:.6f}" for v in b)
+        lines.append(f"{c_val} {coords}")
     path.write_text("\n".join(lines))
 
 
@@ -89,11 +104,16 @@ def split_train_to_val(
 
     hyp = _build_hyp()
 
+    train_labels_dir = dataset_path / "labels" / "train"
+    task = _detect_task(train_labels_dir)
+    is_obb = task == "obb"
+
     # YOLODataset.__init__ calls build_transforms(hyp), which uses
     # v8_transforms(dataset, imgsz, hyp) when augment=True.
     dataset = YOLODataset(
         img_path=str(train_path),
         data=data,
+        task=task,
         augment=True,
         hyp=hyp,
         imgsz=imgsz,
@@ -121,7 +141,12 @@ def split_train_to_val(
         sample = dataset[idx]
         img_t = sample["img"]  # (C, H, W) uint8, RGB
         cls_np = sample["cls"].numpy()  # (n_obj, 1)
-        bboxes_np = sample["bboxes"].numpy()  # (n_obj, 4) normalised xywh
+        bboxes_raw = sample["bboxes"].numpy()
+        if is_obb:
+            # xywhr (N, 5) → xyxyxyxy (N, 4, 2) → (N, 8)
+            bboxes_np = xywhr2xyxyxyxy(sample["bboxes"]).numpy().reshape(-1, 8)
+        else:
+            bboxes_np = bboxes_raw  # (n_obj, 4) normalised xywh
 
         # CHW RGB → HWC BGR for cv2.imwrite
         img_bgr = np.ascontiguousarray(

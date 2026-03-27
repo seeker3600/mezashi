@@ -41,13 +41,52 @@ class TestBuildHyp:
 
 
 # ---------------------------------------------------------------------------
+# _detect_task
+# ---------------------------------------------------------------------------
+
+
+class TestDetectTask:
+    def test_detect_format(self, tmp_path: Path) -> None:
+        """4値ラベルをdetectと判定する。"""
+        from medetect.yolo.valsplit import _detect_task
+
+        (tmp_path / "a.txt").write_text("0 0.5 0.5 0.1 0.1")
+        assert _detect_task(tmp_path) == "detect"
+
+    def test_obb_format(self, tmp_path: Path) -> None:
+        """8値ラベルをobbと判定する。"""
+        from medetect.yolo.valsplit import _detect_task
+
+        (tmp_path / "a.txt").write_text(
+            "0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8"
+        )
+        assert _detect_task(tmp_path) == "obb"
+
+    def test_empty_dir_returns_detect(self, tmp_path: Path) -> None:
+        """ラベルが無い場合はdetectをデフォルトとする。"""
+        from medetect.yolo.valsplit import _detect_task
+
+        assert _detect_task(tmp_path) == "detect"
+
+    def test_skips_empty_files(self, tmp_path: Path) -> None:
+        """空ファイルはスキップして次を読む。"""
+        from medetect.yolo.valsplit import _detect_task
+
+        (tmp_path / "a.txt").write_text("")
+        (tmp_path / "b.txt").write_text(
+            "0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8"
+        )
+        assert _detect_task(tmp_path) == "obb"
+
+
+# ---------------------------------------------------------------------------
 # _save_yolo_labels
 # ---------------------------------------------------------------------------
 
 
 class TestSaveYoloLabels:
     def test_writes_correct_format(self, tmp_path: Path) -> None:
-        """YOLO形式でラベルが正しく書き出される。"""
+        """YOLO detect形式でラベルが正しく書き出される。"""
         from medetect.yolo.valsplit import _save_yolo_labels
 
         cls = np.array([[0], [2]])
@@ -60,6 +99,20 @@ class TestSaveYoloLabels:
         assert len(lines) == 2
         assert lines[0] == "0 0.500000 0.500000 0.100000 0.200000"
         assert lines[1] == "2 0.300000 0.700000 0.050000 0.100000"
+
+    def test_writes_obb_format(self, tmp_path: Path) -> None:
+        """OBB形式(8座標)でラベルが正しく書き出される。"""
+        from medetect.yolo.valsplit import _save_yolo_labels
+
+        cls = np.array([[0]])
+        bboxes = np.array([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]])
+
+        path = tmp_path / "label.txt"
+        _save_yolo_labels(path, cls, bboxes)
+
+        lines = path.read_text().strip().split("\n")
+        assert len(lines) == 1
+        assert lines[0] == "0 0.100000 0.200000 0.300000 0.400000 0.500000 0.600000 0.700000 0.800000"
 
     def test_empty_labels(self, tmp_path: Path) -> None:
         """空のラベルでも空ファイルが作成される。"""
@@ -148,7 +201,7 @@ class TestSplitTrainToVal:
         assert len(remaining_lbls) == 8
 
     def test_label_content_matches_augmented_output(self, tmp_path: Path) -> None:
-        """保存されたラベルが拡張後のbboxと一致する。"""
+        """保存されたラベルが拡張後のbboxと一致する(detect形式)。"""
         config, images_dir, labels_dir = self._make_dataset(tmp_path, 5)
         mock = MagicMock()
         mock.__len__ = MagicMock(return_value=5)
@@ -185,6 +238,72 @@ class TestSplitTrainToVal:
         assert len(lines) == 2
         assert lines[0] == "0 0.250000 0.350000 0.120000 0.080000"
         assert lines[1] == "1 0.600000 0.700000 0.050000 0.030000"
+
+    def test_obb_labels_preserved(self, tmp_path: Path) -> None:
+        """OBB形式のラベルがxywhrからxyxyxyxyに正しく変換されて保存される。"""
+        import math
+
+        images_dir = tmp_path / "images" / "train"
+        labels_dir = tmp_path / "labels" / "train"
+        images_dir.mkdir(parents=True)
+        labels_dir.mkdir(parents=True)
+
+        config = tmp_path / "dataset.yaml"
+        config.write_text(
+            f"path: {tmp_path}\n"
+            "train: images/train\n"
+            "val: images/val\n"
+            "names:\n  0: ship\n"
+            "nc: 1\n"
+        )
+
+        n_images = 5
+        for i in range(n_images):
+            (images_dir / f"img_{i:04d}.png").write_bytes(b"fake")
+            # OBB format: class + 8 coords
+            (labels_dir / f"img_{i:04d}.txt").write_text(
+                "0 0.1 0.2 0.3 0.2 0.3 0.4 0.1 0.4"
+            )
+
+        mock = MagicMock()
+        mock.__len__ = MagicMock(return_value=n_images)
+        mock.labels = [
+            {"im_file": str(images_dir / f"img_{i:04d}.png")}
+            for i in range(n_images)
+        ]
+
+        # Simulate OBB dataset output: bboxes as (N, 5) xywhr
+        def _getitem(self_mock: MagicMock, idx: int) -> dict:
+            return {
+                "img": torch.full((3, 640, 640), 128, dtype=torch.uint8),
+                "cls": torch.tensor([[0]], dtype=torch.float32),
+                # cx=0.5, cy=0.5, w=0.2, h=0.1, theta=0.0
+                "bboxes": torch.tensor(
+                    [[0.5, 0.5, 0.2, 0.1, 0.0]],
+                    dtype=torch.float32,
+                ),
+            }
+
+        mock.__getitem__ = _getitem
+
+        with (
+            patch("medetect.yolo.valsplit.YOLODataset", return_value=mock),
+            patch("medetect.yolo.valsplit._build_hyp", return_value=MagicMock()),
+        ):
+            from medetect.yolo.valsplit import split_train_to_val
+
+            split_train_to_val(config, fraction=0.2, seed=0)
+
+        val_labels_dir = tmp_path / "labels" / "val"
+        label_files = sorted(val_labels_dir.iterdir())
+        assert len(label_files) == 1
+
+        lines = label_files[0].read_text().strip().split("\n")
+        assert len(lines) == 1
+        parts = lines[0].split()
+        assert parts[0] == "0"
+        # OBB format: 8 coordinate values
+        assert len(parts) == 9, f"Expected 9 values (cls + 8 coords), got {len(parts)}"
 
     def test_updates_dataset_yaml(self, tmp_path: Path) -> None:
         """実行後にdataset.yamlのtrain/valがディレクトリ指定に書き換えられる。"""
