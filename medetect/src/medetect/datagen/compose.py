@@ -15,8 +15,10 @@ Output structure::
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
+import os
 import random
 from pathlib import Path
 from typing import NamedTuple
@@ -662,6 +664,7 @@ def generate_dataset(
     length_exponent: float = 1.0,
     seed: int | None = None,
     size_threshold: float | None = None,
+    max_workers: int | None = None,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format.
 
@@ -718,6 +721,8 @@ def generate_dataset(
         shorter than this are labelled ``ship_small`` (class *class_id*),
         ships at or above are ``ship_large`` (class ``class_id + 1``).
         *None* keeps the single ``ship`` class (backward compatible).
+    max_workers
+        Number of parallel worker threads.  ``None`` uses ``os.cpu_count()``.
 
     Returns
     -------
@@ -750,54 +755,74 @@ def generate_dataset(
             raise FileNotFoundError(msg)
         svg_metas = _load_svg_metas(svg_files)
 
+    # Pre-generate per-task parameters using the main RNG so that results
+    # are reproducible with the same seed regardless of worker count.
+    task_tifs = [rng.choice(visual_files) for _ in range(count)]
+    task_seeds = [rng.randint(0, 2**32 - 1) for _ in range(count)]
+
+    if max_workers is None:
+        max_workers = os.cpu_count() or 1
+
     stats = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
 
-    for i in tqdm(range(count), desc="Generating dataset"):
-        tif_path = rng.choice(visual_files)
+    # Build shared kwargs once to avoid repetition in each submit() call.
+    _shared = dict(
+        img_out=img_out,
+        lbl_out=lbl_out,
+        svg_metas=svg_metas,
+        image_size=image_size,
+        resolution=resolution,
+        geo_scale=geo_scale,
+        ships_per_image=ships_per_image,
+        cluster_prob=cluster_prob,
+        cluster_size=cluster_size,
+        class_id=class_id,
+        erode_coast=erode_coast,
+        min_water_ratio=min_water_ratio,
+        ship_blur_sigma=ship_blur_sigma,
+        ship_alpha=ship_alpha,
+        ship_length_range=ship_length_range,
+        length_exponent=length_exponent,
+        size_threshold=size_threshold,
+    )
 
-        try:
-            result = _compose_one(
-                tif_path=tif_path,
-                svg_metas=svg_metas,
-                image_size=image_size,
-                resolution=resolution,
-                geo_scale=geo_scale,
-                ships_per_image=ships_per_image,
-                cluster_prob=cluster_prob,
-                cluster_size=cluster_size,
-                class_id=class_id,
-                erode_coast=erode_coast,
-                min_water_ratio=min_water_ratio,
-                ship_blur_sigma=ship_blur_sigma,
-                ship_alpha=ship_alpha,
-                ship_length_range=ship_length_range,
-                length_exponent=length_exponent,
-                rng=rng,
-                size_threshold=size_threshold,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to compose %s — skipping", tif_path.name, exc_info=True,
-            )
-            stats["skipped"] += 1
-            continue
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures: dict[concurrent.futures.Future[tuple[int, int]], tuple[int, Path]] = {
+            executor.submit(
+                _run_compose_task,
+                index=i,
+                task_seed=task_seeds[i],
+                tif_path=task_tifs[i],
+                **_shared,
+            ): (i, task_tifs[i])
+            for i in range(count)
+        }
 
-        if result is None:
-            stats["skipped"] += 1
-            continue
-
-        tile, labels, n_clusters = result
-
-        name = f"{i:06d}"
-        Image.fromarray(tile).save(img_out / f"{name}.png")
-        (lbl_out / f"{name}.txt").write_text(
-            "\n".join(labels) + ("\n" if labels else ""),
-            encoding="utf-8",
-        )
-
-        stats["images"] += 1
-        stats["ships"] += len(labels)
-        stats["clusters"] += n_clusters
+        with tqdm(
+            total=count,
+            desc="Generating dataset",
+            unit="image",
+            dynamic_ncols=True,
+        ) as pbar:
+            for fut in concurrent.futures.as_completed(futures):
+                _idx, tif_path = futures[fut]
+                try:
+                    n_ships, n_clusters = fut.result()
+                    if n_ships < 0:  # skipped
+                        stats["skipped"] += 1
+                    else:
+                        stats["images"] += 1
+                        stats["ships"] += n_ships
+                        stats["clusters"] += n_clusters
+                except Exception:
+                    logger.warning(
+                        "Failed to compose %s — skipping",
+                        tif_path.name,
+                        exc_info=True,
+                    )
+                    stats["skipped"] += 1
+                finally:
+                    pbar.update(1)
 
     # Write dataset YAML
     gen_params: dict[str, object] = {
@@ -832,6 +857,68 @@ def generate_dataset(
 
 
 # ── Single image composition ──────────────────────────────────────────────
+
+
+def _run_compose_task(
+    *,
+    index: int,
+    task_seed: int,
+    tif_path: Path,
+    img_out: Path,
+    lbl_out: Path,
+    svg_metas: list[_SvgMeta] | None,
+    image_size: int,
+    resolution: float | None,
+    geo_scale: float | None,
+    ships_per_image: tuple[int, int],
+    cluster_prob: float,
+    cluster_size: tuple[int, int],
+    class_id: int,
+    erode_coast: int,
+    min_water_ratio: float,
+    ship_blur_sigma: float,
+    ship_alpha: tuple[float, float],
+    ship_length_range: tuple[float, float] | None,
+    length_exponent: float,
+    size_threshold: float | None,
+) -> tuple[int, int]:
+    """Worker function for one dataset image.
+
+    Returns ``(n_ships, n_clusters)``.  Returns ``(-1, -1)`` when the tile
+    was skipped (no suitable water region found).  Raises on hard errors.
+    """
+    rng = random.Random(task_seed)
+    result = _compose_one(
+        tif_path=tif_path,
+        svg_metas=svg_metas,
+        image_size=image_size,
+        resolution=resolution,
+        geo_scale=geo_scale,
+        ships_per_image=ships_per_image,
+        cluster_prob=cluster_prob,
+        cluster_size=cluster_size,
+        class_id=class_id,
+        erode_coast=erode_coast,
+        min_water_ratio=min_water_ratio,
+        ship_blur_sigma=ship_blur_sigma,
+        ship_alpha=ship_alpha,
+        ship_length_range=ship_length_range,
+        length_exponent=length_exponent,
+        rng=rng,
+        size_threshold=size_threshold,
+    )
+
+    if result is None:
+        return -1, -1
+
+    tile, labels, n_clusters = result
+    name = f"{index:06d}"
+    Image.fromarray(tile).save(img_out / f"{name}.png")
+    (lbl_out / f"{name}.txt").write_text(
+        "\n".join(labels) + ("\n" if labels else ""),
+        encoding="utf-8",
+    )
+    return len(labels), n_clusters
 
 
 def _compose_one(

@@ -172,6 +172,12 @@ def main() -> None:
             "Omit for single 'ship' class (default)."
         ),
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of parallel worker threads (default: os.cpu_count()).",
+    )
 
     args = parser.parse_args()
 
@@ -195,6 +201,7 @@ def main() -> None:
         length_exponent=args.length_exponent,
         seed=args.seed,
         size_threshold=args.size_threshold,
+        max_workers=args.workers,
     )
 
     print(f"Done: {stats}")
