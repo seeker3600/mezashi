@@ -178,6 +178,32 @@ def main() -> None:
         default=None,
         help="Number of parallel worker threads (default: os.cpu_count()).",
     )
+    parser.add_argument(
+        "--wake_prob_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Wake occurrence probability multiplier (default: 1.0). "
+            "Applied to the built-in per-state probabilities "
+            "(STOPPED 20%%, SLOW 50%%, MEDIUM 80%%, FAST 90%%). "
+            "0.0 = never generate wakes. "
+            "0.5 = halve all probabilities. "
+            "2.0 = double all probabilities (capped at 100%% per state)."
+        ),
+    )
+    parser.add_argument(
+        "--wake_alpha_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Wake opacity/intensity multiplier (default: 1.0). "
+            "Controls how strongly a wake appears when it is generated. "
+            "0.0 = fully transparent (disables rendering). "
+            "1.5 = 50%% brighter wakes. "
+            "Independent of --wake_prob_scale: probability and intensity "
+            "can be tuned separately."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -201,6 +227,8 @@ def main() -> None:
         length_exponent=args.length_exponent,
         seed=args.seed,
         size_threshold=args.size_threshold,
+        wake_prob_scale=args.wake_prob_scale,
+        wake_alpha_scale=args.wake_alpha_scale,
         max_workers=args.workers,
     )
 

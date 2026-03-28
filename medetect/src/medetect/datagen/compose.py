@@ -31,6 +31,7 @@ from rasterio.windows import Window
 from tqdm import tqdm
 
 from medetect.datagen.render import parse_svg_metadata, rasterize_ship_svg
+from medetect.datagen.wake import MotionState, pick_motion_state, render_wake
 from medetect.datagen.water_mask import (
     erode_mask,
     make_water_mask_from_rgb,
@@ -702,6 +703,8 @@ def generate_dataset(
     length_exponent: float = 1.0,
     seed: int | None = None,
     size_threshold: float | None = None,
+    wake_prob_scale: float = 1.0,
+    wake_alpha_scale: float = 1.0,
     max_workers: int | None = None,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format.
@@ -822,6 +825,8 @@ def generate_dataset(
         ship_length_range=ship_length_range,
         length_exponent=length_exponent,
         size_threshold=size_threshold,
+        wake_prob_scale=wake_prob_scale,
+        wake_alpha_scale=wake_alpha_scale,
     )
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -884,6 +889,8 @@ def generate_dataset(
         "length_exponent": length_exponent,
         "seed": seed,
         "size_threshold": size_threshold,
+        "wake_prob_scale": wake_prob_scale,
+        "wake_alpha_scale": wake_alpha_scale,
     }
     _write_dataset_yaml(
         output_dir, class_id,
@@ -919,6 +926,8 @@ def _run_compose_task(
     ship_length_range: tuple[float, float] | None,
     length_exponent: float,
     size_threshold: float | None,
+    wake_prob_scale: float = 1.0,
+    wake_alpha_scale: float = 1.0,
 ) -> tuple[int, int]:
     """Worker function for one dataset image.
 
@@ -944,6 +953,8 @@ def _run_compose_task(
         length_exponent=length_exponent,
         rng=rng,
         size_threshold=size_threshold,
+        wake_prob_scale=wake_prob_scale,
+        wake_alpha_scale=wake_alpha_scale,
     )
 
     if result is None:
@@ -979,6 +990,8 @@ def _compose_one(
     rng: random.Random,
     max_crop_attempts: int = 20,
     size_threshold: float | None = None,
+    wake_prob_scale: float = 1.0,
+    wake_alpha_scale: float = 1.0,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image.  Returns ``(tile, labels, n_clusters)``."""
     with rasterio.open(tif_path) as src:
@@ -1097,6 +1110,15 @@ def _compose_one(
                 cx, cy = pos
                 alpha = rng.uniform(*ship_alpha)
                 water_tint = _sample_water_tint(tile, cx, cy)
+                # Wake rendered first so the ship silhouette appears on top.
+                ship_state = pick_motion_state(rng)
+                render_wake(
+                    tile, water_mask,
+                    float(cx), float(cy), bw, lh, angle_rad,
+                    ship_state, rng,
+                    wake_prob_scale=wake_prob_scale,
+                    wake_alpha_scale=wake_alpha_scale,
+                )
                 blend_ship(tile, rotated, cx, cy, alpha, water_tint)
                 _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
 
