@@ -31,28 +31,52 @@ def make_water_mask_from_rgb(
     *,
     brightness_threshold: int = 60,
 ) -> NDArray[np.bool_]:
-    """Fallback water mask from RGB mean brightness.
+    """Heuristic water mask from RGB channels.
 
-    Water in Sentinel-2 TCI tends to be dark.  This is a rough heuristic;
-    SCL-based masking is strongly preferred.
+    Combines two complementary detectors:
+
+    1. **Dark water** — mean brightness below *brightness_threshold* and
+       blue not far below the dominant channel (the original heuristic).
+    2. **Bright water** — brightness above the dark threshold but still
+       exhibits water-like spectral characteristics:
+       blue ≥ red (rules out bare soil / urban),
+       not strongly vegetation-green (G-R < 50 and G-B < 40),
+       and overall brightness not too high (< 180, excludes clouds /
+       bright sand).
+
+    The union of both detectors is returned so that coastal turquoise,
+    sediment-laden, and mauve offshore water are captured in addition to
+    the classic dark open ocean.
 
     Parameters
     ----------
     rgb
         RGB array ``(H, W, 3)`` with ``uint8`` values.
     brightness_threshold
-        Pixels with mean brightness below this value are classified as water.
+        Dark-water brightness ceiling (default 60).
     """
-    brightness: NDArray = rgb.mean(axis=2)
-    # Water is dark AND blue-shifted (or neutral-dark).
-    # Dark land shadows tend to be brownish/greenish, so reject pixels
-    # where blue falls well below the dominant channel.
+    r = rgb[:, :, 0].astype(np.int16)
+    g = rgb[:, :, 1].astype(np.int16)
     b = rgb[:, :, 2].astype(np.int16)
-    rg_max = np.maximum(
-        rgb[:, :, 0].astype(np.int16),
-        rgb[:, :, 1].astype(np.int16),
+
+    brightness: NDArray = rgb.mean(axis=2)
+
+    # --- detector 1: dark water (original) ---
+    rg_max = np.maximum(r, g)
+    dark_water = (brightness < brightness_threshold) & (b >= rg_max - 10)
+
+    # --- detector 2: bright water ---
+    chroma = np.maximum(r, np.maximum(g, b)) - np.minimum(r, np.minimum(g, b))
+    bright_water = (
+        (brightness >= brightness_threshold)
+        & (brightness < 180)      # exclude clouds / bright sand
+        & (b >= r)                # water has blue ≥ red
+        & (g - b < 45)           # not strongly green vegetation (G >> B)
+        & (r < 160)              # not bright soil/urban
+        & (chroma > 15)          # not achromatic grey (urban/concrete)
     )
-    return (brightness < brightness_threshold) & (b >= rg_max - 10)
+
+    return dark_water | bright_water
 
 
 def erode_mask(

@@ -876,3 +876,87 @@ class TestWriteDatasetYaml:
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "  3: ship_small\n" in content
         assert "  4: ship_large\n" in content
+
+
+class TestAugmentTile:
+    """augment_tile によるタイルの色オーグメンテーション検証。"""
+
+    def test_output_shape_unchanged(self) -> None:
+        """出力タイルの形状が変わらない。"""
+        from medetect.datagen.compose import augment_tile
+
+        tile = np.full((64, 64, 3), 100, dtype=np.uint8)
+        rng = random.Random(0)
+        result = augment_tile(tile, rng)
+        assert result.shape == tile.shape
+        assert result.dtype == np.uint8
+
+    def test_output_differs_from_input(self) -> None:
+        """オーグメンテーション後は元と異なる値になる（特定のseedで）。"""
+        from medetect.datagen.compose import augment_tile
+
+        tile = np.full((64, 64, 3), 100, dtype=np.uint8)
+        rng = random.Random(42)
+        result = augment_tile(tile, rng)
+        assert not np.array_equal(result, tile)
+
+    def test_different_seeds_produce_different_results(self) -> None:
+        """異なるシードで異なるオーグメンテーション結果になる。"""
+        from medetect.datagen.compose import augment_tile
+
+        tile = np.full((64, 64, 3), 80, dtype=np.uint8)
+        results = []
+        for seed in range(10):
+            rng = random.Random(seed)
+            results.append(augment_tile(tile, rng).mean())
+        # At least some seeds should produce different means
+        unique_means = set(round(m, 1) for m in results)
+        assert len(unique_means) >= 3, f"Too few unique augmentations: {unique_means}"
+
+    def test_values_clipped_to_uint8(self) -> None:
+        """オーグメンテーション後の値が0-255の範囲に収まる。"""
+        from medetect.datagen.compose import augment_tile
+
+        # Very bright and very dark tiles
+        for val in [0, 5, 250, 255]:
+            tile = np.full((32, 32, 3), val, dtype=np.uint8)
+            for seed in range(5):
+                rng = random.Random(seed)
+                result = augment_tile(tile, rng)
+                assert result.min() >= 0
+                assert result.max() <= 255
+
+    def test_channels_shifted_independently(self) -> None:
+        """チャンネル別のゲインが独立に適用される。"""
+        from medetect.datagen.compose import augment_tile
+
+        tile = np.full((64, 64, 3), 100, dtype=np.uint8)
+        # Run many seeds and check that channels diverge at least sometimes
+        channel_diffs = 0
+        for seed in range(20):
+            rng = random.Random(seed)
+            result = augment_tile(tile, rng)
+            means = [result[:, :, c].mean() for c in range(3)]
+            if max(means) - min(means) > 1:
+                channel_diffs += 1
+        assert channel_diffs > 0, "Channels never differ"
+
+    def test_typical_water_tile_augmented(self) -> None:
+        """典型的な暗い海面タイルに色の多様性が出る。"""
+        from medetect.datagen.compose import augment_tile
+
+        # Dark ocean-like tile
+        tile = np.zeros((64, 64, 3), dtype=np.uint8)
+        tile[:, :, 0] = 15  # R
+        tile[:, :, 1] = 25  # G
+        tile[:, :, 2] = 40  # B
+        means = []
+        for seed in range(20):
+            rng = random.Random(seed)
+            result = augment_tile(tile, rng)
+            means.append(tuple(result.mean(axis=(0, 1))))
+        # Check there is visible diversity: blue channel mean should vary
+        blue_means = [m[2] for m in means]
+        assert max(blue_means) - min(blue_means) > 5, (
+            f"Insufficient diversity: blue means range = {max(blue_means) - min(blue_means):.1f}"
+        )

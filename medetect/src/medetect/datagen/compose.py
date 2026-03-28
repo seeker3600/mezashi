@@ -67,6 +67,34 @@ _DARK_TILE_THRESHOLD: float = 10.0
 # ── Pure helpers (easily testable) ────────────────────────────────────────
 
 
+def augment_tile(
+    tile: NDArray[np.uint8],
+    rng: random.Random,
+) -> NDArray[np.uint8]:
+    """Apply random colour augmentation to a background tile.
+
+    Applies per-channel gain, gamma correction, and brightness offset to
+    introduce visual diversity among tiles that may originate from the same
+    ocean region.  The augmentation is intentionally moderate so that the
+    result still looks like a plausible satellite image.
+    """
+    img = tile.astype(np.float32)
+
+    # Per-channel multiplicative gain  (±15 %)
+    for c in range(3):
+        img[:, :, c] *= rng.uniform(0.85, 1.15)
+
+    # Global gamma  (0.8 – 1.2)
+    gamma = rng.uniform(0.8, 1.2)
+    img = np.clip(img, 0, 255)
+    img = 255.0 * (img / 255.0) ** gamma
+
+    # Brightness offset  (±10)
+    img += rng.uniform(-10, 10)
+
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
 def is_dark_tile(tile: NDArray[np.uint8], threshold: float = _DARK_TILE_THRESHOLD) -> bool:
     """Return True when the tile is a satellite blackout / no-data area.
 
@@ -1013,6 +1041,11 @@ def _compose_one(
                 return tile, [], 0  # type: ignore[possibly-undefined]
             except NameError:
                 return None
+
+    # Colour augmentation — applied AFTER water-mask computation to avoid
+    # shifting pixel values that the mask heuristic expects, but BEFORE
+    # ship compositing so ships are blended onto the augmented background.
+    tile = augment_tile(tile, rng)
 
     # Place ships
     # ships_per_image は「配置イベント数」= 単独船1隻またはクラスタ1グループ を何回行うか。

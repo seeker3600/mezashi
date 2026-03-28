@@ -93,3 +93,62 @@ class TestMakeWaterMaskFromRgb:
         rgb = np.array([[[12, 14, 13]]], dtype=np.uint8)
         mask = make_water_mask_from_rgb(rgb)
         assert mask[0, 0]
+
+    def test_bright_turquoise_coastal_water(self) -> None:
+        """明るいターコイズ色の沿岸水域が水域として検出される。"""
+        # Typical Sentinel-2 coastal turquoise: R<G, R<B, G≈B
+        rgb = np.array([[[70, 140, 130]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert mask[0, 0]
+
+    def test_bright_sediment_laden_water(self) -> None:
+        """堆積物混じりの明るい水域が水域として検出される。"""
+        # Yellowish-green shallow water near river mouths
+        rgb = np.array([[[100, 150, 110]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert mask[0, 0]
+
+    def test_mauve_offshore_water(self) -> None:
+        """紫がかった沖合水域が水域として検出される。"""
+        # Purple/mauve hue sometimes seen in offshore Sentinel-2
+        rgb = np.array([[[70, 55, 80]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert mask[0, 0]
+
+    def test_medium_blue_open_ocean(self) -> None:
+        """中間的な明るさの外洋が水域として検出される。"""
+        rgb = np.array([[[30, 40, 65]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert mask[0, 0]
+
+    def test_bright_land_not_water(self) -> None:
+        """明るい陸地（茶色や白い建物等）は水域に含めない。"""
+        # Brown land
+        rgb = np.array([[[160, 130, 90]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert not mask[0, 0]
+
+    def test_green_vegetation_not_water(self) -> None:
+        """明るい植生が水域に含まれない。"""
+        # Bright green vegetation: G >> R and G >> B
+        rgb = np.array([[[50, 120, 40]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert not mask[0, 0]
+
+    def test_cloud_not_water(self) -> None:
+        """白い雲が水域に含まれない。"""
+        rgb = np.array([[[220, 225, 230]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert not mask[0, 0]
+
+    def test_urban_grey_not_water(self) -> None:
+        """灰色の市街地が水域に含まれない。"""
+        rgb = np.array([[[130, 130, 135]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert not mask[0, 0]
+
+    def test_red_soil_not_water(self) -> None:
+        """赤い土壌が水域に含まれない。"""
+        rgb = np.array([[[140, 80, 60]]], dtype=np.uint8)
+        mask = make_water_mask_from_rgb(rgb)
+        assert not mask[0, 0]
