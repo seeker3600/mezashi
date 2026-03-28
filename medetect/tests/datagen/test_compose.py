@@ -24,6 +24,7 @@ from medetect.datagen.compose import (
     find_water_position,
     format_obb_label,
     is_dark_tile,
+    make_nodata_mask,
 )
 
 
@@ -721,6 +722,54 @@ class TestIsDarkTile:
         mostly_dark = np.zeros((64, 64, 3), dtype=np.uint8)
         mostly_dark[60:64, 60:64, :] = 80  # ごく一部だけ明るい
         assert is_dark_tile(mostly_dark)
+
+
+class TestMakeNodataMask:
+    """純黒 (#000000) の no-data 領域検出のテスト。"""
+
+    def test_all_black_is_nodata(self) -> None:
+        """全黒タイルは全ピクセルが no-data とマークされる。"""
+        tile = np.zeros((4, 4, 3), dtype=np.uint8)
+        mask = make_nodata_mask(tile)
+        assert mask.all()
+
+    def test_normal_tile_has_no_nodata(self) -> None:
+        """通常の輝度を持つタイルは no-data ピクセルを含まない。"""
+        tile = np.full((4, 4, 3), 80, dtype=np.uint8)
+        mask = make_nodata_mask(tile)
+        assert not mask.any()
+
+    def test_partial_black_strip(self) -> None:
+        """一部が黒いストライプを含むタイルは黒部分のみ no-data。"""
+        tile = np.full((8, 8, 3), 100, dtype=np.uint8)
+        tile[:4, :, :] = 0  # 上半分が黒
+        mask = make_nodata_mask(tile)
+        assert mask[:4, :].all()
+        assert not mask[4:, :].any()
+
+    def test_single_channel_zero_is_not_nodata(self) -> None:
+        """1チャンネルだけ 0 でも no-data ではない（#000000 = 全チャンネル 0 のみ）。"""
+        tile = np.full((4, 4, 3), 0, dtype=np.uint8)
+        tile[:, :, 0] = 50  # R だけ非ゼロ
+        mask = make_nodata_mask(tile)
+        assert not mask.any()
+
+    def test_nodata_excluded_from_water_mask(self) -> None:
+        """pure black (#000000) ピクセルは RGB ウォーターマスクから除外される。"""
+        from medetect.datagen.water_mask import make_water_mask_from_rgb
+
+        # 暗い水域と同じ輝度特性を持つが、黒いため no-data 扱いになるタイル
+        tile = np.zeros((8, 8, 3), dtype=np.uint8)
+        tile[4:, :, :] = 30  # 下半分は暗い水域ふう
+
+        water = make_water_mask_from_rgb(tile)
+        nodata = make_nodata_mask(tile)
+        water_clean = water & ~nodata
+
+        # 上半分 (pure black) は水マスクから除外されている
+        assert not water_clean[:4, :].any()
+        # 下半分は引き続き水として検出される
+        assert water_clean[4:, :].any()
 
 
 class TestNaturalLbRatio:

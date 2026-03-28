@@ -105,6 +105,16 @@ def is_dark_tile(tile: NDArray[np.uint8], threshold: float = _DARK_TILE_THRESHOL
     return float(tile.mean()) < threshold
 
 
+def make_nodata_mask(tile: NDArray[np.uint8]) -> NDArray[np.bool_]:
+    """Return ``True`` for pixels that are pure black (#000000) — no-data areas.
+
+    Satellite products such as Sentinel-2 use RGB (0, 0, 0) to mark pixels
+    outside the swath or that were masked during processing.  These must be
+    excluded from water masking and ship placement.
+    """
+    return (tile[:, :, 0] == 0) & (tile[:, :, 1] == 0) & (tile[:, :, 2] == 0)
+
+
 def compute_ship_pixel_size(
     ship_class: str,
     lb_ratio: float,
@@ -1029,6 +1039,10 @@ def _compose_one(
                 water_mask = make_water_mask_from_scl(scl)
             else:
                 water_mask = make_water_mask_from_rgb(tile)
+
+            # Exclude no-data (pure black, #000000) pixels — artificially masked
+            # or unimaged regions must not be used for ship placement.
+            water_mask &= ~make_nodata_mask(tile)
 
             water_mask = erode_mask(water_mask, erode_coast)
 
