@@ -2,9 +2,10 @@
 
 Each ship is assigned a random motion state (STOPPED / SLOW / MEDIUM / FAST).
 Ships receive a wake trail with a probability that depends on their state.
-Wakes are rendered as three layers—a central bright stripe, flanking V-diffusion
-bands, and a coherent noise field for irregularity—then alpha-composited onto
-the background *before* the ship silhouette is blended on top.
+Wakes are rendered as three layers—a narrow turbulent central wash, Kelvin
+diverging arm waves (at the universal ±19.47° half-angle), and a coherent
+noise field for irregularity—then alpha-composited onto the background
+*before* the ship silhouette is blended on top.
 
 Coordinate convention
 ---------------------
@@ -81,6 +82,9 @@ _ALPHA_MAX: dict[MotionState, float] = {
     MotionState.MEDIUM: 0.55,
     MotionState.FAST: 0.65,
 }
+
+# Tangent of the Kelvin wake half-angle (universally ≈ 19.47°, sin θ = 1/3).
+_KELVIN_TAN: float = math.tan(math.radians(19.47))  # ≈ 0.3536
 
 
 def pick_motion_state(rng: random.Random) -> MotionState:
@@ -262,11 +266,6 @@ def render_wake(
     if wake_length_px < 2.0:
         return
 
-    # Wake half-widths: tapered from stern to far end.
-    init_hw = beam_px * rng.uniform(0.15, 0.35)   # half-width at stern
-    final_hw = beam_px * rng.uniform(0.8, 2.5)     # half-width at far end
-    v_spread = rng.uniform(1.5, 3.0)               # V-band relative to central width
-
     alpha_max = _ALPHA_MAX[state] * rng.uniform(0.7, 1.0) * wake_alpha_scale
 
     # Wake colour derived from local water colour.
@@ -289,18 +288,32 @@ def render_wake(
     # Normalised progress along wake [0, 1].
     t_clip = np.clip(along / wake_length_px, 0.0, 1.0).astype(np.float32)
 
-    # ── Layer 1: Central wake (narrow tapered Gaussian) ───────────────────
-    hw_c = np.float32(init_hw) + (np.float32(final_hw) - np.float32(init_hw)) * t_clip
-    sigma_c = np.clip(hw_c * 0.45 + 0.5, 0.5, None)
+    # ── Layer 1: Turbulent central wake (narrow, constant width) ──────────
+    # Foamy white water directly astern; stays roughly constant width.
+    sigma_c = np.float32(max(0.5, beam_px * rng.uniform(0.10, 0.18)))
     central = np.exp(-0.5 * (across / sigma_c) ** 2).astype(np.float32)
+    # Fades with distance: bright near stern, dim far back.
+    central = central * (1.0 - t_clip) ** np.float32(0.5)
 
-    # ── Layer 2: V-shape side bands (wider, lower amplitude) ──────────────
-    hw_v = hw_c * np.float32(v_spread)
-    sigma_v = np.clip(hw_v * 0.55 + 1.0, 1.0, None)
-    v_band = (np.exp(-0.5 * (across / sigma_v) ** 2) * 0.35).astype(np.float32)
+    # ── Layer 2: Kelvin diverging arm waves (± 19.47°) ────────────────────
+    # Ship wakes produce diverging wave crests at the universal Kelvin
+    # half-angle arcsin(1/3) ≈ 19.47°.  Rendered as two thin Gaussian
+    # tubes located at across = ±along·tan(19.47°).
+    sigma_arm = np.float32(max(0.8, beam_px * 0.08 + 0.5))
+    dist_right = np.abs(across - along * np.float32(_KELVIN_TAN))
+    dist_left  = np.abs(across + along * np.float32(_KELVIN_TAN))
+    arm_right = np.exp(-0.5 * (dist_right / sigma_arm) ** 2)
+    arm_left  = np.exp(-0.5 * (dist_left  / sigma_arm) ** 2)
+    # Restrict to inside the Kelvin cone (± 3σ soft margin).
+    cone_limit = along * np.float32(_KELVIN_TAN) + sigma_arm * 3.0
+    arm_mask = (np.abs(across) <= cone_limit) & in_wake
+    kelvin_arms = ((arm_right + arm_left) * arm_mask).astype(np.float32)
+    # Arms attenuate with distance from the stern.
+    arm_decay = np.exp(-along / np.float32(max(1.0, wake_length_px * 0.8)))
+    kelvin_arms = kelvin_arms * arm_decay.astype(np.float32)
 
-    # Combine layers.
-    wake_alpha = np.clip(central * 0.65 + v_band * 0.35, 0.0, 1.0)
+    # Combine: central wash dominates near stern; Kelvin arms extend further.
+    wake_alpha = np.clip(central * 0.65 + kelvin_arms * 0.50, 0.0, 1.0)
 
     # ── Along-axis fade envelope ──────────────────────────────────────────
     # Quick fade-in at the stern (first 5 %), constant middle, fade-out in last 30 %.
@@ -313,7 +326,7 @@ def render_wake(
     wake_alpha *= in_wake.astype(np.float32)
 
     # ── Layer 3: Coherent noise for irregularity ──────────────────────────
-    noise = _build_noise_field((H, W), rng)
+    noise = _build_noise_field((H, W), rng, downsample=4)
     wake_alpha *= noise
 
     # ── Suppress wake pixels over land ───────────────────────────────────

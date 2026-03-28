@@ -1081,6 +1081,11 @@ def _compose_one(
     labels: list[str] = []
     n_clusters = 0
 
+    # Collect single-ship placements; wakes are rendered in a separate pass
+    # so that no hull is obscured by a later ship's wake (z-ordering fix).
+    # Each entry: (cx, cy, rotated, bw, lh, angle_rad, alpha, water_tint, state, cid, corners)
+    single_ships: list[tuple] = []
+
     for _ in range(n_events):
         is_cluster = rng.random() < cluster_prob
 
@@ -1110,25 +1115,32 @@ def _compose_one(
                 cx, cy = pos
                 alpha = rng.uniform(*ship_alpha)
                 water_tint = _sample_water_tint(tile, cx, cy)
-                # Wake rendered first so the ship silhouette appears on top.
                 ship_state = pick_motion_state(rng)
-                render_wake(
-                    tile, water_mask,
-                    float(cx), float(cy), bw, lh, angle_rad,
-                    ship_state, rng,
-                    wake_prob_scale=wake_prob_scale,
-                    wake_alpha_scale=wake_alpha_scale,
-                )
-                blend_ship(tile, rotated, cx, cy, alpha, water_tint)
                 _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
-
                 corners = compute_obb_corners(
                     float(cx), float(cy), float(bw), float(lh), angle_rad,
                 )
                 cid = _ship_class_id(lh, ship_resolution, class_id, size_threshold)
-                labels.append(
-                    format_obb_label(cid, corners, image_size, image_size),
+                single_ships.append(
+                    (cx, cy, rotated, bw, lh, angle_rad, alpha, water_tint,
+                     ship_state, cid, corners)
                 )
+
+    # Pass 2: render wakes for all single ships before any hull is blended.
+    # This guarantees every hull appears on top of every wake (incl. its own).
+    for cx, cy, rotated, bw, lh, angle_rad, alpha, water_tint, ship_state, cid, corners in single_ships:
+        render_wake(
+            tile, water_mask,
+            float(cx), float(cy), bw, lh, angle_rad,
+            ship_state, rng,
+            wake_prob_scale=wake_prob_scale,
+            wake_alpha_scale=wake_alpha_scale,
+        )
+
+    # Pass 3: blend all single ship hulls on top of the wakes.
+    for cx, cy, rotated, bw, lh, angle_rad, alpha, water_tint, ship_state, cid, corners in single_ships:
+        blend_ship(tile, rotated, cx, cy, alpha, water_tint)
+        labels.append(format_obb_label(cid, corners, image_size, image_size))
 
     return tile, labels, n_clusters
 
