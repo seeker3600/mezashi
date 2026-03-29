@@ -10,8 +10,12 @@ import pytest
 
 from medetect.datagen.wake import (
     MotionState,
+    WakePattern,
+    _build_1d_noise,
     _build_noise_field,
+    _make_trail_color,
     _make_wake_color,
+    _pick_pattern,
     _sample_water_color,
     pick_motion_state,
     render_wake,
@@ -267,3 +271,80 @@ class TestRenderWake:
                 angle_rad=math.radians(angle_deg),
                 state=MotionState.MEDIUM, rng=rng,
             )
+
+
+class TestPickPattern:
+    def test_returns_valid_pattern(self) -> None:
+        """_pick_pattern は WakePattern を返す。"""
+        rng = random.Random(0)
+        for state in MotionState:
+            p = _pick_pattern(state, rng)
+            assert isinstance(p, WakePattern)
+
+    def test_stopped_mostly_foam_only(self) -> None:
+        """STOPPED 状態では FOAM_ONLY が最多。"""
+        rng = random.Random(42)
+        counts = {p: 0 for p in WakePattern}
+        for _ in range(500):
+            counts[_pick_pattern(MotionState.STOPPED, rng)] += 1
+        assert counts[WakePattern.FOAM_ONLY] > counts[WakePattern.FOAM_TRAIL]
+        assert counts[WakePattern.FOAM_ONLY] > counts[WakePattern.FOAM_TRAIL_SPREAD]
+
+    def test_fast_mostly_trail_or_spread(self) -> None:
+        """FAST 状態では FOAM_ONLY はほとんど選ばれない。"""
+        rng = random.Random(42)
+        foam_count = sum(
+            _pick_pattern(MotionState.FAST, rng) == WakePattern.FOAM_ONLY
+            for _ in range(500)
+        )
+        assert foam_count < 50  # expect ~5 % × 500 = 25
+
+
+class TestMakeTrailColor:
+    def test_brighter_variant(self) -> None:
+        """darker=False のとき水面色より明るくなる。"""
+        rng = random.Random(7)
+        water = np.array([40.0, 60.0, 70.0], dtype=np.float32)
+        trail = _make_trail_color(water, rng, darker=False)
+        assert float(trail.mean()) > float(water.mean())
+
+    def test_darker_variant(self) -> None:
+        """darker=True のとき水面色より暗くなる。"""
+        rng = random.Random(7)
+        water = np.array([40.0, 60.0, 70.0], dtype=np.float32)
+        trail = _make_trail_color(water, rng, darker=True)
+        assert float(trail.mean()) < float(water.mean())
+
+    def test_within_byte_range(self) -> None:
+        """結果が 0–255 に収まる。"""
+        rng = random.Random(0)
+        for _ in range(20):
+            water = np.array(
+                [rng.uniform(0, 200), rng.uniform(0, 200), rng.uniform(0, 200)],
+                dtype=np.float32,
+            )
+            for darker in (True, False):
+                trail = _make_trail_color(water, rng, darker=darker)
+                assert trail.min() >= 0.0
+                assert trail.max() <= 255.0
+
+
+class TestBuild1dNoise:
+    def test_shape(self) -> None:
+        """長さが n_steps と一致する。"""
+        rng = random.Random(0)
+        noise = _build_1d_noise(100, rng)
+        assert noise.shape == (100,)
+
+    def test_value_range(self) -> None:
+        """値が [0.15, 1.0] に収まる。"""
+        rng = random.Random(0)
+        noise = _build_1d_noise(200, rng)
+        assert float(noise.min()) >= 0.14
+        assert float(noise.max()) <= 1.01
+
+    def test_not_constant(self) -> None:
+        """ノイズが一定値ではない（変動がある）。"""
+        rng = random.Random(42)
+        noise = _build_1d_noise(100, rng)
+        assert float(noise.std()) > 0.05

@@ -2,30 +2,29 @@
 
 Each ship is assigned a random motion state (STOPPED / SLOW / MEDIUM / FAST).
 Ships receive a wake trail with a probability that depends on their state.
-Wakes are rendered as three layers—a narrow turbulent central wash, Kelvin
-diverging arm waves (at the universal ±19.47° half-angle), and a coherent
-noise field for irregularity—then alpha-composited onto the background
-*before* the ship silhouette is blended on top.
+Wakes are rendered as two main elements:
+
+1. **Stern foam** — a short, bright elliptical patch directly behind the stern
+   (the brightest part, always lighter than the sea surface).
+2. **Trailing line** — a thin centre-line extending far astern, optionally
+   accompanied by very faint diverging side-lines.
+
+Three visual patterns are selected per-ship:
+
+- **Foam only** (~25 %): short foam patch, no trailing line (harbour / slow).
+- **Foam + trail** (~50 %): foam plus a single thin trailing line.
+- **Foam + trail + spread** (~25 %): trail with faint ±3°–10° side-lines.
+
+Wake colour adapts to the local sea surface: foam is always brighter, but the
+trailing line may be slightly brighter *or* slightly darker than the
+background (50 / 50), matching real satellite imagery.
 
 Coordinate convention
 ---------------------
-The ``angle_rad`` parameter follows the same convention used in
-:func:`medetect.datagen.compose.compute_obb_corners`: at ``angle_rad = 0`` the
-ship SVG points upward (−Y, bow at top).  The wake exits from the stern, which
-lies in the direction ``(−sin θ, +cos θ)`` in image-space (y-axis pointing
-down).
-
-Intentional omissions
----------------------
-- **Perlin / Simplex noise**: replaced by bilinear-upscaled random noise
-  (no extra dependency; visually sufficient at Sentinel-2 resolution).
-- **Sea-roughness detection**: too expensive per-ship; alpha values are kept
-  conservative by default instead.
-- **Separate harbour logic**: ships are already kept away from land by the
-  water-mask erosion in compose.py; STOPPED ships already have a very low
-  wake probability (20 %).
-- **Per-wake cluster suppression**: clusters are treated as anchored groups,
-  so the caller (compose.py) skips wake generation for cluster ships.
+``angle_rad`` follows the same convention as
+:func:`medetect.datagen.compose.compute_obb_corners`: at ``angle_rad = 0``
+the bow points upward (−Y).  The wake exits from the stern in direction
+``(−sin θ, +cos θ)`` in image-space (Y-axis pointing down).
 """
 
 from __future__ import annotations
@@ -36,10 +35,10 @@ import random
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 
-# ── Motion state ──────────────────────────────────────────────────────────
+# ── Motion state & wake pattern ───────────────────────────────────────────
 
 
 class MotionState(enum.Enum):
@@ -51,12 +50,18 @@ class MotionState(enum.Enum):
     FAST = "fast"
 
 
+class WakePattern(enum.Enum):
+    """Visual pattern selected for one ship's wake."""
+
+    FOAM_ONLY = "foam_only"
+    FOAM_TRAIL = "foam_trail"
+    FOAM_TRAIL_SPREAD = "foam_trail_spread"
+
+
 _STATE_VALUES: list[MotionState] = list(MotionState)
+_PATTERN_VALUES: list[WakePattern] = list(WakePattern)
 
 # Sampling weights for the four states.
-# Expected wake fraction overall:
-#   0.20×0.20 + 0.40×0.50 + 0.30×0.80 + 0.10×0.90 ≈ 57 %
-# (within the recommended 30–60 % range).
 _STATE_WEIGHTS: list[float] = [0.20, 0.40, 0.30, 0.10]
 
 # Probability of generating a visible wake for each state.
@@ -67,29 +72,43 @@ _WAKE_PROB: dict[MotionState, float] = {
     MotionState.FAST: 0.90,
 }
 
-# Wake length as a multiple of the ship's pixel length.
-_LENGTH_FACTOR: dict[MotionState, tuple[float, float]] = {
-    MotionState.STOPPED: (0.1, 0.5),
-    MotionState.SLOW: (1.0, 2.0),
-    MotionState.MEDIUM: (2.0, 4.0),
-    MotionState.FAST: (4.0, 6.0),
+# Pattern selection weights per state [foam_only, foam_trail, spread].
+# Global mix ≈ 30 % foam-only, 48 % trail, 22 % spread.
+_PATTERN_WEIGHTS: dict[MotionState, list[float]] = {
+    MotionState.STOPPED: [0.70, 0.25, 0.05],
+    MotionState.SLOW: [0.30, 0.55, 0.15],
+    MotionState.MEDIUM: [0.10, 0.55, 0.35],
+    MotionState.FAST: [0.05, 0.45, 0.50],
 }
 
-# Maximum composite alpha of the wake at its brightest pixel.
-_ALPHA_MAX: dict[MotionState, float] = {
-    MotionState.STOPPED: 0.18,
-    MotionState.SLOW: 0.38,
-    MotionState.MEDIUM: 0.55,
-    MotionState.FAST: 0.65,
+# Trailing-line length as a multiple of the ship's pixel length.
+_TRAIL_LENGTH_FACTOR: dict[MotionState, tuple[float, float]] = {
+    MotionState.STOPPED: (0.5, 1.5),
+    MotionState.SLOW: (1.5, 3.0),
+    MotionState.MEDIUM: (2.5, 5.0),
+    MotionState.FAST: (4.0, 8.0),
 }
 
-# Tangent of the Kelvin wake half-angle (universally ≈ 19.47°, sin θ = 1/3).
-_KELVIN_TAN: float = math.tan(math.radians(19.47))  # ≈ 0.3536
+# Maximum alpha for the foam patch.
+_FOAM_ALPHA_MAX: dict[MotionState, float] = {
+    MotionState.STOPPED: 0.30,
+    MotionState.SLOW: 0.50,
+    MotionState.MEDIUM: 0.65,
+    MotionState.FAST: 0.75,
+}
+
+# Trail alpha expressed as a fraction of the foam alpha.
+_TRAIL_ALPHA_RATIO: tuple[float, float] = (0.40, 0.70)
 
 
 def pick_motion_state(rng: random.Random) -> MotionState:
     """Return a random :class:`MotionState` for one ship."""
     return rng.choices(_STATE_VALUES, weights=_STATE_WEIGHTS, k=1)[0]
+
+
+def _pick_pattern(state: MotionState, rng: random.Random) -> WakePattern:
+    """Select a visual wake pattern based on the ship's motion state."""
+    return rng.choices(_PATTERN_VALUES, weights=_PATTERN_WEIGHTS[state], k=1)[0]
 
 
 # ── Colour helpers ────────────────────────────────────────────────────────
@@ -117,7 +136,7 @@ def _make_wake_color(
     water_color: NDArray[np.float32],
     rng: random.Random,
 ) -> NDArray[np.float32]:
-    """Derive wake colour: water brightened and slightly desaturated.
+    """Derive foam colour: water brightened and slightly desaturated.
 
     Returns an RGB float32 array.  The result is never pure white—it
     retains a hint of the local water hue.
@@ -131,6 +150,28 @@ def _make_wake_color(
     return np.clip(wake, 0.0, 255.0).astype(np.float32)
 
 
+def _make_trail_color(
+    water_color: NDArray[np.float32],
+    rng: random.Random,
+    darker: bool = False,
+) -> NDArray[np.float32]:
+    """Derive trailing-line colour: subtle shift from local water.
+
+    50 % of the time the trail is slightly brighter; the other 50 % it is
+    slightly darker—matching real satellite imagery where wake trails are
+    not uniformly white.
+    """
+    if darker:
+        delta = rng.uniform(-25.0, -6.0)
+    else:
+        delta = rng.uniform(6.0, 28.0)
+    desat = rng.uniform(0.03, 0.10)
+    mean_b = float(water_color.mean())
+    trail = water_color + delta
+    trail = trail * (1.0 - desat) + (mean_b + delta) * desat
+    return np.clip(trail, 0.0, 255.0).astype(np.float32)
+
+
 # ── Noise ─────────────────────────────────────────────────────────────────
 
 
@@ -139,11 +180,9 @@ def _build_noise_field(
     rng: random.Random,
     downsample: int = 8,
 ) -> NDArray[np.float32]:
-    """Return a float32 noise field in ``[0.55, 1.0]`` for wake irregularity.
+    """Return a float32 noise field in ``[0.55, 1.0]``.
 
-    A small random array is generated and bilinearly upscaled to *shape*.
-    This efficiently approximates coherent low-frequency noise without
-    requiring external noise libraries.
+    Kept for backward-compatible tests; not used by the current renderer.
     """
     seed = rng.randint(0, 2**31 - 1)
     np_rng = np.random.default_rng(seed)
@@ -157,8 +196,183 @@ def _build_noise_field(
     lo, hi = float(noise.min()), float(noise.max())
     if hi > lo:
         noise = (noise - lo) / (hi - lo)
-    # Map [0, 1] → [0.55, 1.0] so noise never fully extinguishes the wake.
     return 0.55 + 0.45 * noise
+
+
+def _build_1d_noise(
+    n_steps: int,
+    rng: random.Random,
+) -> NDArray[np.float32]:
+    """Low-frequency 1-D noise in ``[0.15, 1.0]`` for trail irregularity.
+
+    About 10–30 % of the trail will be near-transparent, but never fully
+    zero—preventing a dotted-line appearance.
+    """
+    seed = rng.randint(0, 2**31 - 1)
+    np_rng = np.random.default_rng(seed)
+    n_ctrl = max(4, n_steps // 10)
+    ctrl = np_rng.random(n_ctrl).astype(np.float32)
+    x_ctrl = np.linspace(0.0, 1.0, n_ctrl)
+    x_full = np.linspace(0.0, 1.0, n_steps)
+    noise = np.interp(x_full, x_ctrl, ctrl)
+    return (0.15 + 0.85 * noise).astype(np.float32)
+
+
+# ── Path computation ──────────────────────────────────────────────────────
+
+
+def _compute_path(
+    sx: float,
+    sy: float,
+    dx: float,
+    dy: float,
+    perp_dx: float,
+    perp_dy: float,
+    length: float,
+    curvature: float,
+    n_steps: int,
+) -> list[tuple[float, float]]:
+    """Return *n_steps + 1* points along a gently curved wake path.
+
+    *curvature* is the total lateral pixel offset at the far end (t = 1).
+    Offset grows as t² for a smooth arc.
+    """
+    pts: list[tuple[float, float]] = []
+    for i in range(n_steps + 1):
+        t = i / n_steps
+        d = t * length
+        lat = curvature * t * t
+        pts.append((sx + dx * d + perp_dx * lat, sy + dy * d + perp_dy * lat))
+    return pts
+
+
+# ── Element renderers ─────────────────────────────────────────────────────
+
+
+def _render_foam(
+    background: NDArray[np.uint8],
+    water_mask: NDArray[np.bool_],
+    foam_cx: float,
+    foam_cy: float,
+    foam_half_l: float,
+    foam_half_w: float,
+    angle_rad: float,
+    foam_color: NDArray[np.float32],
+    foam_alpha_max: float,
+    blur_radius: float,
+) -> None:
+    """Render a short bright foam patch behind the stern (in-place)."""
+    H, W = background.shape[:2]
+    extent = max(foam_half_l, foam_half_w) * 2.5 + int(blur_radius * 3) + 4
+    y0 = max(0, int(foam_cy - extent))
+    y1 = min(H, int(foam_cy + extent) + 1)
+    x0 = max(0, int(foam_cx - extent))
+    x1 = min(W, int(foam_cx + extent) + 1)
+    if y1 <= y0 or x1 <= x0:
+        return
+    if foam_half_l < 0.3 or foam_half_w < 0.3:
+        return
+
+    rh, rw = y1 - y0, x1 - x0
+    ys, xs = np.mgrid[0:rh, 0:rw].astype(np.float32)
+    lx = xs + np.float32(x0 - foam_cx)
+    ly = ys + np.float32(y0 - foam_cy)
+
+    # Project onto wake-aligned axes.
+    wdx = np.float32(-math.sin(angle_rad))
+    wdy = np.float32(math.cos(angle_rad))
+    pdx = np.float32(math.cos(angle_rad))
+    pdy = np.float32(math.sin(angle_rad))
+
+    along = lx * wdx + ly * wdy
+    across = lx * pdx + ly * pdy
+
+    hl = np.float32(foam_half_l)
+    hw = np.float32(foam_half_w)
+    r2 = (along / hl) ** 2 + (across / hw) ** 2
+    foam_alpha = np.exp(np.float32(-2.0) * r2).astype(np.float32)
+
+    # Light blur.
+    if blur_radius > 0.2:
+        u8 = np.clip(foam_alpha * 255, 0, 255).astype(np.uint8)
+        pil = Image.fromarray(u8, "L")
+        pil = pil.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        foam_alpha = np.asarray(pil).astype(np.float32) / 255.0
+
+    # Water mask + scale.
+    foam_alpha *= water_mask[y0:y1, x0:x1].astype(np.float32)
+    foam_alpha = np.clip(foam_alpha * foam_alpha_max, 0.0, 1.0)
+
+    bm = foam_alpha > 0.003
+    if not bm.any():
+        return
+    region = background[y0:y1, x0:x1]
+    a = foam_alpha[bm, np.newaxis]
+    blended = region[bm].astype(np.float32) * (1.0 - a) + foam_color * a
+    region[bm] = np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def _render_trail(
+    background: NDArray[np.uint8],
+    water_mask: NDArray[np.bool_],
+    points: list[tuple[float, float]],
+    trail_width: int,
+    trail_color: NDArray[np.float32],
+    trail_alpha_max: float,
+    rng: random.Random,
+    blur_radius: float,
+) -> None:
+    """Render a thin trailing line with distance-decay and noise (in-place)."""
+    H, W = background.shape[:2]
+    n_seg = len(points) - 1
+    if n_seg < 1 or trail_alpha_max < 0.003:
+        return
+
+    # Bounding box of path with padding.
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    pad = trail_width + int(blur_radius * 3) + 3
+    x0 = max(0, int(min(xs)) - pad)
+    y0 = max(0, int(min(ys)) - pad)
+    x1 = min(W, int(max(xs)) + pad + 1)
+    y1 = min(H, int(max(ys)) + pad + 1)
+    rw, rh = x1 - x0, y1 - y0
+    if rw < 2 or rh < 2:
+        return
+
+    noise = _build_1d_noise(n_seg, rng)
+
+    trail_img = Image.new("L", (rw, rh), 0)
+    draw = ImageDraw.Draw(trail_img)
+    for i in range(n_seg):
+        t = i / n_seg
+        decay = (1.0 - t) ** 0.7
+        fill = max(0, min(255, int(decay * float(noise[i]) * 255)))
+        if fill < 1:
+            continue
+        p0 = (round(points[i][0]) - x0, round(points[i][1]) - y0)
+        p1 = (round(points[i + 1][0]) - x0, round(points[i + 1][1]) - y0)
+        draw.line([p0, p1], fill=fill, width=trail_width)
+
+    trail_alpha = np.asarray(trail_img).astype(np.float32) / 255.0
+
+    if blur_radius > 0.2:
+        u8 = np.clip(trail_alpha * 255, 0, 255).astype(np.uint8)
+        pil = Image.fromarray(u8, "L")
+        pil = pil.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        trail_alpha = np.asarray(pil).astype(np.float32) / 255.0
+
+    # Water mask + scale.
+    trail_alpha *= water_mask[y0:y1, x0:x1].astype(np.float32)
+    trail_alpha *= trail_alpha_max
+
+    bm = trail_alpha > 0.002
+    if not bm.any():
+        return
+    region = background[y0:y1, x0:x1]
+    a = trail_alpha[bm, np.newaxis]
+    blended = region[bm].astype(np.float32) * (1.0 - a) + trail_color * a
+    region[bm] = np.clip(blended, 0, 255).astype(np.uint8)
 
 
 # ── Main entry ────────────────────────────────────────────────────────────
@@ -246,105 +460,107 @@ def render_wake(
 
     H, W = background.shape[:2]
 
-    # Wake direction: stern side = (−sin θ, +cos θ) in image space.
+    # ── Pattern selection ─────────────────────────────────────────────
+    pattern = _pick_pattern(state, rng)
+
+    # ── Directions ────────────────────────────────────────────────────
     wake_dx = -math.sin(angle_rad)
     wake_dy = math.cos(angle_rad)
-    # Perpendicular direction (across the beam).
     perp_dx = math.cos(angle_rad)
     perp_dy = math.sin(angle_rad)
 
-    # Wake origin: just behind the stern (0.35–0.45 × full length from centre).
-    stern_frac = rng.uniform(0.35, 0.45)
+    # Stern position (half the ship length back from centre).
+    stern_frac = rng.uniform(0.45, 0.50)
     sx = cx + wake_dx * stern_frac * length_px
     sy = cy + wake_dy * stern_frac * length_px
 
-    # Wake length in pixels.
-    lo_f, hi_f = _LENGTH_FACTOR[state]
-    wake_length_px = rng.uniform(lo_f, hi_f) * length_px
-    # Never extend beyond 70 % of the image diagonal to avoid implausibly long wakes.
-    wake_length_px = min(wake_length_px, math.hypot(H, W) * 0.70)
-    if wake_length_px < 2.0:
-        return
-
-    alpha_max = _ALPHA_MAX[state] * rng.uniform(0.7, 1.0) * wake_alpha_scale
-
-    # Wake colour derived from local water colour.
+    # Local water colour.
     water_color = _sample_water_color(background, sx, sy)
-    wake_color = _make_wake_color(water_color, rng)  # shape (3,)
 
-    # ── Pixel coordinate grids (full image) ───────────────────────────────
-    ys, xs = np.mgrid[0:H, 0:W].astype(np.float32)
-    dx = xs - np.float32(sx)
-    dy = ys - np.float32(sy)
+    # ── Foam ──────────────────────────────────────────────────────────
+    foam_offset = rng.uniform(0.05, 0.15) * length_px
+    foam_cx = sx + wake_dx * foam_offset
+    foam_cy = sy + wake_dy * foam_offset
+    foam_half_l = rng.uniform(0.15, 0.50) * length_px / 2.0
+    foam_half_w = rng.uniform(0.4, 1.2) * beam_px / 2.0
+    foam_color = _make_wake_color(water_color, rng)
+    foam_alpha = _FOAM_ALPHA_MAX[state] * rng.uniform(0.80, 1.0) * wake_alpha_scale
+    foam_blur = max(0.4, beam_px * 0.08)
 
-    # Projections onto wake-aligned axes.
-    along = dx * np.float32(wake_dx) + dy * np.float32(wake_dy)   # 0 → wake_length
-    across = dx * np.float32(perp_dx) + dy * np.float32(perp_dy)  # signed lateral
+    # ── Trail (patterns 1 & 2) ────────────────────────────────────────
+    has_trail = pattern != WakePattern.FOAM_ONLY
+    trail_length = 0.0
+    if has_trail:
+        trail_start_d = foam_offset + rng.uniform(0.05, 0.25) * length_px
+        tsi_x = sx + wake_dx * trail_start_d
+        tsi_y = sy + wake_dy * trail_start_d
 
-    in_wake = (along >= 0.0) & (along <= wake_length_px)
-    if not in_wake.any():
-        return
+        lo_f, hi_f = _TRAIL_LENGTH_FACTOR[state]
+        trail_length = rng.uniform(lo_f, hi_f) * length_px
+        trail_length = min(trail_length, math.hypot(H, W) * 0.70)
 
-    # Normalised progress along wake [0, 1].
-    t_clip = np.clip(along / wake_length_px, 0.0, 1.0).astype(np.float32)
+        trail_width = max(1, min(4, round(beam_px * 0.20)))
+        trail_is_dark = rng.random() < 0.5
+        trail_color = _make_trail_color(water_color, rng, darker=trail_is_dark)
+        trail_alpha = foam_alpha * rng.uniform(*_TRAIL_ALPHA_RATIO)
+        trail_blur = max(0.3, beam_px * 0.05)
 
-    # ── Layer 1: Turbulent central wake (narrow, constant width) ──────────
-    # Foamy white water directly astern; stays roughly constant width.
-    sigma_c = np.float32(max(0.5, beam_px * rng.uniform(0.10, 0.18)))
-    central = np.exp(-0.5 * (across / sigma_c) ** 2).astype(np.float32)
-    # Fades with distance: bright near stern, dim far back.
-    central = central * (1.0 - t_clip) ** np.float32(0.5)
+        # Optional curvature (50 % straight, 50 % gentle arc).
+        if rng.random() < 0.5:
+            curvature = rng.choice([-1, 1]) * trail_length * rng.uniform(0.01, 0.05)
+        else:
+            curvature = 0.0
 
-    # ── Layer 2: Kelvin diverging arm waves (± 19.47°) ────────────────────
-    # Ship wakes produce diverging wave crests at the universal Kelvin
-    # half-angle arcsin(1/3) ≈ 19.47°.  Rendered as two thin Gaussian
-    # tubes located at across = ±along·tan(19.47°).
-    sigma_arm = np.float32(max(0.8, beam_px * 0.08 + 0.5))
-    dist_right = np.abs(across - along * np.float32(_KELVIN_TAN))
-    dist_left  = np.abs(across + along * np.float32(_KELVIN_TAN))
-    arm_right = np.exp(-0.5 * (dist_right / sigma_arm) ** 2)
-    arm_left  = np.exp(-0.5 * (dist_left  / sigma_arm) ** 2)
-    # Restrict to inside the Kelvin cone (± 3σ soft margin).
-    cone_limit = along * np.float32(_KELVIN_TAN) + sigma_arm * 3.0
-    arm_mask = (np.abs(across) <= cone_limit) & in_wake
-    kelvin_arms = ((arm_right + arm_left) * arm_mask).astype(np.float32)
-    # Arms attenuate with distance from the stern.
-    arm_decay = np.exp(-along / np.float32(max(1.0, wake_length_px * 0.8)))
-    kelvin_arms = kelvin_arms * arm_decay.astype(np.float32)
+        n_steps = max(20, int(trail_length / 4))
+        main_path = _compute_path(
+            tsi_x, tsi_y, wake_dx, wake_dy, perp_dx, perp_dy,
+            trail_length, curvature, n_steps,
+        )
 
-    # Combine: central wash dominates near stern; Kelvin arms extend further.
-    wake_alpha = np.clip(central * 0.65 + kelvin_arms * 0.50, 0.0, 1.0)
+    # ── Render trail first (lower visual priority) ────────────────────
+    if has_trail and trail_length >= 2.0:
+        _render_trail(
+            background, water_mask, main_path, trail_width,
+            trail_color, trail_alpha, rng, trail_blur,
+        )
 
-    # ── Along-axis fade envelope ──────────────────────────────────────────
-    # Quick fade-in at the stern (first 5 %), constant middle, fade-out in last 30 %.
-    fade_in = np.clip(along / (wake_length_px * 0.05 + 0.5), 0.0, 1.0)
-    fade_out = np.clip(
-        1.0 - (along - wake_length_px * 0.70) / (wake_length_px * 0.30 + 0.5),
-        0.0, 1.0,
+        # Side-lines for pattern 2 (very faint diverging auxiliary lines).
+        if pattern == WakePattern.FOAM_TRAIL_SPREAD:
+            side_alpha = trail_alpha * rng.uniform(0.20, 0.50)
+            angle_r = math.radians(rng.uniform(3.0, 10.0))
+            angle_l = math.radians(rng.uniform(3.0, 10.0))
+            len_r = trail_length * rng.uniform(0.40, 0.80)
+            len_l = trail_length * rng.uniform(0.40, 0.80)
+
+            # Right side-line: rotate wake direction toward +perp.
+            cos_r, sin_r = math.cos(angle_r), math.sin(angle_r)
+            r_dx = wake_dx * cos_r + perp_dx * sin_r
+            r_dy = wake_dy * cos_r + perp_dy * sin_r
+            path_r = _compute_path(
+                tsi_x, tsi_y, r_dx, r_dy, perp_dx, perp_dy,
+                len_r, 0.0, max(10, int(len_r / 4)),
+            )
+            _render_trail(
+                background, water_mask, path_r, 1,
+                trail_color, side_alpha, rng, trail_blur,
+            )
+
+            # Left side-line: rotate wake direction toward −perp.
+            cos_l, sin_l = math.cos(angle_l), math.sin(angle_l)
+            l_dx = wake_dx * cos_l - perp_dx * sin_l
+            l_dy = wake_dy * cos_l - perp_dy * sin_l
+            path_l = _compute_path(
+                tsi_x, tsi_y, l_dx, l_dy, perp_dx, perp_dy,
+                len_l, 0.0, max(10, int(len_l / 4)),
+            )
+            _render_trail(
+                background, water_mask, path_l, 1,
+                trail_color, side_alpha, rng, trail_blur,
+            )
+
+    # ── Render foam last (highest visual priority) ────────────────────
+    _render_foam(
+        background, water_mask, foam_cx, foam_cy,
+        foam_half_l, foam_half_w, angle_rad, foam_color,
+        foam_alpha, foam_blur,
     )
-    wake_alpha = wake_alpha * (fade_in * fade_out).astype(np.float32)
-    wake_alpha *= in_wake.astype(np.float32)
-
-    # ── Layer 3: Coherent noise for irregularity ──────────────────────────
-    noise = _build_noise_field((H, W), rng, downsample=4)
-    wake_alpha *= noise
-
-    # ── Suppress wake pixels over land ───────────────────────────────────
-    wake_alpha *= water_mask.astype(np.float32)
-
-    # ── Gaussian blur to soften edges ─────────────────────────────────────
-    blur_r = max(0.5, beam_px * 0.15)
-    alpha_u8 = np.clip(wake_alpha * 255.0, 0, 255).astype(np.uint8)
-    alpha_img = Image.fromarray(alpha_u8, mode="L")
-    alpha_img = alpha_img.filter(ImageFilter.GaussianBlur(radius=blur_r))
-    wake_alpha = np.asarray(alpha_img).astype(np.float32) / 255.0
-    # Re-apply water mask: Gaussian blur can bleed alpha into adjacent land pixels.
-    wake_alpha *= water_mask.astype(np.float32)
-
-    # Final opacity.
-    wake_alpha = np.clip(wake_alpha * alpha_max, 0.0, 1.0)
-
-    # ── Alpha composite onto background ───────────────────────────────────
-    alpha3 = wake_alpha[:, :, np.newaxis]
-    blended = background.astype(np.float32) * (1.0 - alpha3) + wake_color * alpha3
-    background[:] = np.clip(blended, 0, 255).astype(np.uint8)
