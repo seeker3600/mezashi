@@ -4,6 +4,7 @@ import {
 	createShrunkCanvas,
 	prepareTile,
 } from "./imageUtils";
+import { NMS_IOU_THRESHOLD, SLICE_THRESHOLD, TILE_OVERLAP } from "./labels";
 import type { TaskHandler } from "./tasks";
 import { getTaskHandler } from "./tasks";
 import type { Detection, GeoTIFFMeta, ModelMetadata } from "./types";
@@ -84,11 +85,6 @@ function mapDetectionsToOriginal(
 		height: d.height / scale,
 	}));
 }
-
-/** Threshold for when to use slice inference (pixels) */
-const SLICE_THRESHOLD = 1280;
-/** Overlap between adjacent tiles (fraction) */
-const TILE_OVERLAP = 0.25;
 
 /**
  * Run full inference on an image element, using slice inference for large images.
@@ -198,7 +194,7 @@ export async function runInference(
 			}
 		}
 
-		detections = handler.nms(allDetections, 0.45);
+		detections = handler.nms(allDetections, NMS_IOU_THRESHOLD);
 	}
 
 	// 縮小した場合、検出座標を元の画像座標に変換
