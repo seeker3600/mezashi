@@ -128,6 +128,57 @@ class TestSaveYoloLabels:
 
 
 # ---------------------------------------------------------------------------
+# _update_yaml_paths
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateYamlPaths:
+    def test_replaces_value_without_comment(self, tmp_path: Path) -> None:
+        """コメントなし行の値が書き換えられる。"""
+        from medetect.yolo.valsplit import _update_yaml_paths
+
+        config = tmp_path / "dataset.yaml"
+        config.write_text("path: /data\ntrain: images/autosplit_train.txt\nval: images/autosplit_val.txt\n")
+        _update_yaml_paths(config, {"train": "images/train", "val": "images/val"})
+
+        text = config.read_text()
+        assert "train: images/train" in text
+        assert "val: images/val" in text
+
+    def test_preserves_inline_comments(self, tmp_path: Path) -> None:
+        """インラインコメントが保持される。"""
+        from medetect.yolo.valsplit import _update_yaml_paths
+
+        config = tmp_path / "dataset.yaml"
+        config.write_text(
+            "path: /data  # dataset root\n"
+            "train: images/autosplit_train.txt  # training set\n"
+            "val: images/autosplit_val.txt  # validation set\n"
+            "nc: 1\n"
+        )
+        _update_yaml_paths(config, {"train": "images/train", "val": "images/val"})
+
+        text = config.read_text()
+        assert "train: images/train  # training set" in text
+        assert "val: images/val  # validation set" in text
+        assert "path: /data  # dataset root" in text
+
+    def test_preserves_other_keys(self, tmp_path: Path) -> None:
+        """対象外のキーは変更されない。"""
+        from medetect.yolo.valsplit import _update_yaml_paths
+
+        config = tmp_path / "dataset.yaml"
+        original = "path: /data\ntrain: old_train\nval: old_val\nnc: 42\n"
+        config.write_text(original)
+        _update_yaml_paths(config, {"train": "images/train"})
+
+        text = config.read_text()
+        assert "nc: 42" in text
+        assert "path: /data" in text
+        assert "val: old_val" in text
+
+
+# ---------------------------------------------------------------------------
 # split_train_to_val
 # ---------------------------------------------------------------------------
 

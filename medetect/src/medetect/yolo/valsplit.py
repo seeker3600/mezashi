@@ -6,6 +6,8 @@ import logging
 import random
 from pathlib import Path
 
+import re
+
 import cv2
 import numpy as np
 import yaml
@@ -38,6 +40,21 @@ _AUG_KEYS = (
     "erasing",
     "augmentations",
 )
+
+
+def _update_yaml_paths(config: Path, updates: dict[str, str]) -> None:
+    """Update specific keys in a YAML file without destroying comments."""
+    text = config.read_text(encoding="utf-8")
+    for key, value in updates.items():
+        # Match the value token (not starting with '#') and replace it;
+        # any trailing inline comment is left untouched.
+        text = re.sub(
+            rf'^({re.escape(key)}\s*:)[ \t]*[^#\s]\S*',
+            rf'\1 {value}',
+            text,
+            flags=re.MULTILINE,
+        )
+    config.write_text(text, encoding="utf-8")
 
 
 def _build_hyp():
@@ -165,11 +182,8 @@ def split_train_to_val(
 
     logger.info("Moved %d / %d train images to val (augmented)", n_val, n)
 
-    # Update dataset.yaml to use plain directories
-    data["train"] = "images/train"
-    data["val"] = "images/val"
-    with open(config, "w") as f:
-        yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+    # Update dataset.yaml to use plain directories (preserves comments)
+    _update_yaml_paths(config, {"train": "images/train", "val": "images/val"})
     logger.info("Updated %s: train/val now point to directories", config.name)
 
     # Remove autosplit_*.txt files
