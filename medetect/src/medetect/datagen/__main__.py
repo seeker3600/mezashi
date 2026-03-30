@@ -11,6 +11,7 @@ logging.basicConfig(
 )
 
 logging.getLogger("rasterio").setLevel(logging.WARNING)
+logging.getLogger("rasterio._env").setLevel(logging.ERROR)
 
 
 from medetect.datagen.compose import generate_dataset
