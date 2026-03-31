@@ -12,6 +12,7 @@ import re
 import cv2
 import numpy as np
 import yaml
+from tqdm import tqdm
 from ultralytics.cfg import get_cfg
 from ultralytics.data.dataset import YOLODataset
 from ultralytics.data.utils import img2label_paths
@@ -207,7 +208,11 @@ def split_train_to_val(
             Path(p) for p in img2label_paths([str(f) for f in orig_im_files])
         ]
 
-        for idx, orig_im, orig_lbl in zip(indices, orig_im_files, orig_lbl_files):
+        for idx, orig_im, orig_lbl in tqdm(
+            zip(indices, orig_im_files, orig_lbl_files),
+            total=n_val,
+            desc="Augmenting val",
+        ):
             sample = dataset[idx]
             img_t = sample["img"]  # (C, H, W) uint8, RGB
             cls_np = sample["cls"].numpy()  # (n_obj, 1)
@@ -231,8 +236,6 @@ def split_train_to_val(
             orig_im.rename(val_before_images / orig_im.name)
             if orig_lbl.exists():
                 orig_lbl.rename(val_before_labels / orig_lbl.name)
-
-            logger.info("Moved %s to val_before", stem)
 
         logger.info(
             "Moved %d / %d train images to val_before (augmented to val)",
@@ -269,7 +272,11 @@ def split_train_to_val(
         val_images_dir.mkdir(parents=True, exist_ok=True)
         val_labels_dir.mkdir(parents=True, exist_ok=True)
 
-        for idx, orig_im in zip(indices, orig_im_files):
+        for idx, orig_im in tqdm(
+            zip(indices, orig_im_files),
+            total=len(indices),
+            desc="Regenerating val",
+        ):
             sample = dataset[idx]
             img_t = sample["img"]  # (C, H, W) uint8, RGB
             cls_np = sample["cls"].numpy()  # (n_obj, 1)
@@ -287,7 +294,5 @@ def split_train_to_val(
             stem = orig_im.stem
             cv2.imwrite(str(val_images_dir / f"{stem}.png"), img_bgr)
             _save_yolo_labels(val_labels_dir / f"{stem}.txt", cls_np, bboxes_np)
-
-            logger.info("Processed %s (from val_before)", stem)
 
         logger.info("Regenerated %d val images from val_before", len(indices))
