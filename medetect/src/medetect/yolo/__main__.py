@@ -99,6 +99,13 @@ def main() -> None:
         default=None,
         help="Random seed for reproducible selection.",
     )
+    valsplit_parser.add_argument(
+        "--disable-augs",
+        nargs="*",
+        default=[],
+        metavar="KEY",
+        help="Augmentation keys to disable (e.g. degrees translate scale shear perspective).",
+    )
 
     train_parser = subparsers.add_parser("train", help="Train a YOLO model.")
     args = parser.parse_args()
@@ -123,6 +130,7 @@ def main() -> None:
             fraction=args.fraction,
             imgsz=args.imgsz,
             seed=args.seed,
+            disable_augs=args.disable_augs,
         )
 
 if __name__ == "__main__":

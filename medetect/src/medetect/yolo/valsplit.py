@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Sequence
 from pathlib import Path
 
 import re
@@ -41,6 +42,27 @@ _AUG_KEYS = (
     "augmentations",
 )
 
+# Value that disables each augmentation key.
+_AUG_DISABLED_VALUES: dict[str, object] = {
+    "degrees": 0.0,
+    "translate": 0.0,
+    "scale": 0.0,
+    "shear": 0.0,
+    "perspective": 0.0,
+    "fliplr": 0.0,
+    "flipud": 0.0,
+    "hsv_h": 0.0,
+    "hsv_s": 0.0,
+    "hsv_v": 0.0,
+    "mosaic": 0.0,
+    "mixup": 0.0,
+    "cutmix": 0.0,
+    "copy_paste": 0.0,
+    "auto_augment": None,
+    "erasing": 0.0,
+    "augmentations": None,
+}
+
 
 def _update_yaml_paths(config: Path, updates: dict[str, str]) -> None:
     """Update specific keys in a YAML file without destroying comments."""
@@ -57,12 +79,27 @@ def _update_yaml_paths(config: Path, updates: dict[str, str]) -> None:
     config.write_text(text, encoding="utf-8")
 
 
-def _build_hyp():
-    """Build an ultralytics hyp namespace from *train_kwargs* augmentation settings."""
+def _build_hyp(disable_augs: Sequence[str] = ()):
+    """Build an ultralytics hyp namespace from *train_kwargs* augmentation settings.
+
+    Parameters
+    ----------
+    disable_augs:
+        Augmentation key names to force-disable.  Each key is set to its
+        neutral value (0.0 or ``None``) regardless of *train_kwargs*.
+    """
+    unknown = set(disable_augs) - set(_AUG_DISABLED_VALUES)
+    if unknown:
+        raise ValueError(
+            f"Unknown augmentation keys: {sorted(unknown)}. "
+            f"Valid keys: {sorted(_AUG_DISABLED_VALUES)}"
+        )
     hyp = get_cfg()
     for key in _AUG_KEYS:
         if key in train_kwargs:
             setattr(hyp, key, train_kwargs[key])
+    for key in disable_augs:
+        setattr(hyp, key, _AUG_DISABLED_VALUES[key])
     return hyp
 
 
@@ -94,6 +131,7 @@ def split_train_to_val(
     fraction: float,
     imgsz: int = 640,
     seed: int | None = None,
+    disable_augs: Sequence[str] = (),
 ) -> None:
     """Extract a fraction of train images, augment them, and write to val.
 
@@ -124,7 +162,7 @@ def split_train_to_val(
         val_before_images.exists() and any(val_before_images.iterdir())
     )
 
-    hyp = _build_hyp()
+    hyp = _build_hyp(disable_augs=disable_augs)
 
     if first_run:
         train_path = dataset_path / data["train"]

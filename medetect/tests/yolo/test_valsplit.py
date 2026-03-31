@@ -39,6 +39,45 @@ class TestBuildHyp:
         hyp = _build_hyp()
         assert hyp.augmentations is custom_transforms
 
+    def test_disable_augs_zeroes_specified_keys(self) -> None:
+        """disable_augsで指定したキーが無効値に上書きされる。"""
+        from medetect.yolo.valsplit import _build_hyp
+
+        hyp = _build_hyp(disable_augs=["degrees", "scale", "translate", "shear", "perspective"])
+
+        assert hyp.degrees == 0.0
+        assert hyp.scale == 0.0
+        assert hyp.translate == 0.0
+        assert hyp.shear == 0.0
+        assert hyp.perspective == 0.0
+        # Non-disabled keys keep their train_kwargs values
+        assert hyp.fliplr == 0.5
+        assert hyp.hsv_h == 0.1
+
+    def test_disable_augs_overrides_train_kwargs(self) -> None:
+        """train_kwargsに値があってもdisable_augsで無効化される。"""
+        from medetect.yolo.valsplit import _build_hyp
+
+        hyp = _build_hyp(disable_augs=["fliplr", "flipud"])
+        assert hyp.fliplr == 0.0
+        assert hyp.flipud == 0.0
+
+    def test_disable_augs_unknown_key_raises(self) -> None:
+        """存在しない拡張キーを指定するとValueErrorが送出される。"""
+        from medetect.yolo.valsplit import _build_hyp
+
+        with pytest.raises(ValueError, match="Unknown augmentation keys"):
+            _build_hyp(disable_augs=["nonexistent_key"])
+
+    def test_disable_augs_empty_is_noop(self) -> None:
+        """空のdisable_augsはデフォルトと同じ結果になる。"""
+        from medetect.yolo.valsplit import _build_hyp
+
+        hyp_default = _build_hyp()
+        hyp_empty = _build_hyp(disable_augs=[])
+        assert hyp_default.degrees == hyp_empty.degrees
+        assert hyp_default.scale == hyp_empty.scale
+
 
 # ---------------------------------------------------------------------------
 # _detect_task
@@ -622,6 +661,7 @@ class TestCliValsplit:
             fraction=0.15,
             imgsz=640,
             seed=None,
+            disable_augs=[],
         )
 
     def test_cli_optional_args(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -646,4 +686,29 @@ class TestCliValsplit:
             fraction=0.1,
             imgsz=1280,
             seed=42,
+            disable_augs=[],
+        )
+
+    def test_cli_disable_augs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--disable-augsで指定した拡張キーがリストとして渡される。"""
+        from medetect.yolo.__main__ import main
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog", "valsplit",
+                "--config", "ds.yaml",
+                "--fraction", "0.2",
+                "--disable-augs", "degrees", "scale", "translate",
+            ],
+        )
+        with patch("medetect.yolo.__main__.split_train_to_val") as mock_fn:
+            main()
+        mock_fn.assert_called_once_with(
+            config=Path("ds.yaml"),
+            fraction=0.2,
+            imgsz=640,
+            seed=None,
+            disable_augs=["degrees", "scale", "translate"],
         )
