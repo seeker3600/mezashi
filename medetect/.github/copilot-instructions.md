@@ -45,6 +45,9 @@ class TestComputeGeoResolution:
 - Prefer **reasonable DRY** over perfect backward compatibility.
 - `any` and `type: ignore` require a justifying comment.
 - 大胆に変更せよ。上記と矛盾するように見えるかもしれないが、必要なら作り直しを恐れるな。
+- ユーザーからの指示がコードベース・ドキュメントの意図と矛盾するように見える場合は、ユーザーに確認を取るべきである。
+- ユーザーからの指示がアルゴリズムとして最適でない場合がある。最適化できないか検討する価値があるかもしれない。
+- ユーザーは明示的にライブラリ導入を指示しないかもしれないが、コードの品質が大幅に向上する可能性がある場合は導入すべきである。意図通りに動作するかのテストを忘れずに。
 
 ## Language policy
 - Issue / PR text → **日本語**
