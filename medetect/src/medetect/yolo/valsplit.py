@@ -97,6 +97,12 @@ def split_train_to_val(
 ) -> None:
     """Extract a fraction of train images, augment them, and write to val.
 
+    On the first call the selected train images are moved to *val_before* as a
+    reversible backup, and augmented copies are written to *val*.  On
+    subsequent calls *val_before* is used as the source so the operation is
+    idempotent and reversible: original data is always preserved in
+    *val_before*.
+
     Uses ``YOLODataset.build_transforms(hyp)`` (which delegates to
     ``v8_transforms``) to apply the same augmentation pipeline configured
     in *train.py*.  Bounding-box labels are updated by the geometric
@@ -109,84 +115,141 @@ def split_train_to_val(
         data: dict = yaml.safe_load(f)
 
     dataset_path = Path(data["path"]).resolve()
-    train_path = dataset_path / data["train"]
+    val_before_images = dataset_path / "images" / "val_before"
+    val_before_labels = dataset_path / "labels" / "val_before"
+    val_images_dir = dataset_path / "images" / "val"
+    val_labels_dir = dataset_path / "labels" / "val"
 
-    # If the YAML references an autosplit .txt that doesn't exist yet,
-    # fall back to the directory that would contain the txt file (images/).
-    if train_path.suffix == ".txt" and not train_path.exists():
-        train_path = train_path.parent
-        logger.warning(
-            "train txt not found; using directory: %s", train_path
-        )
+    first_run = not (
+        val_before_images.exists() and any(val_before_images.iterdir())
+    )
 
     hyp = _build_hyp()
 
-    train_labels_dir = dataset_path / "labels" / "train"
-    task = _detect_task(train_labels_dir)
-    is_obb = task == "obb"
+    if first_run:
+        train_path = dataset_path / data["train"]
 
-    # YOLODataset.__init__ calls build_transforms(hyp), which uses
-    # v8_transforms(dataset, imgsz, hyp) when augment=True.
-    dataset = YOLODataset(
-        img_path=str(train_path),
-        data=data,
-        task=task,
-        augment=True,
-        hyp=hyp,
-        imgsz=imgsz,
-    )
+        # If the YAML references an autosplit .txt that doesn't exist yet,
+        # fall back to the directory that would contain the txt file (images/).
+        if train_path.suffix == ".txt" and not train_path.exists():
+            train_path = train_path.parent
+            logger.warning(
+                "train txt not found; using directory: %s", train_path
+            )
 
-    n = len(dataset)
-    n_val = max(1, round(n * fraction))
+        train_labels_dir = dataset_path / "labels" / "train"
+        task = _detect_task(train_labels_dir)
+        is_obb = task == "obb"
 
-    if seed is not None:
-        random.seed(seed)
-    indices = sorted(random.sample(range(n), n_val))
-
-    val_images_dir = dataset_path / "images" / "val"
-    val_labels_dir = dataset_path / "labels" / "val"
-    val_images_dir.mkdir(parents=True, exist_ok=True)
-    val_labels_dir.mkdir(parents=True, exist_ok=True)
-
-    # Pre-compute original label paths
-    orig_im_files = [Path(dataset.labels[i]["im_file"]) for i in indices]
-    orig_lbl_files = [
-        Path(p) for p in img2label_paths([str(f) for f in orig_im_files])
-    ]
-
-    for idx, orig_im, orig_lbl in zip(indices, orig_im_files, orig_lbl_files):
-        sample = dataset[idx]
-        img_t = sample["img"]  # (C, H, W) uint8, RGB
-        cls_np = sample["cls"].numpy()  # (n_obj, 1)
-        bboxes_raw = sample["bboxes"].numpy()
-        if is_obb:
-            # xywhr (N, 5) → xyxyxyxy (N, 4, 2) → (N, 8)
-            bboxes_np = xywhr2xyxyxyxy(sample["bboxes"]).numpy().reshape(-1, 8)
-        else:
-            bboxes_np = bboxes_raw  # (n_obj, 4) normalised xywh
-
-        # CHW RGB → HWC BGR for cv2.imwrite
-        img_bgr = np.ascontiguousarray(
-            img_t.numpy().transpose(1, 2, 0)[:, :, ::-1]
+        # YOLODataset.__init__ calls build_transforms(hyp), which uses
+        # v8_transforms(dataset, imgsz, hyp) when augment=True.
+        dataset = YOLODataset(
+            img_path=str(train_path),
+            data=data,
+            task=task,
+            augment=True,
+            hyp=hyp,
+            imgsz=imgsz,
         )
 
-        stem = orig_im.stem
-        cv2.imwrite(str(val_images_dir / f"{stem}.png"), img_bgr)
-        _save_yolo_labels(val_labels_dir / f"{stem}.txt", cls_np, bboxes_np)
+        n = len(dataset)
+        n_val = max(1, round(n * fraction))
 
-        # Remove originals
-        orig_im.unlink(missing_ok=True)
-        orig_lbl.unlink(missing_ok=True)
+        if seed is not None:
+            random.seed(seed)
+        indices = sorted(random.sample(range(n), n_val))
 
-        logger.info("Processed %s", stem)
+        val_before_images.mkdir(parents=True, exist_ok=True)
+        val_before_labels.mkdir(parents=True, exist_ok=True)
+        val_images_dir.mkdir(parents=True, exist_ok=True)
+        val_labels_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Moved %d / %d train images to val (augmented)", n_val, n)
+        orig_im_files = [Path(dataset.labels[i]["im_file"]) for i in indices]
+        orig_lbl_files = [
+            Path(p) for p in img2label_paths([str(f) for f in orig_im_files])
+        ]
 
-    # Update dataset.yaml to use plain directories (preserves comments)
-    _update_yaml_paths(config, {"train": "images/train", "val": "images/val"})
-    logger.info("Updated %s: train/val now point to directories", config.name)
+        for idx, orig_im, orig_lbl in zip(indices, orig_im_files, orig_lbl_files):
+            sample = dataset[idx]
+            img_t = sample["img"]  # (C, H, W) uint8, RGB
+            cls_np = sample["cls"].numpy()  # (n_obj, 1)
+            bboxes_raw = sample["bboxes"].numpy()
+            if is_obb:
+                # xywhr (N, 5) → xyxyxyxy (N, 4, 2) → (N, 8)
+                bboxes_np = xywhr2xyxyxyxy(sample["bboxes"]).numpy().reshape(-1, 8)
+            else:
+                bboxes_np = bboxes_raw  # (n_obj, 4) normalised xywh
 
-    # Remove autosplit_*.txt files
-    for txt in sorted((dataset_path / "images").glob("autosplit_*.txt")):
-        txt.unlink()
-        logger.info("Removed %s", txt.name)
+            # CHW RGB → HWC BGR for cv2.imwrite
+            img_bgr = np.ascontiguousarray(
+                img_t.numpy().transpose(1, 2, 0)[:, :, ::-1]
+            )
+
+            stem = orig_im.stem
+            cv2.imwrite(str(val_images_dir / f"{stem}.png"), img_bgr)
+            _save_yolo_labels(val_labels_dir / f"{stem}.txt", cls_np, bboxes_np)
+
+            # Move originals to val_before (preserve for idempotent re-runs)
+            orig_im.rename(val_before_images / orig_im.name)
+            if orig_lbl.exists():
+                orig_lbl.rename(val_before_labels / orig_lbl.name)
+
+            logger.info("Moved %s to val_before", stem)
+
+        logger.info(
+            "Moved %d / %d train images to val_before (augmented to val)",
+            n_val,
+            n,
+        )
+
+        # Update dataset.yaml to use plain directories (preserves comments)
+        _update_yaml_paths(config, {"train": "images/train", "val": "images/val"})
+        logger.info("Updated %s: train/val now point to directories", config.name)
+
+        # Remove autosplit_*.txt files
+        for txt in sorted((dataset_path / "images").glob("autosplit_*.txt")):
+            txt.unlink()
+            logger.info("Removed %s", txt.name)
+
+    else:
+        # Subsequent run: val_before exists — regenerate val from it.
+        task = _detect_task(val_before_labels)
+        is_obb = task == "obb"
+
+        dataset = YOLODataset(
+            img_path=str(val_before_images),
+            data=data,
+            task=task,
+            augment=True,
+            hyp=hyp,
+            imgsz=imgsz,
+        )
+
+        indices = list(range(len(dataset)))
+        orig_im_files = [Path(dataset.labels[i]["im_file"]) for i in indices]
+
+        val_images_dir.mkdir(parents=True, exist_ok=True)
+        val_labels_dir.mkdir(parents=True, exist_ok=True)
+
+        for idx, orig_im in zip(indices, orig_im_files):
+            sample = dataset[idx]
+            img_t = sample["img"]  # (C, H, W) uint8, RGB
+            cls_np = sample["cls"].numpy()  # (n_obj, 1)
+            bboxes_raw = sample["bboxes"].numpy()
+            if is_obb:
+                bboxes_np = xywhr2xyxyxyxy(sample["bboxes"]).numpy().reshape(-1, 8)
+            else:
+                bboxes_np = bboxes_raw
+
+            # CHW RGB → HWC BGR for cv2.imwrite
+            img_bgr = np.ascontiguousarray(
+                img_t.numpy().transpose(1, 2, 0)[:, :, ::-1]
+            )
+
+            stem = orig_im.stem
+            cv2.imwrite(str(val_images_dir / f"{stem}.png"), img_bgr)
+            _save_yolo_labels(val_labels_dir / f"{stem}.txt", cls_np, bboxes_np)
+
+            logger.info("Processed %s (from val_before)", stem)
+
+        logger.info("Regenerated %d val images from val_before", len(indices))

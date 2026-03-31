@@ -245,11 +245,15 @@ class TestSplitTrainToVal:
         assert len(val_images) == 2
         assert len(val_labels) == 2
 
-        # Originals removed from train
+        # Originals moved to val_before (not remaining in train)
         remaining_imgs = sorted(images_dir.iterdir())
         remaining_lbls = sorted(labels_dir.iterdir())
         assert len(remaining_imgs) == 8
         assert len(remaining_lbls) == 8
+
+        # val_before preserves the originals
+        assert len(sorted((tmp_path / "images" / "val_before").iterdir())) == 2
+        assert len(sorted((tmp_path / "labels" / "val_before").iterdir())) == 2
 
     def test_label_content_matches_augmented_output(self, tmp_path: Path) -> None:
         """保存されたラベルが拡張後のbboxと一致する(detect形式)。"""
@@ -500,7 +504,100 @@ class TestSplitTrainToVal:
             for f in (tmp_path / "labels" / "val").iterdir():
                 f.unlink()
 
+            # val_beforeもクリアして次回も初回実行扱いにする
+            val_before_img = tmp_path / "images" / "val_before"
+            val_before_lbl = tmp_path / "labels" / "val_before"
+            if val_before_img.exists():
+                for f in val_before_img.iterdir():
+                    f.unlink()
+            if val_before_lbl.exists():
+                for f in val_before_lbl.iterdir():
+                    f.unlink()
+
         assert selected[0] == selected[1]
+
+    def test_val_before_created_on_first_run(self, tmp_path: Path) -> None:
+        """初回実行時にval_beforeスプリットが作成され、元ファイルが保存される。"""
+        config, images_dir, labels_dir = self._make_dataset(tmp_path, 10)
+        mock = self._mock_dataset(images_dir, 10)
+
+        with (
+            patch("medetect.yolo.valsplit.YOLODataset", return_value=mock),
+            patch("medetect.yolo.valsplit._build_hyp", return_value=MagicMock()),
+        ):
+            from medetect.yolo.valsplit import split_train_to_val
+
+            split_train_to_val(config, fraction=0.2, seed=42)
+
+        val_before_images = tmp_path / "images" / "val_before"
+        val_before_labels = tmp_path / "labels" / "val_before"
+        assert val_before_images.exists()
+        assert val_before_labels.exists()
+        assert len(list(val_before_images.iterdir())) == 2
+        assert len(list(val_before_labels.iterdir())) == 2
+
+        # val_beforeのファイル名はtrain由来のものと一致する
+        before_stems = {f.stem for f in val_before_images.iterdir()}
+        val_stems = {f.stem for f in (tmp_path / "images" / "val").iterdir()}
+        assert before_stems == val_stems
+
+    def test_subsequent_run_uses_val_before(self, tmp_path: Path) -> None:
+        """2回目以降はval_beforeをソースとしてvalを再生成し、trainを変更しない。"""
+        config, images_dir, labels_dir = self._make_dataset(tmp_path, 10)
+
+        # val_beforeスプリットが既にある状態を用意(初回済み)
+        val_before_images = tmp_path / "images" / "val_before"
+        val_before_labels = tmp_path / "labels" / "val_before"
+        val_before_images.mkdir(parents=True)
+        val_before_labels.mkdir(parents=True)
+        for i in range(3):
+            (val_before_images / f"vb_{i:04d}.png").write_bytes(b"fake")
+            (val_before_labels / f"vb_{i:04d}.txt").write_text("0 0.5 0.5 0.1 0.1")
+
+        # val_beforeを指すmock
+        mock = MagicMock()
+        mock.__len__ = MagicMock(return_value=3)
+        mock.labels = [
+            {"im_file": str(val_before_images / f"vb_{i:04d}.png")}
+            for i in range(3)
+        ]
+
+        def _getitem(self_mock: MagicMock, idx: int) -> dict:
+            return {
+                "img": torch.zeros(3, 640, 640, dtype=torch.uint8),
+                "cls": torch.tensor([[0]], dtype=torch.float32),
+                "bboxes": torch.tensor([[0.5, 0.5, 0.1, 0.1]], dtype=torch.float32),
+            }
+
+        mock.__getitem__ = _getitem
+
+        train_count_before = len(list(images_dir.iterdir()))
+        captured_img_path: list[str] = []
+
+        def _fake_yolo_dataset(img_path, **kwargs):
+            captured_img_path.append(img_path)
+            return mock
+
+        with (
+            patch("medetect.yolo.valsplit.YOLODataset", side_effect=_fake_yolo_dataset),
+            patch("medetect.yolo.valsplit._build_hyp", return_value=MagicMock()),
+        ):
+            from medetect.yolo.valsplit import split_train_to_val
+
+            split_train_to_val(config, fraction=0.2, seed=0)  # fraction is ignored
+
+        # val_beforeのパスでYOLODatasetが呼ばれること
+        assert captured_img_path[0] == str(val_before_images)
+
+        # val には3ファイル生成される
+        val_images = sorted((tmp_path / "images" / "val").iterdir())
+        assert len(val_images) == 3
+
+        # train は変更されない
+        assert len(list(images_dir.iterdir())) == train_count_before
+
+        # val_before は保持される
+        assert len(list(val_before_images.iterdir())) == 3
 
 
 # ---------------------------------------------------------------------------
