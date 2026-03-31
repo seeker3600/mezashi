@@ -1,4 +1,5 @@
 import { CONFIDENCE_THRESHOLD_MIN } from "./labels";
+import { convexPolygonIoU, getOBBCorners } from "./obbUtils";
 import type { Detection, DetectionTask } from "./types";
 
 /**
@@ -55,35 +56,12 @@ function computeAABBIoU(a: Detection, b: Detection): number {
 }
 
 /**
- * Approximate AABB IoU for OBBs: uses the max dimension as a square proxy.
+ * Compute IoU for two oriented bounding boxes using polygon intersection.
+ * Uses the 4 corner vertices of each OBB and the Sutherland-Hodgman algorithm
+ * to accurately account for rotation (angle).
  */
-function computeOBBApproxIoU(a: Detection, b: Detection): number {
-	const aHalf = Math.max(a.width, a.height) / 2;
-	const bHalf = Math.max(b.width, b.height) / 2;
-
-	const ax1 = a.cx - aHalf;
-	const ay1 = a.cy - aHalf;
-	const ax2 = a.cx + aHalf;
-	const ay2 = a.cy + aHalf;
-	const bx1 = b.cx - bHalf;
-	const by1 = b.cy - bHalf;
-	const bx2 = b.cx + bHalf;
-	const by2 = b.cy + bHalf;
-
-	const ix1 = Math.max(ax1, bx1);
-	const iy1 = Math.max(ay1, by1);
-	const ix2 = Math.min(ax2, bx2);
-	const iy2 = Math.min(ay2, by2);
-
-	const iw = Math.max(0, ix2 - ix1);
-	const ih = Math.max(0, iy2 - iy1);
-	const intersection = iw * ih;
-
-	const aArea = (ax2 - ax1) * (ay2 - ay1);
-	const bArea = (bx2 - bx1) * (by2 - by1);
-	const union = aArea + bArea - intersection;
-
-	return union > 0 ? intersection / union : 0;
+function computeOBBIoU(a: Detection, b: Detection): number {
+	return convexPolygonIoU(getOBBCorners(a), getOBBCorners(b));
 }
 
 function nms(
@@ -136,7 +114,7 @@ const obbHandler: TaskHandler = {
 	},
 
 	nms(detections, iouThreshold) {
-		return nms(detections, iouThreshold, computeOBBApproxIoU);
+		return nms(detections, iouThreshold, computeOBBIoU);
 	},
 };
 
