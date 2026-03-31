@@ -541,16 +541,26 @@ def _place_cluster(
     length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     size_threshold: float | None = None,
+    mixed_prob: float = 0.5,
 ) -> list[str]:
     """Place a cluster of ships side-by-side.  Returns label lines.
 
     Ships are laid out perpendicular to the heading direction so their
-    hulls touch.  Occupancy is updated after each placed ship to prevent
-    overlap with subsequently placed individual ships.
+    hulls touch.  Two cluster modes are supported:
+
+    - **Uniform** (``mixed=False``): all ships are the same visual size
+      (±10 %), like a naval formation or moored fleet of sister ships.
+    - **Mixed** (``mixed=True``): each ship is independently sized and
+      typed, like a busy anchorage or commercial harbour.
+
+    The mode is chosen probabilistically per cluster via *mixed_prob*.
     """
     n_ships = rng.randint(*cluster_size_range)
     base_angle = rng.uniform(0, 360)
     labels: list[str] = []
+
+    # Decide cluster mode for this invocation.
+    mixed = rng.random() < mixed_prob
 
     # Pick the first ship (will be rendered with angle in the loop,
     # but we need to determine size for base-position search)
@@ -593,15 +603,22 @@ def _place_cluster(
         angle_rad = math.radians(angle_deg)
 
         if i == 0:
-            # First ship: already rendered, apply jitter angle
-            angle0_deg = angle_deg
+            # First ship: already rendered above, re-render with jitter angle.
             rotated, cls_name, bw, lh, lb = _render_ship(
                 svg_text, resolution_m, rng, blur_sigma, length_range,
-                angle_deg=angle0_deg, length_exponent=length_exponent,
+                angle_deg=angle_deg, length_exponent=length_exponent,
+            )
+        elif mixed:
+            # Mixed cluster: each subsequent ship is independently typed and
+            # sized — drawn from the full length_range without size pinning.
+            svg_text_i = _pick_svg(svg_metas, rng, length_range)
+            rotated, cls_name, bw, lh, lb = _render_ship(
+                svg_text_i, resolution_m, rng, blur_sigma, length_range,
+                angle_deg=angle_deg, length_exponent=length_exponent,
             )
         else:
-            # Pick a different SVG but render at ~same size as the first ship
-            # (±10% jitter) so the cluster looks uniform.
+            # Uniform cluster: different SVG but pinned to ±10% of first ship's
+            # pixel size so all hulls look like they belong to the same class.
             svg_text = _pick_svg(svg_metas, rng, length_range)
             _cls, lb = parse_svg_metadata(svg_text)
             scale = rng.uniform(0.9, 1.1)
@@ -694,6 +711,7 @@ def generate_dataset(
     ships_per_image: tuple[int, int] = (0, 10),
     cluster_prob: float = 0.15,
     cluster_size: tuple[int, int] = (2, 5),
+    cluster_mixed_prob: float = 0.5,
     class_id: int = 0,
     erode_coast: int = 3,
     min_water_ratio: float = 0.3,
@@ -739,6 +757,10 @@ def generate_dataset(
         Probability that a ship group forms a side-by-side cluster.
     cluster_size
         ``(min, max)`` ships in a cluster.
+    cluster_mixed_prob
+        Probability that a cluster contains mixed ship types and sizes
+        rather than uniform sister ships.  ``0.0`` = always uniform,
+        ``1.0`` = always mixed (default: 0.5).
     class_id
         YOLO class ID for all ships.
     erode_coast
@@ -817,6 +839,7 @@ def generate_dataset(
         ships_per_image=ships_per_image,
         cluster_prob=cluster_prob,
         cluster_size=cluster_size,
+        cluster_mixed_prob=cluster_mixed_prob,
         class_id=class_id,
         erode_coast=erode_coast,
         min_water_ratio=min_water_ratio,
@@ -879,6 +902,7 @@ def generate_dataset(
         "class_id": class_id,
         "erode_coast": erode_coast,
         "min_water_ratio": min_water_ratio,
+        "cluster_mixed_prob": cluster_mixed_prob,
         "ship_blur_sigma": ship_blur_sigma,
         "ship_alpha": f"{ship_alpha[0]}:{ship_alpha[1]}",
         "ship_length_range": (
@@ -918,6 +942,7 @@ def _run_compose_task(
     ships_per_image: tuple[int, int],
     cluster_prob: float,
     cluster_size: tuple[int, int],
+    cluster_mixed_prob: float,
     class_id: int,
     erode_coast: int,
     min_water_ratio: float,
@@ -944,6 +969,7 @@ def _run_compose_task(
         ships_per_image=ships_per_image,
         cluster_prob=cluster_prob,
         cluster_size=cluster_size,
+        cluster_mixed_prob=cluster_mixed_prob,
         class_id=class_id,
         erode_coast=erode_coast,
         min_water_ratio=min_water_ratio,
@@ -980,13 +1006,14 @@ def _compose_one(
     ships_per_image: tuple[int, int],
     cluster_prob: float,
     cluster_size: tuple[int, int],
-    class_id: int,
-    erode_coast: int,
-    min_water_ratio: float,
-    ship_blur_sigma: float,
-    ship_alpha: tuple[float, float],
-    ship_length_range: tuple[float, float] | None,
-    length_exponent: float,
+    cluster_mixed_prob: float = 0.5,
+    class_id: int = 0,
+    erode_coast: int = 3,
+    min_water_ratio: float = 0.3,
+    ship_blur_sigma: float = 0.8,
+    ship_alpha: tuple[float, float] = (0.7, 0.95),
+    ship_length_range: tuple[float, float] | None = None,
+    length_exponent: float = 1.0,
     rng: random.Random,
     max_crop_attempts: int = 20,
     size_threshold: float | None = None,
@@ -1095,6 +1122,7 @@ def _compose_one(
                 cluster_size, ship_blur_sigma, ship_alpha,
                 class_id, image_size, tile, ship_length_range,
                 length_exponent, size_threshold,
+                mixed_prob=cluster_mixed_prob,
             )
             labels.extend(new_labels)
             if new_labels:

@@ -97,6 +97,16 @@ def main() -> None:
         help="Number of ships in a cluster (default: 2:5).",
     )
     parser.add_argument(
+        "--cluster_mixed_prob",
+        type=float,
+        default=0.5,
+        help=(
+            "Probability that a cluster contains mixed ship types and sizes "
+            "rather than uniform sister ships (default: 0.5). "
+            "0.0 = always uniform (same size), 1.0 = always mixed."
+        ),
+    )
+    parser.add_argument(
         "--class_id",
         type=int,
         default=0,
@@ -219,6 +229,7 @@ def main() -> None:
         ships_per_image=args.ships_per_image,
         cluster_prob=args.cluster_prob,
         cluster_size=args.cluster_size,
+        cluster_mixed_prob=args.cluster_mixed_prob,
         class_id=args.class_id,
         erode_coast=args.erode_coast,
         min_water_ratio=args.min_water_ratio,

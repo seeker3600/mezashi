@@ -14,6 +14,7 @@ from medetect.datagen.compose import (
     _composite_rgba,
     _load_svg_metas,
     _natural_lb_ratio,
+    _place_cluster,
     _ship_class_id,
     _stamp_occupancy,
     _svg_lb_weight,
@@ -1008,4 +1009,121 @@ class TestAugmentTile:
         blue_means = [m[2] for m in means]
         assert max(blue_means) - min(blue_means) > 5, (
             f"Insufficient diversity: blue means range = {max(blue_means) - min(blue_means):.1f}"
+        )
+
+
+# ── OBB area helper ──────────────────────────────────────────────────────
+
+
+def _obb_area(label: str, img_size: int = 200) -> float:
+    """YOLO OBB ラベル文字列からピクセル面積を計算する（Shoelace 公式）。"""
+    parts = label.split()
+    coords = [float(v) * img_size for v in parts[1:]]
+    x1, y1, x2, y2, x3, y3, x4, y4 = coords
+    return 0.5 * abs(
+        (x1 * y2 - x2 * y1)
+        + (x2 * y3 - x3 * y2)
+        + (x3 * y4 - x4 * y3)
+        + (x4 * y1 - x1 * y4)
+    )
+
+
+class TestPlaceCluster:
+    """_place_cluster の均一モード / 混合モードの動作検証。"""
+
+    _IMAGE_SIZE = 200
+
+    @pytest.fixture()
+    def scene(self):
+        """全面水域の 200×200 シーン。"""
+        size = self._IMAGE_SIZE
+        return {
+            "water_mask": np.ones((size, size), dtype=bool),
+            "occupancy": np.zeros((size, size), dtype=bool),
+            "background": np.full((size, size, 3), 60, dtype=np.uint8),
+        }
+
+    def test_uniform_cluster_produces_labels(self, scene) -> None:
+        """均一クラスター (mixed_prob=0) がラベルを生成する。"""
+        rng = random.Random(42)
+        labels = _place_cluster(
+            scene["water_mask"], scene["occupancy"], None,
+            resolution_m=10.0, rng=rng,
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"],
+            length_range=(50.0, 80.0),
+            mixed_prob=0.0,
+        )
+        assert len(labels) > 0
+
+    def test_mixed_cluster_produces_labels(self, scene) -> None:
+        """混合クラスター (mixed_prob=1) がラベルを生成する。"""
+        rng = random.Random(42)
+        labels = _place_cluster(
+            scene["water_mask"], scene["occupancy"], None,
+            resolution_m=10.0, rng=rng,
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"],
+            length_range=(50.0, 80.0),
+            mixed_prob=1.0,
+        )
+        assert len(labels) > 0
+
+    def test_uniform_cluster_ships_similar_size(self, scene) -> None:
+        """均一クラスターでは各船の OBB 面積が元の ±21% 以内に収まる。"""
+        rng = random.Random(7)
+        labels = _place_cluster(
+            scene["water_mask"], scene["occupancy"], None,
+            resolution_m=10.0, rng=rng,
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"],
+            length_range=(70.0, 90.0),
+            mixed_prob=0.0,
+        )
+        assert len(labels) >= 2, "期待通りのラベル数が得られなかった"
+        areas = [_obb_area(l, self._IMAGE_SIZE) for l in labels]
+        # Ships at i>0 are rendered at ±10% of the reference size,
+        # giving a maximum area ratio of (1.1/0.9)^2 ≈ 1.49.
+        # We tolerate 2× to account for the first ship (rendered independently).
+        ratio = max(areas) / min(areas)
+        assert ratio < 2.0, (
+            f"Uniform cluster ships too different in size (ratio={ratio:.2f})"
+        )
+
+    def test_mixed_cluster_shows_size_variety_over_runs(self, scene) -> None:
+        """混合クラスターを広い length_range で繰り返すと OBB 面積に広い分散が出る。"""
+        all_areas: list[float] = []
+        for seed in range(15):
+            wm = scene["water_mask"].copy()
+            oc = np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool)
+            rng = random.Random(seed)
+            labels = _place_cluster(
+                wm, oc, None,
+                resolution_m=5.0, rng=rng,
+                cluster_size_range=(3, 3),
+                blur_sigma=0.0,
+                alpha_range=(0.8, 0.9),
+                class_id=0,
+                image_size=self._IMAGE_SIZE,
+                background=scene["background"].copy(),
+                length_range=None,  # 全クラスの範囲 → サイズ分散が大きい
+                mixed_prob=1.0,
+            )
+            all_areas.extend(_obb_area(l, self._IMAGE_SIZE) for l in labels)
+        assert len(all_areas) >= 4, "テスト成立に必要なラベル数を得られなかった"
+        ratio = max(all_areas) / min(all_areas)
+        assert ratio > 2.0, (
+            f"Mixed clusters should exhibit size diversity (ratio={ratio:.2f})"
         )
