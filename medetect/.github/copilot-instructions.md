@@ -39,6 +39,14 @@ class TestComputeGeoResolution:
         assert result == pytest.approx(3.0)
 ```
 
+## コマンドの実装方針
+- 実装場所は都度指定を受けるか、適切なモジュールに実装する。
+- argsparse を使ってコマンドライン引数を定義する。
+- テスト可能にする。ちゃんとテストすること。
+- 進捗はtqdmなどでわかりやすく表示すること。
+- 並列処理は ProcessPoolExecutor, ThreadPoolExecutor などを適宜使うこと。
+- いちいち「分割しろ」とは指示されない。適切に関数やクラスに分割して実装すること。
+
 ## Coding rules
 - Keep changes **minimal and focused**. Do not touch files unrelated to the task.
 - No cosmetic-only edits (whitespace, blank lines, import reordering) in untouched code.
