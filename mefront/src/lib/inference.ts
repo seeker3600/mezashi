@@ -129,7 +129,6 @@ export async function runInference(
 	}
 
 	let detections: Detection[];
-	const mergeMap = buildMergeMap(metadata);
 
 	// Decide whether to use slice inference
 	if (w <= SLICE_THRESHOLD && h <= SLICE_THRESHOLD) {
@@ -146,13 +145,6 @@ export async function runInference(
 		const dets = await runTile(session, input, inputSize, labels, handler);
 		onProgress?.(1, 1);
 		detections = mapDetectionsToOriginal(dets, scale, padX, padY, 0, 0);
-		// Single tile: NMS only needed when labels are merged
-		if (mergeMap) {
-			detections = handler.nms(
-				applyLabelMerge(detections, mergeMap),
-				NMS_IOU_THRESHOLD,
-			);
-		}
 	} else {
 		// Slice inference for large images
 		const tileSize = inputSize;
@@ -203,12 +195,16 @@ export async function runInference(
 			}
 		}
 
-		// Merge labels before NMS so merged classes are suppressed together
-		detections = handler.nms(
-			mergeMap ? applyLabelMerge(allDetections, mergeMap) : allDetections,
-			NMS_IOU_THRESHOLD,
-		);
+		detections = allDetections;
 	}
+
+	// Merge labels before NMS
+	const mergeMap = buildMergeMap(metadata);
+
+	detections = handler.nms(
+		mergeMap ? applyLabelMerge(detections, mergeMap) : detections,
+		NMS_IOU_THRESHOLD,
+	);
 
 	// 縮小した場合、検出座標を元の画像座標に変換
 	if (shrinkScale < 1.0) {
