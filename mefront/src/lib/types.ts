@@ -28,6 +28,12 @@ export interface ModelMetadata {
 	labels: string[];
 	/** License information for the training data / model weights */
 	license: ModelLicense;
+	/**
+	 * Optional label merge rules.
+	 * Maps a merged class name to the list of original label names to combine.
+	 * e.g. { "vehicle": ["large vehicle", "small vehicle"] }
+	 */
+	merge?: Record<string, string[]>;
 }
 
 /** A single oriented bounding box detection */

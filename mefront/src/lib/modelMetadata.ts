@@ -89,4 +89,36 @@ export function validateModelMetadata(
 			`メタデータの "task" は ${VALID_TASKS.map((t) => `"${t}"`).join(" | ")} のいずれかである必要があります`,
 		);
 	}
+
+	// Optional: validate merge rules
+	if (obj.merge !== undefined) {
+		if (typeof obj.merge !== "object" || obj.merge === null) {
+			throw new Error(
+				'メタデータの "merge" はオブジェクトである必要があります',
+			);
+		}
+
+		const merge = obj.merge as Record<string, unknown>;
+		const labels = obj.labels as string[];
+
+		for (const [key, value] of Object.entries(merge)) {
+			if (
+				!Array.isArray(value) ||
+				value.length === 0 ||
+				!value.every((v) => typeof v === "string")
+			) {
+				throw new Error(
+					`メタデータの "merge.${key}" は空でない文字列配列である必要があります`,
+				);
+			}
+
+			for (const label of value as string[]) {
+				if (!labels.includes(label)) {
+					throw new Error(
+						`メタデータの "merge.${key}" に含まれる "${label}" は "labels" に存在しません`,
+					);
+				}
+			}
+		}
+	}
 }

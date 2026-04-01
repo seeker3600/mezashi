@@ -5,6 +5,7 @@ import {
 	prepareTile,
 } from "./imageUtils";
 import { NMS_IOU_THRESHOLD, SLICE_THRESHOLD, TILE_OVERLAP } from "./labels";
+import { applyLabelMerge, buildMergeMap } from "./mergeLabels";
 import type { TaskHandler } from "./tasks";
 import { getTaskHandler } from "./tasks";
 import type { Detection, GeoTIFFMeta, ModelMetadata } from "./types";
@@ -194,8 +195,16 @@ export async function runInference(
 			}
 		}
 
-		detections = handler.nms(allDetections, NMS_IOU_THRESHOLD);
+		detections = allDetections;
 	}
+
+	// Merge labels before NMS
+	const mergeMap = buildMergeMap(metadata);
+
+	detections = handler.nms(
+		mergeMap ? applyLabelMerge(detections, mergeMap) : detections,
+		NMS_IOU_THRESHOLD,
+	);
 
 	// 縮小した場合、検出座標を元の画像座標に変換
 	if (shrinkScale < 1.0) {
