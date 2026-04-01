@@ -101,6 +101,61 @@ describe("obb handler", () => {
 		const result = handler.nms(dets, 0.45);
 		expect(result).toHaveLength(2);
 	});
+
+	it("nms should keep elongated OBBs at 90° angle difference (low real IoU)", () => {
+		// Two 100×10 OBBs at same center — one at 0°, one at 90°
+		// Their real polygon IoU is ~0.053, well below 0.45 threshold
+		const dets = [
+			makeDet({
+				cx: 100,
+				cy: 100,
+				width: 100,
+				height: 10,
+				angle: 0,
+				confidence: 0.9,
+				classId: 0,
+			}),
+			makeDet({
+				cx: 100,
+				cy: 100,
+				width: 100,
+				height: 10,
+				angle: Math.PI / 2,
+				confidence: 0.8,
+				classId: 0,
+			}),
+		];
+		const result = handler.nms(dets, 0.45);
+		// Both should be kept — the old approximation would have incorrectly suppressed one
+		expect(result).toHaveLength(2);
+	});
+
+	it("nms should suppress elongated OBBs at same angle with slight offset", () => {
+		// Two nearly identical 100×10 OBBs at same angle — high real IoU
+		const dets = [
+			makeDet({
+				cx: 100,
+				cy: 100,
+				width: 100,
+				height: 10,
+				angle: 0.5,
+				confidence: 0.9,
+				classId: 0,
+			}),
+			makeDet({
+				cx: 102,
+				cy: 101,
+				width: 100,
+				height: 10,
+				angle: 0.5,
+				confidence: 0.8,
+				classId: 0,
+			}),
+		];
+		const result = handler.nms(dets, 0.45);
+		expect(result).toHaveLength(1);
+		expect(result[0].confidence).toBe(0.9);
+	});
 });
 
 describe("detect handler", () => {

@@ -1,5 +1,5 @@
 import { pixelToGeo } from "./geotiff";
-import { getOBBCorners } from "./obbUtils";
+import { convexPolygonIoU, getOBBCorners } from "./obbUtils";
 import type { Detection, DetectionSet, GeoTIFFMeta } from "./types";
 
 /**
@@ -206,57 +206,16 @@ export function mergeGeoTIFFDetections(
 }
 
 /**
- * Calculate IoU (Intersection over Union) for two polygons using their corner points.
- * This is an approximation using axis-aligned bounding boxes in geo coordinates.
+ * Calculate IoU (Intersection over Union) for two polygons using their corner points
+ * and the Sutherland-Hodgman polygon clipping algorithm.
  */
 function computePolygonIoU(
 	corners1: { x: number; y: number }[],
 	corners2: { x: number; y: number }[],
 ): number {
-	// Get axis-aligned bounding boxes
-	const box1 = getAABB(corners1);
-	const box2 = getAABB(corners2);
-
-	// Calculate intersection
-	const ix1 = Math.max(box1.minX, box2.minX);
-	const iy1 = Math.max(box1.minY, box2.minY);
-	const ix2 = Math.min(box1.maxX, box2.maxX);
-	const iy2 = Math.min(box1.maxY, box2.maxY);
-
-	const iw = Math.max(0, ix2 - ix1);
-	const ih = Math.max(0, iy2 - iy1);
-	const intersection = iw * ih;
-
-	// Calculate union
-	const area1 = (box1.maxX - box1.minX) * (box1.maxY - box1.minY);
-	const area2 = (box2.maxX - box2.minX) * (box2.maxY - box2.minY);
-	const union = area1 + area2 - intersection;
-
-	return union > 0 ? intersection / union : 0;
-}
-
-/**
- * Get axis-aligned bounding box from polygon corners.
- */
-function getAABB(corners: { x: number; y: number }[]): {
-	minX: number;
-	minY: number;
-	maxX: number;
-	maxY: number;
-} {
-	let minX = Number.POSITIVE_INFINITY;
-	let minY = Number.POSITIVE_INFINITY;
-	let maxX = Number.NEGATIVE_INFINITY;
-	let maxY = Number.NEGATIVE_INFINITY;
-
-	for (const corner of corners) {
-		minX = Math.min(minX, corner.x);
-		minY = Math.min(minY, corner.y);
-		maxX = Math.max(maxX, corner.x);
-		maxY = Math.max(maxY, corner.y);
-	}
-
-	return { minX, minY, maxX, maxY };
+	const a: [number, number][] = corners1.map((c) => [c.x, c.y]);
+	const b: [number, number][] = corners2.map((c) => [c.x, c.y]);
+	return convexPolygonIoU(a, b);
 }
 
 /**
