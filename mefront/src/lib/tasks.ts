@@ -24,7 +24,7 @@ export interface TaskHandler {
 // Shared NMS helpers
 // ---------------------------------------------------------------------------
 
-function computeAABBIoU(a: Detection, b: Detection): number {
+export function computeAABBIoU(a: Detection, b: Detection): number {
 	const aHalfW = a.width / 2;
 	const aHalfH = a.height / 2;
 	const bHalfW = b.width / 2;
@@ -60,7 +60,7 @@ function computeAABBIoU(a: Detection, b: Detection): number {
  * Uses the 4 corner vertices of each OBB and the Sutherland-Hodgman algorithm
  * to accurately account for rotation (angle).
  */
-function computeOBBIoU(a: Detection, b: Detection): number {
+export function computeOBBIoU(a: Detection, b: Detection): number {
 	return convexPolygonIoU(getOBBCorners(a), getOBBCorners(b));
 }
 

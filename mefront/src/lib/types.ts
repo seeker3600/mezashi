@@ -89,6 +89,7 @@ export interface InferenceResult {
 /** A set of detections from a single image, with optional geo metadata for merging */
 export interface DetectionSet {
 	detections: Detection[];
+	task: DetectionTask;
 	isGeoTIFF: boolean;
 	geoMeta?: GeoTIFFMeta;
 }

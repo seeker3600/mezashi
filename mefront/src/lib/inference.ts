@@ -4,7 +4,7 @@ import {
 	createShrunkCanvas,
 	prepareTile,
 } from "./imageUtils";
-import { NMS_IOU_THRESHOLD, SLICE_THRESHOLD, TILE_OVERLAP } from "./labels";
+import { SLICE_THRESHOLD, TILE_OVERLAP } from "./labels";
 import { applyLabelMerge, buildMergeMap } from "./mergeLabels";
 import type { TaskHandler } from "./tasks";
 import { getTaskHandler } from "./tasks";
@@ -198,13 +198,11 @@ export async function runInference(
 		detections = allDetections;
 	}
 
-	// Merge labels before NMS
+	// Apply label merge if configured
 	const mergeMap = buildMergeMap(metadata);
-
-	detections = handler.nms(
-		mergeMap ? applyLabelMerge(detections, mergeMap) : detections,
-		NMS_IOU_THRESHOLD,
-	);
+	if (mergeMap) {
+		detections = applyLabelMerge(detections, mergeMap);
+	}
 
 	// 縮小した場合、検出座標を元の画像座標に変換
 	if (shrinkScale < 1.0) {

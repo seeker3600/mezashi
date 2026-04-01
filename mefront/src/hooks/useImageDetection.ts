@@ -94,6 +94,7 @@ export function useImageDetection(
 						type: "ADD_RESULT",
 						image: { source: src, width: w, height: h },
 						detections,
+						task: modelMetadata.task,
 						isGeoTIFF,
 						geoMeta,
 					});
@@ -102,7 +103,7 @@ export function useImageDetection(
 						type: "SET_STATUS",
 						status: {
 							type: "success",
-							message: `検出完了: ${detections.length} 件`,
+							message: "検出完了",
 						},
 					});
 				} catch (err) {

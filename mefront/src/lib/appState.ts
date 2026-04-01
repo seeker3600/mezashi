@@ -2,6 +2,7 @@ import { CONFIDENCE_THRESHOLD, DEFAULT_METADATA_URL } from "./labels";
 import type {
 	Detection,
 	DetectionSet,
+	DetectionTask,
 	DisplayImage,
 	GeoTIFFMeta,
 	ModelMetadata,
@@ -55,6 +56,7 @@ export type AppAction =
 			type: "ADD_RESULT";
 			image: DisplayImage;
 			detections: Detection[];
+			task: DetectionTask;
 			isGeoTIFF: boolean;
 			geoMeta?: GeoTIFFMeta;
 	  }
@@ -78,6 +80,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 					...state.detectionSets,
 					{
 						detections: action.detections,
+						task: action.task,
 						isGeoTIFF: action.isGeoTIFF,
 						geoMeta: action.geoMeta,
 					},

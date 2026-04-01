@@ -32,11 +32,13 @@ describe("appReducer", () => {
 				type: "ADD_RESULT",
 				image: dummyImage,
 				detections: dets,
+				task: "obb",
 				isGeoTIFF: false,
 			});
 			expect(next.currentImage).toBe(dummyImage);
 			expect(next.detectionSets).toHaveLength(1);
 			expect(next.detectionSets[0].detections).toBe(dets);
+			expect(next.detectionSets[0].task).toBe("obb");
 			expect(next.detectionSets[0].isGeoTIFF).toBe(false);
 		});
 
@@ -47,6 +49,7 @@ describe("appReducer", () => {
 				type: "ADD_RESULT",
 				image: img1,
 				detections: [],
+				task: "obb",
 				isGeoTIFF: true,
 				geoMeta: {
 					tiePoint: { x: 0, y: 0 },
@@ -58,6 +61,7 @@ describe("appReducer", () => {
 				type: "ADD_RESULT",
 				image: img2,
 				detections: [],
+				task: "obb",
 				isGeoTIFF: true,
 				geoMeta: {
 					tiePoint: { x: 50, y: 0 },
@@ -74,7 +78,9 @@ describe("appReducer", () => {
 		it("should reset to initial state but preserve confidenceThreshold, metadataUrl, and modelMetadata", () => {
 			const modified: AppState = {
 				currentImage: dummyImage,
-				detectionSets: [{ detections: [], isGeoTIFF: false }],
+				detectionSets: [
+					{ detections: [], task: "obb" as const, isGeoTIFF: false },
+				],
 				status: { type: "success", message: "done" },
 				confidenceThreshold: 0.5,
 				metadataUrl: "https://example.com/model.json",
