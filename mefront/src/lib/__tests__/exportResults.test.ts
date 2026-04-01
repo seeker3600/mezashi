@@ -245,7 +245,7 @@ describe("mergeDetectionSets", () => {
 
 	it("should return null when there are no GeoTIFF sets", () => {
 		const sets: DetectionSet[] = [
-			{ detections: [makeDetection()], isGeoTIFF: false },
+			{ detections: [makeDetection()], task: "obb", isGeoTIFF: false },
 		];
 		expect(mergeDetectionSets(sets)).toBeNull();
 	});
@@ -257,7 +257,7 @@ describe("mergeDetectionSets", () => {
 	it("should return single set as-is", () => {
 		const dets = [makeDetection({ cx: 10, cy: 10 })];
 		const sets: DetectionSet[] = [
-			{ detections: dets, isGeoTIFF: true, geoMeta: meta1 },
+			{ detections: dets, task: "obb", isGeoTIFF: true, geoMeta: meta1 },
 		];
 		const result = mergeDetectionSets(sets);
 		expect(result).not.toBeNull();
@@ -269,8 +269,8 @@ describe("mergeDetectionSets", () => {
 		const dets1 = [makeDetection({ cx: 10, cy: 10, width: 10, height: 10 })];
 		const dets2 = [makeDetection({ cx: 200, cy: 200, width: 10, height: 10 })];
 		const sets: DetectionSet[] = [
-			{ detections: dets1, isGeoTIFF: true, geoMeta: meta1 },
-			{ detections: dets2, isGeoTIFF: true, geoMeta: meta2 },
+			{ detections: dets1, task: "obb", isGeoTIFF: true, geoMeta: meta1 },
+			{ detections: dets2, task: "obb", isGeoTIFF: true, geoMeta: meta2 },
 		];
 		const result = mergeDetectionSets(sets);
 		expect(result).not.toBeNull();
@@ -283,9 +283,9 @@ describe("mergeDetectionSets", () => {
 		const dets2 = [makeDetection({ cx: 200, cy: 200, width: 10, height: 10 })];
 		const dets3 = [makeDetection({ cx: 400, cy: 400, width: 10, height: 10 })];
 		const sets: DetectionSet[] = [
-			{ detections: dets1, isGeoTIFF: true, geoMeta: meta1 },
-			{ detections: dets2, isGeoTIFF: true, geoMeta: meta2 },
-			{ detections: dets3, isGeoTIFF: true, geoMeta: meta3 },
+			{ detections: dets1, task: "obb", isGeoTIFF: true, geoMeta: meta1 },
+			{ detections: dets2, task: "obb", isGeoTIFF: true, geoMeta: meta2 },
+			{ detections: dets3, task: "obb", isGeoTIFF: true, geoMeta: meta3 },
 		];
 		const result = mergeDetectionSets(sets);
 		expect(result).not.toBeNull();
@@ -308,9 +308,9 @@ describe("mergeDetectionSets", () => {
 			makeDetection({ cx: 500, cy: 500, width: 10, height: 10 }),
 		];
 		const sets: DetectionSet[] = [
-			{ detections: dets1, isGeoTIFF: true, geoMeta: meta1 },
-			{ detections: detsNonGeo, isGeoTIFF: false },
-			{ detections: dets2, isGeoTIFF: true, geoMeta: meta2 },
+			{ detections: dets1, task: "obb", isGeoTIFF: true, geoMeta: meta1 },
+			{ detections: detsNonGeo, task: "obb", isGeoTIFF: false },
+			{ detections: dets2, task: "obb", isGeoTIFF: true, geoMeta: meta2 },
 		];
 		const result = mergeDetectionSets(sets);
 		expect(result).not.toBeNull();

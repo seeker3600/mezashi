@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 import { mergeDetectionSets } from "../lib/exportResults";
+import { NMS_IOU_THRESHOLD } from "../lib/labels";
+import { buildIouMatrix, nmsFromRaw } from "../lib/nms";
 import type { DetectionSet, GeoTIFFMeta } from "../lib/types";
 
 interface DetectionResults {
@@ -20,6 +22,9 @@ interface DetectionResults {
  *
  * - Display: only the last detection set (what is shown on the canvas).
  * - Export: if multiple GeoTIFF sets exist, merge them; otherwise same as display.
+ *
+ * NMS is re-applied whenever the confidence threshold changes, using a
+ * pre-computed IoU matrix so pairwise IoU values are not recalculated.
  */
 export function useDetectionResults(
 	detectionSets: DetectionSet[],
@@ -31,6 +36,20 @@ export function useDetectionResults(
 			detectionSets.length >= 2 ? mergeDetectionSets(detectionSets) : null,
 		[detectionSets],
 	);
+
+	// Pre-compute IoU matrix for the last detection set.
+	// This is the expensive part; it runs only when the set of detections changes.
+	const lastIouMatrix = useMemo(() => {
+		if (detectionSets.length === 0) return null;
+		const last = detectionSets[detectionSets.length - 1];
+		return buildIouMatrix(last.detections, last.task);
+	}, [detectionSets]);
+
+	// Pre-compute IoU matrix for the merged result.
+	const mergedIouMatrix = useMemo(() => {
+		if (!mergedResult || detectionSets.length === 0) return null;
+		return buildIouMatrix(mergedResult.detections, detectionSets[0].task);
+	}, [mergedResult, detectionSets]);
 
 	return useMemo(() => {
 		if (detectionSets.length === 0) {
@@ -45,16 +64,30 @@ export function useDetectionResults(
 
 		const last = detectionSets[detectionSets.length - 1];
 
-		const display = last.detections.filter(
-			(d) => d.confidence >= confidenceThreshold,
-		);
+		// Re-run NMS on the confidence-filtered subset using the cached IoU matrix.
+		const display = lastIouMatrix
+			? nmsFromRaw(
+					last.detections,
+					lastIouMatrix,
+					confidenceThreshold,
+					NMS_IOU_THRESHOLD,
+				)
+			: last.detections.filter((d) => d.confidence >= confidenceThreshold);
 
 		const isMerged = mergedResult != null;
-		const exportDets = isMerged
-			? mergedResult.detections.filter(
-					(d) => d.confidence >= confidenceThreshold,
-				)
-			: display;
+		const exportDets =
+			isMerged && mergedIouMatrix
+				? nmsFromRaw(
+						mergedResult.detections,
+						mergedIouMatrix,
+						confidenceThreshold,
+						NMS_IOU_THRESHOLD,
+					)
+				: isMerged && mergedResult
+					? mergedResult.detections.filter(
+							(d) => d.confidence >= confidenceThreshold,
+						)
+					: display;
 
 		return {
 			displayDetections: display,
@@ -63,5 +96,11 @@ export function useDetectionResults(
 			geoMeta: isMerged ? mergedResult.meta : last.geoMeta,
 			isMerged,
 		};
-	}, [detectionSets, confidenceThreshold, mergedResult]);
+	}, [
+		detectionSets,
+		confidenceThreshold,
+		mergedResult,
+		lastIouMatrix,
+		mergedIouMatrix,
+	]);
 }
