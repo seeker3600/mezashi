@@ -1127,3 +1127,33 @@ class TestPlaceCluster:
         assert ratio > 2.0, (
             f"Mixed clusters should exhibit size diversity (ratio={ratio:.2f})"
         )
+
+
+class TestWorkerInit:
+    """_worker_init によるワーカープロセス初期化のテスト。"""
+
+    def test_none_svg_dir_sets_none(self) -> None:
+        """svg_dir=None のとき _worker_svg_metas が None になる。"""
+        import medetect.datagen.compose as compose_mod
+
+        compose_mod._worker_init(None)
+        assert compose_mod._worker_svg_metas is None
+
+    def test_svg_dir_populates_metas(self, tmp_path: pathlib.Path) -> None:
+        """有効な SVG ディレクトリを渡すと _worker_svg_metas が設定される。"""
+        import medetect.datagen.compose as compose_mod
+        from medetect.shipgen.gen import generate_ship_svg
+
+        svg_dir = tmp_path / "svgs"
+        svg_dir.mkdir()
+        rng = random.Random(0)
+        for i in range(3):
+            (svg_dir / f"ship_{i}.svg").write_text(
+                generate_ship_svg("patrol", rng=rng), encoding="utf-8"
+            )
+
+        compose_mod._worker_init(svg_dir)
+        assert compose_mod._worker_svg_metas is not None
+        assert len(compose_mod._worker_svg_metas) == 3
+        for meta in compose_mod._worker_svg_metas:
+            assert meta.lb_ratio > 0

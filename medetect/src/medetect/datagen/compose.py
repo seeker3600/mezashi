@@ -299,6 +299,27 @@ def _load_svg_metas(svg_files: list[Path]) -> list[_SvgMeta]:
     return metas
 
 
+# ── Worker-process shared state ───────────────────────────────────────────
+
+# svg_metas is set once per worker process via the ProcessPoolExecutor
+# initializer to avoid pickling it with every task argument.
+_worker_svg_metas: list[_SvgMeta] | None = None
+
+
+def _worker_init(svg_dir: Path | None) -> None:
+    """Initializer for each worker process.
+
+    Loads SVG metadata from *svg_dir* into a process-local global so that
+    tasks can reference it without re-pickling the list on every call.
+    """
+    global _worker_svg_metas  # noqa: PLW0603
+    if svg_dir is not None:
+        svg_files = sorted(svg_dir.glob("*.svg"))
+        _worker_svg_metas = _load_svg_metas(svg_files)
+    else:
+        _worker_svg_metas = None
+
+
 def _natural_lb_ratio(length_m: float) -> float:
     """Empirical L/B ratio typical for a vessel of the given length.
 
@@ -810,13 +831,13 @@ def generate_dataset(
         msg = f"No TIF files found in {bg_dir}"
         raise FileNotFoundError(msg)
 
-    svg_metas: list[_SvgMeta] | None = None
+    # Validate SVG dir now (before spawning workers) so errors surface early.
+    svg_dir: Path | None = None
     if ship_dir is not None:
-        svg_files = sorted(Path(ship_dir).glob("*.svg"))
-        if not svg_files:
-            msg = f"No SVG files found in {ship_dir}"
+        svg_dir = Path(ship_dir)
+        if not any(svg_dir.glob("*.svg")):
+            msg = f"No SVG files found in {svg_dir}"
             raise FileNotFoundError(msg)
-        svg_metas = _load_svg_metas(svg_files)
 
     # Pre-generate per-task parameters using the main RNG so that results
     # are reproducible with the same seed regardless of worker count.
@@ -828,11 +849,12 @@ def generate_dataset(
 
     stats = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
 
-    # Build shared kwargs once to avoid repetition in each submit() call.
+    # Build shared kwargs once — svg_metas is intentionally excluded:
+    # it is loaded once per worker process via _worker_init to avoid
+    # pickling the full SVG list with every task submission.
     _shared = dict(
         img_out=img_out,
         lbl_out=lbl_out,
-        svg_metas=svg_metas,
         image_size=image_size,
         resolution=resolution,
         geo_scale=geo_scale,
@@ -852,43 +874,77 @@ def generate_dataset(
         wake_alpha_scale=wake_alpha_scale,
     )
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures: dict[concurrent.futures.Future[tuple[int, int]], tuple[int, Path]] = {
-            executor.submit(
-                _run_compose_task,
-                index=i,
-                task_seed=task_seeds[i],
-                tif_path=task_tifs[i],
-                **_shared,
-            ): (i, task_tifs[i])
-            for i in range(count)
-        }
+    # Limit in-flight futures to avoid flooding the IPC queue with thousands
+    # of pickled task args simultaneously.  2× workers gives enough headroom
+    # to keep all workers busy without unbounded memory growth.
+    max_inflight = max_workers * 2
 
+    task_iter = iter(range(count))
+    pending: set[concurrent.futures.Future[tuple[int, int]]] = set()
+    future_info: dict[concurrent.futures.Future[tuple[int, int]], tuple[int, Path]] = {}
+
+    def _submit_next() -> bool:
+        try:
+            i = next(task_iter)
+        except StopIteration:
+            return False
+        fut = executor.submit(
+            _run_compose_task,
+            index=i,
+            task_seed=task_seeds[i],
+            tif_path=task_tifs[i],
+            **_shared,
+        )
+        pending.add(fut)
+        future_info[fut] = (i, task_tifs[i])
+        return True
+
+    def _collect_done(pbar: tqdm) -> None:  # type: ignore[type-arg]
+        done, _ = concurrent.futures.wait(
+            pending, return_when=concurrent.futures.FIRST_COMPLETED
+        )
+        for fut in done:
+            pending.discard(fut)
+            _idx, tif_path = future_info.pop(fut)
+            try:
+                n_ships, n_clusters = fut.result()
+                if n_ships < 0:
+                    stats["skipped"] += 1
+                else:
+                    stats["images"] += 1
+                    stats["ships"] += n_ships
+                    stats["clusters"] += n_clusters
+            except Exception:
+                logger.warning(
+                    "Failed to compose %s — skipping",
+                    tif_path.name,
+                    exc_info=True,
+                )
+                stats["skipped"] += 1
+            finally:
+                pbar.update(1)
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_worker_init,
+        initargs=(svg_dir,),
+    ) as executor:
         with tqdm(
             total=count,
             desc="Generating dataset",
             unit="image",
             dynamic_ncols=True,
         ) as pbar:
-            for fut in concurrent.futures.as_completed(futures):
-                _idx, tif_path = futures[fut]
-                try:
-                    n_ships, n_clusters = fut.result()
-                    if n_ships < 0:  # skipped
-                        stats["skipped"] += 1
-                    else:
-                        stats["images"] += 1
-                        stats["ships"] += n_ships
-                        stats["clusters"] += n_clusters
-                except Exception:
-                    logger.warning(
-                        "Failed to compose %s — skipping",
-                        tif_path.name,
-                        exc_info=True,
-                    )
-                    stats["skipped"] += 1
-                finally:
-                    pbar.update(1)
+            # Fill the initial window.
+            for _ in range(min(max_inflight, count)):
+                _submit_next()
+
+            # Rolling-window: for each completed task, submit one new task.
+            while pending:
+                _collect_done(pbar)
+                while len(pending) < max_inflight:
+                    if not _submit_next():
+                        break
 
     # Write dataset YAML
     gen_params: dict[str, object] = {
@@ -935,7 +991,6 @@ def _run_compose_task(
     tif_path: Path,
     img_out: Path,
     lbl_out: Path,
-    svg_metas: list[_SvgMeta] | None,
     image_size: int,
     resolution: float | None,
     geo_scale: float | None,
@@ -958,11 +1013,14 @@ def _run_compose_task(
 
     Returns ``(n_ships, n_clusters)``.  Returns ``(-1, -1)`` when the tile
     was skipped (no suitable water region found).  Raises on hard errors.
+
+    ``svg_metas`` is read from the process-local ``_worker_svg_metas``
+    global set by ``_worker_init`` to avoid re-pickling it every call.
     """
     rng = random.Random(task_seed)
     result = _compose_one(
         tif_path=tif_path,
-        svg_metas=svg_metas,
+        svg_metas=_worker_svg_metas,
         image_size=image_size,
         resolution=resolution,
         geo_scale=geo_scale,
