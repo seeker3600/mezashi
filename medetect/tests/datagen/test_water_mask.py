@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from medetect.datagen.water_mask import (
+    CoastlineIndex,
     erode_mask,
+    make_water_mask_from_coastline,
     make_water_mask_from_rgb,
     make_water_mask_from_scl,
 )
@@ -152,3 +154,123 @@ class TestMakeWaterMaskFromRgb:
         rgb = np.array([[[140, 80, 60]]], dtype=np.uint8)
         mask = make_water_mask_from_rgb(rgb)
         assert not mask[0, 0]
+
+
+class TestCoastlineIndex:
+    def test_load_and_query(self, tmp_path: Path) -> None:
+        """Shapefileを読み込み、バウンディングボックスでクエリできる。"""
+        _write_test_shapefile(
+            tmp_path / "lines.shp",
+            [[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]],
+        )
+        idx = CoastlineIndex(tmp_path / "lines.shp")
+        # Query intersecting bbox
+        results = idx.query((0.0, -0.5, 0.5, 0.5))
+        assert len(results) >= 1
+
+    def test_query_no_match(self, tmp_path: Path) -> None:
+        """範囲外のクエリでは空リストが返る。"""
+        _write_test_shapefile(
+            tmp_path / "lines.shp",
+            [[(0.0, 0.0), (1.0, 0.0)]],
+        )
+        idx = CoastlineIndex(tmp_path / "lines.shp")
+        results = idx.query((10.0, 10.0, 11.0, 11.0))
+        assert len(results) == 0
+
+
+class TestMakeWaterMaskFromCoastline:
+    def test_no_coastlines_returns_all_water(self) -> None:
+        """海岸線がないタイルは全域水域とみなす。"""
+        rgb = np.full((10, 10, 3), 30, dtype=np.uint8)
+        transform = _identity_transform()
+        mask = make_water_mask_from_coastline([], rgb, transform, 10, 10)
+        assert mask.all()
+
+    def test_coastline_splits_tile(self) -> None:
+        """海岸線によりタイルが水域と陸域に分割される。"""
+        from rasterio.transform import from_bounds
+        from shapely.geometry import LineString
+
+        # Tile covers [0, 1] x [0, 1], coastline is a horizontal line at y=0.5
+        transform = from_bounds(0.0, 0.0, 1.0, 1.0, 20, 20)
+        coastline = LineString([(0.0, 0.5), (1.0, 0.5)])
+
+        # Build RGB: top half (high y, low row) = dark blue water,
+        # bottom half (low y, high row) = bright land.
+        rgb = np.zeros((20, 20, 3), dtype=np.uint8)
+        rgb[:10, :] = [20, 30, 50]  # water (top rows = high y in geo)
+        rgb[10:, :] = [180, 160, 140]  # land (bottom rows = low y in geo)
+
+        mask = make_water_mask_from_coastline(
+            [coastline], rgb, transform, 20, 20,
+        )
+
+        # Water region (top rows) should be True
+        assert mask[:10, :].sum() > 0.7 * (10 * 20)
+        # Land region (bottom rows) should be False
+        assert mask[10:, :].sum() < 0.3 * (10 * 20)
+
+    def test_coastline_mask_dtype(self) -> None:
+        """戻り値がbool型のndarrayである。"""
+        rgb = np.full((5, 5, 3), 30, dtype=np.uint8)
+        transform = _identity_transform()
+        mask = make_water_mask_from_coastline([], rgb, transform, 5, 5)
+        assert mask.dtype == np.bool_
+
+    def test_all_land_tile(self) -> None:
+        """全域陸地のタイル（海岸線なし、明るいRGB）の場合、
+        海岸線なしでも全域水域と返す（AND結合で既存マスクが絞り込む）。"""
+        rgb = np.full((10, 10, 3), 200, dtype=np.uint8)
+        transform = _identity_transform()
+        mask = make_water_mask_from_coastline([], rgb, transform, 10, 10)
+        # No coastlines → all-True (caller ANDs with RGB mask)
+        assert mask.all()
+
+    def test_vertical_coastline(self) -> None:
+        """垂直な海岸線で左右に水域・陸域が分割される。"""
+        from rasterio.transform import from_bounds
+        from shapely.geometry import LineString
+
+        transform = from_bounds(0.0, 0.0, 1.0, 1.0, 20, 20)
+        coastline = LineString([(0.5, 0.0), (0.5, 1.0)])
+
+        # Left half = water, right half = land
+        rgb = np.zeros((20, 20, 3), dtype=np.uint8)
+        rgb[:, :10] = [20, 30, 50]  # water (left cols = low x)
+        rgb[:, 10:] = [180, 160, 140]  # land (right cols = high x)
+
+        mask = make_water_mask_from_coastline(
+            [coastline], rgb, transform, 20, 20,
+        )
+
+        # Left side should be water
+        assert mask[:, :10].sum() > 0.7 * (20 * 10)
+        # Right side should be land
+        assert mask[:, 10:].sum() < 0.3 * (20 * 10)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+from pathlib import Path
+
+
+def _identity_transform():
+    """Return a simple identity-like affine transform for testing."""
+    from rasterio.transform import from_bounds
+    return from_bounds(0.0, 0.0, 1.0, 1.0, 10, 10)
+
+
+def _write_test_shapefile(
+    path: Path,
+    lines: list[list[tuple[float, float]]],
+) -> None:
+    """Write a minimal shapefile with polyline geometries for testing."""
+    import shapefile as shp
+
+    w = shp.Writer(str(path))
+    w.field("id", "N")
+    for i, coords in enumerate(lines):
+        w.line([coords])
+        w.record(i)
+    w.close()

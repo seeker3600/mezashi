@@ -33,7 +33,9 @@ from tqdm import tqdm
 from medetect.datagen.render import parse_svg_metadata, rasterize_ship_svg
 from medetect.datagen.wake import MotionState, pick_motion_state, render_wake
 from medetect.datagen.water_mask import (
+    CoastlineIndex,
     erode_mask,
+    make_water_mask_from_coastline,
     make_water_mask_from_rgb,
     make_water_mask_from_scl,
 )
@@ -301,23 +303,33 @@ def _load_svg_metas(svg_files: list[Path]) -> list[_SvgMeta]:
 
 # ── Worker-process shared state ───────────────────────────────────────────
 
-# svg_metas is set once per worker process via the ProcessPoolExecutor
-# initializer to avoid pickling it with every task argument.
+# svg_metas and coastline_index are set once per worker process via the
+# ProcessPoolExecutor initializer to avoid pickling them with every task.
 _worker_svg_metas: list[_SvgMeta] | None = None
+_worker_coastline_index: CoastlineIndex | None = None
 
 
-def _worker_init(svg_dir: Path | None) -> None:
+def _worker_init(
+    svg_dir: Path | None,
+    coastline_path: Path | None = None,
+) -> None:
     """Initializer for each worker process.
 
-    Loads SVG metadata from *svg_dir* into a process-local global so that
-    tasks can reference it without re-pickling the list on every call.
+    Loads SVG metadata from *svg_dir* and (optionally) the coastline
+    spatial index from *coastline_path* into process-local globals so
+    that tasks can reference them without re-pickling on every call.
     """
-    global _worker_svg_metas  # noqa: PLW0603
+    global _worker_svg_metas, _worker_coastline_index  # noqa: PLW0603
     if svg_dir is not None:
         svg_files = sorted(svg_dir.glob("*.svg"))
         _worker_svg_metas = _load_svg_metas(svg_files)
     else:
         _worker_svg_metas = None
+
+    if coastline_path is not None:
+        _worker_coastline_index = CoastlineIndex(coastline_path)
+    else:
+        _worker_coastline_index = None
 
 
 def _natural_lb_ratio(length_m: float) -> float:
@@ -981,6 +993,7 @@ def generate_dataset(
     max_workers: int | None = None,
     false_dir: Path | str | None = None,
     false_ratio: float = 0.0,
+    coastline: Path | str | None = None,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format.
 
@@ -1043,6 +1056,10 @@ def generate_dataset(
         *None* keeps the single ``ship`` class (backward compatible).
     max_workers
         Number of parallel worker threads.  ``None`` uses ``os.cpu_count()``.
+    coastline
+        Path to an OSM coastline shapefile (``lines.shp``).  When set,
+        coastline geometries are used to create precise water/land
+        boundaries, combined with the RGB or SCL water mask via AND.
 
     Returns
     -------
@@ -1084,6 +1101,14 @@ def generate_dataset(
         svg_dir = Path(ship_dir)
         if not any(svg_dir.glob("*.svg")):
             msg = f"No SVG files found in {svg_dir}"
+            raise FileNotFoundError(msg)
+
+    # Validate coastline shapefile.
+    coastline_path: Path | None = None
+    if coastline is not None:
+        coastline_path = Path(coastline)
+        if not coastline_path.exists():
+            msg = f"Coastline shapefile not found: {coastline_path}"
             raise FileNotFoundError(msg)
 
     # Pre-generate per-task parameters using the main RNG so that results
@@ -1174,7 +1199,7 @@ def generate_dataset(
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_worker_init,
-        initargs=(svg_dir,),
+        initargs=(svg_dir, coastline_path),
     ) as executor:
         with tqdm(
             total=synth_count,
@@ -1220,6 +1245,7 @@ def generate_dataset(
         "wake_alpha_scale": wake_alpha_scale,
         "false_dir": str(false_dir) if false_dir is not None else None,
         "false_ratio": false_ratio,
+        "coastline": str(coastline_path) if coastline_path is not None else None,
     }
     _write_dataset_yaml(
         output_dir, class_id,
@@ -1277,8 +1303,8 @@ def _run_compose_task(
     Returns ``(n_ships, n_clusters)``.  Returns ``(-1, -1)`` when the tile
     was skipped (no suitable water region found).  Raises on hard errors.
 
-    ``svg_metas`` is read from the process-local ``_worker_svg_metas``
-    global set by ``_worker_init`` to avoid re-pickling it every call.
+    ``svg_metas`` and ``coastline_index`` are read from process-local
+    globals set by ``_worker_init`` to avoid re-pickling every call.
     """
     rng = random.Random(task_seed)
     result = _compose_one(
@@ -1302,6 +1328,7 @@ def _run_compose_task(
         size_threshold=size_threshold,
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
+        coastline_index=_worker_coastline_index,
     )
 
     if result is None:
@@ -1340,6 +1367,7 @@ def _compose_one(
     size_threshold: float | None = None,
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
+    coastline_index: CoastlineIndex | None = None,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image.  Returns ``(tile, labels, n_clusters)``."""
     with rasterio.open(tif_path) as src:
@@ -1404,6 +1432,27 @@ def _compose_one(
             # Exclude no-data (pure black, #000000) pixels — artificially masked
             # or unimaged regions must not be used for ship placement.
             water_mask &= ~make_nodata_mask(tile)
+
+            # Coastline-based mask (precise land/water boundary from OSM)
+            if coastline_index is not None:
+                window = Window(col, row, src_tile, src_tile)
+                tile_transform = src.window_transform(window)
+                if src_tile != image_size:
+                    bounds = rasterio.transform.array_bounds(
+                        src_tile, src_tile, tile_transform,
+                    )
+                    tile_transform = rasterio.transform.from_bounds(
+                        *bounds, image_size, image_size,
+                    )
+                tile_bounds = rasterio.transform.array_bounds(
+                    image_size, image_size, tile_transform,
+                )
+                coastline_geoms = coastline_index.query(tile_bounds)
+                coastline_mask = make_water_mask_from_coastline(
+                    coastline_geoms, tile, tile_transform,
+                    image_size, image_size,
+                )
+                water_mask &= coastline_mask
 
             water_mask = erode_mask(water_mask, erode_coast)
 

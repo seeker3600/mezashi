@@ -238,6 +238,17 @@ def main() -> None:
             "negatives = 100 total. Requires --false_dir."
         ),
     )
+    parser.add_argument(
+        "--coastline",
+        type=Path,
+        default=None,
+        metavar="SHP",
+        help=(
+            "Path to an OSM coastline shapefile (lines.shp) in EPSG:4326. "
+            "When set, coastline geometries provide precise land/water "
+            "boundaries to prevent ships from being placed on land."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -272,6 +283,7 @@ def main() -> None:
         false_dir=args.false_dir,
         false_ratio=args.false_ratio,
         max_workers=args.workers,
+        coastline=args.coastline,
     )
 
     print(f"Done: {stats}")
