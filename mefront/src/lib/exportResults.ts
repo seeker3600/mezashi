@@ -158,10 +158,12 @@ export function mergeGeoTIFFDetections(
 	}));
 
 	// Start with all detections from first image, preserving their geoMeta if they have one
-	const merged: (Detection & { geoMeta: GeoTIFFMeta })[] = detections1.map((d) => ({
-		...d,
-		geoMeta: d.geoMeta ?? meta1,
-	}));
+	const merged: (Detection & { geoMeta: GeoTIFFMeta })[] = detections1.map(
+		(d) => ({
+			...d,
+			geoMeta: d.geoMeta ?? meta1,
+		}),
+	);
 
 	// Check each detection from second image against first image detections
 	for (let i = 0; i < geoDetections2.length; i++) {
