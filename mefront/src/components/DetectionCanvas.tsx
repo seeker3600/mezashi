@@ -238,8 +238,13 @@ export function DetectionCanvas({
 				Math.max(12, Math.min(displayWidth, displayHeight) / 80) / scale;
 			ctx.font = `bold ${fontSize}px sans-serif`;
 			const textMetrics = ctx.measureText(label);
-			const textW = textMetrics.width + 6;
-			const textH = fontSize + 4;
+			const textW = textMetrics.width;
+			const asc = textMetrics.actualBoundingBoxAscent;
+			const desc = textMetrics.actualBoundingBoxDescent;
+			// pad is in canvas units: dividing by scale keeps it constant in screen pixels
+			const pad = 3 / scale;
+			const boxW = textW + 2 * pad;
+			const boxH = asc + desc + 2 * pad;
 
 			// Scale center coordinates
 			const cx = det.cx * fitScale;
@@ -254,9 +259,10 @@ export function DetectionCanvas({
 
 			// Draw label background centered at OBB center (slightly transparent)
 			ctx.fillStyle = hexToRgba(color, 0.75);
-			ctx.fillRect(-textW / 2, -textH / 2, textW, textH);
+			ctx.fillRect(-boxW / 2, -boxH / 2, boxW, boxH);
 			ctx.fillStyle = "rgba(255,255,255,0.95)";
-			ctx.fillText(label, -textW / 2 + 3, textH / 2 - 4);
+			// Baseline offset to visually center text in box
+			ctx.fillText(label, -textW / 2, (asc - desc) / 2);
 
 			// Restore context state
 			ctx.restore();
