@@ -717,6 +717,240 @@ def _sample_water_tint(
     return region.mean(axis=(0, 1)).astype(np.float32)
 
 
+# ── False-negative tile extraction ────────────────────────────────────────
+
+
+def _false_source_grid(
+    path: Path,
+    image_size: int,
+    resolution: float | None,
+    geo_scale: float | None,
+) -> tuple[int, int, int] | None:
+    """Return ``(src_tile, n_cols, n_rows)`` for a false-negative source image.
+
+    *src_tile* is the number of source pixels per output tile edge, computed
+    with the same logic as :func:`_compose_one`.  Returns ``None`` when the
+    image is too small for even one non-overlapping tile.
+    """
+    suffix = path.suffix.lower()
+    try:
+        if suffix in (".tif", ".tiff"):
+            with rasterio.open(path) as src:
+                w, h = src.width, src.height
+                if geo_scale is not None:
+                    src_tile = max(1, round(image_size * geo_scale))
+                elif resolution is not None:
+                    native_res = (src.res[0] + src.res[1]) / 2.0
+                    if src.crs and src.crs.is_geographic:
+                        center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
+                        native_res = (
+                            native_res
+                            * 111320.0
+                            * math.cos(math.radians(center_lat))
+                        )
+                    src_tile = max(1, round(image_size * resolution / native_res))
+                else:
+                    src_tile = image_size
+        else:
+            with Image.open(path) as img:
+                w, h = img.size
+            src_tile = image_size
+    except Exception:
+        logger.warning(
+            "Cannot open false-negative source %s — skipping",
+            path.name,
+            exc_info=True,
+        )
+        return None
+
+    n_cols = w // src_tile
+    n_rows = h // src_tile
+    if n_cols == 0 or n_rows == 0:
+        logger.debug(
+            "Source %s too small for %d px tiles — skipping", path.name, image_size
+        )
+        return None
+    return src_tile, n_cols, n_rows
+
+
+def generate_false_negatives(
+    false_dir: Path,
+    output_dir: Path,
+    count: int,
+    image_size: int,
+    *,
+    resolution: float | None = None,
+    geo_scale: float | None = None,
+    rng: random.Random,
+    start_index: int = 0,
+) -> int:
+    """Write *count* false-negative (label-free) tiles from *false_dir*.
+
+    Tiles are cropped from PNG and TIFF images found in *false_dir*.
+    No two tiles from the same source image overlap (grid-based non-overlapping
+    crop).  Tiles are distributed as evenly as possible across all source
+    images so that no single image contributes a disproportionate share.
+
+    Parameters
+    ----------
+    false_dir
+        Directory containing false-negative source images (PNG / TIFF).
+    output_dir
+        Root of the YOLO dataset (same as :func:`generate_dataset`'s
+        ``output_dir``).  Images are saved to ``images/train/`` and empty
+        label files to ``labels/train/``.
+    count
+        Number of false-negative tiles to generate.
+    image_size
+        Output tile edge size in pixels.
+    resolution
+        Target resolution in m/px (same as :func:`generate_dataset`).
+    geo_scale
+        Fixed pixel scale for TIFF images (same as :func:`generate_dataset`).
+    rng
+        Seeded random number generator for reproducibility.
+    start_index
+        File index offset to avoid name clashes with the synthetic images.
+
+    Returns
+    -------
+    int
+        Number of tiles actually written.  May be less than *count* if the
+        source images do not have enough total non-overlapping capacity.
+    """
+    img_out = output_dir / "images" / "train"
+    lbl_out = output_dir / "labels" / "train"
+
+    # Collect PNG + TIFF source files (deduplicated, sorted for reproducibility)
+    sources_raw: list[Path] = []
+    for pattern in ("*.png", "*.tif", "*.tiff", "*.PNG", "*.TIF", "*.TIFF"):
+        sources_raw.extend(false_dir.glob(pattern))
+    seen: set[Path] = set()
+    sources: list[Path] = []
+    for p in sorted(sources_raw):
+        rp = p.resolve()
+        if rp not in seen:
+            seen.add(rp)
+            sources.append(p)
+
+    if not sources:
+        msg = f"No PNG/TIFF images found in {false_dir}"
+        raise FileNotFoundError(msg)
+
+    # Compute grid capacity for each source
+    source_grids: list[tuple[Path, int, int, int]] = []  # path, src_tile, cols, rows
+    for path in sources:
+        info = _false_source_grid(path, image_size, resolution, geo_scale)
+        if info is not None:
+            src_tile, cols, rows = info
+            source_grids.append((path, src_tile, cols, rows))
+
+    if not source_grids:
+        msg = (
+            f"No usable source images in {false_dir} "
+            f"(all too small for {image_size}px tiles)"
+        )
+        raise ValueError(msg)
+
+    n_sources = len(source_grids)
+    # Cap the per-source contribution so tiles are spread across images.
+    max_per_source = math.ceil(count / n_sources)
+
+    # First pass: allocate ≤ max_per_source tiles from each source.
+    allocations: list[tuple[Path, int, int, int, int]] = []  # path, src_tile, cols, rows, alloc
+    remaining = count
+    for path, src_tile, cols, rows in source_grids:
+        alloc = min(cols * rows, max_per_source, remaining)
+        allocations.append((path, src_tile, cols, rows, alloc))
+        remaining -= alloc
+
+    # Second pass: use spare capacity to cover any shortfall
+    # (e.g. some sources were smaller than max_per_source).
+    if remaining > 0:
+        for i, (path, src_tile, cols, rows, alloc) in enumerate(allocations):
+            extra = min(cols * rows - alloc, remaining)
+            if extra > 0:
+                allocations[i] = (path, src_tile, cols, rows, alloc + extra)
+                remaining -= extra
+            if remaining <= 0:
+                break
+
+    if remaining > 0:
+        total_cap = sum(c * r for _, _, c, r in source_grids)
+        logger.warning(
+            "False-negative sources contain only %d non-overlapping tiles "
+            "(requested %d); using all %d available.",
+            total_cap,
+            count,
+            total_cap,
+        )
+
+    total_to_write = sum(a for *_, a in allocations)
+    total_written = 0
+    idx = start_index
+    tiff_suffixes = {".tif", ".tiff"}
+
+    with tqdm(
+        total=total_to_write,
+        desc="False negatives",
+        unit="tile",
+        dynamic_ncols=True,
+    ) as pbar:
+        for path, src_tile, cols, rows, alloc in allocations:
+            if alloc <= 0:
+                continue
+
+            # Build grid positions and shuffle for random selection.
+            grid = [(c, r) for r in range(rows) for c in range(cols)]
+            rng.shuffle(grid)
+            positions = grid[:alloc]
+
+            if path.suffix.lower() in tiff_suffixes:
+                with rasterio.open(path) as src:
+                    for col, row in positions:
+                        x0, y0 = col * src_tile, row * src_tile
+                        data = src.read(
+                            list(range(1, min(src.count, 3) + 1)),
+                            window=Window(x0, y0, src_tile, src_tile),
+                        )
+                        tile_img = Image.fromarray(
+                            np.moveaxis(data, 0, -1).astype(np.uint8)
+                        ).convert("RGB")
+                        if src_tile != image_size:
+                            tile_img = tile_img.resize(
+                                (image_size, image_size), Image.BILINEAR
+                            )
+                        name = f"{idx:06d}"
+                        tile_img.save(img_out / f"{name}.png")
+                        (lbl_out / f"{name}.txt").write_text("", encoding="utf-8")
+                        idx += 1
+                        total_written += 1
+                        pbar.update(1)
+            else:
+                with Image.open(path) as src_img:
+                    src_rgb = src_img.convert("RGB")
+                    for col, row in positions:
+                        x0, y0 = col * src_tile, row * src_tile
+                        tile_img = src_rgb.crop(
+                            (x0, y0, x0 + src_tile, y0 + src_tile)
+                        )
+                        if src_tile != image_size:
+                            tile_img = tile_img.resize(
+                                (image_size, image_size), Image.BILINEAR
+                            )
+                        name = f"{idx:06d}"
+                        tile_img.save(img_out / f"{name}.png")
+                        (lbl_out / f"{name}.txt").write_text("", encoding="utf-8")
+                        idx += 1
+                        total_written += 1
+                        pbar.update(1)
+
+    logger.info(
+        "False negatives written: %d / %d requested", total_written, count
+    )
+    return total_written
+
+
 # ── Main entry point ──────────────────────────────────────────────────────
 
 
@@ -745,6 +979,8 @@ def generate_dataset(
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
     max_workers: int | None = None,
+    false_dir: Path | str | None = None,
+    false_ratio: float = 0.0,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format.
 
@@ -823,6 +1059,17 @@ def generate_dataset(
 
     rng = random.Random(seed)
 
+    # Compute split: count is total images (synth + false negatives).
+    if false_dir is not None and false_ratio > 0.0:
+        if not (0.0 < false_ratio < 1.0):
+            msg = f"false_ratio must be in (0, 1), got {false_ratio}"
+            raise ValueError(msg)
+        false_count = round(count * false_ratio)
+        synth_count = count - false_count
+    else:
+        false_count = 0
+        synth_count = count
+
     # Collect inputs
     visual_files = sorted(bg_dir.glob("*_visual.tif"))
     if not visual_files:
@@ -841,8 +1088,8 @@ def generate_dataset(
 
     # Pre-generate per-task parameters using the main RNG so that results
     # are reproducible with the same seed regardless of worker count.
-    task_tifs = [rng.choice(visual_files) for _ in range(count)]
-    task_seeds = [rng.randint(0, 2**32 - 1) for _ in range(count)]
+    task_tifs = [rng.choice(visual_files) for _ in range(synth_count)]
+    task_seeds = [rng.randint(0, 2**32 - 1) for _ in range(synth_count)]
 
     if max_workers is None:
         max_workers = os.cpu_count() or 1
@@ -879,7 +1126,7 @@ def generate_dataset(
     # to keep all workers busy without unbounded memory growth.
     max_inflight = max_workers * 2
 
-    task_iter = iter(range(count))
+    task_iter = iter(range(synth_count))
     pending: set[concurrent.futures.Future[tuple[int, int]]] = set()
     future_info: dict[concurrent.futures.Future[tuple[int, int]], tuple[int, Path]] = {}
 
@@ -930,13 +1177,13 @@ def generate_dataset(
         initargs=(svg_dir,),
     ) as executor:
         with tqdm(
-            total=count,
+            total=synth_count,
             desc="Generating dataset",
             unit="image",
             dynamic_ncols=True,
         ) as pbar:
             # Fill the initial window.
-            for _ in range(min(max_inflight, count)):
+            for _ in range(min(max_inflight, synth_count)):
                 _submit_next()
 
             # Rolling-window: for each completed task, submit one new task.
@@ -971,11 +1218,27 @@ def generate_dataset(
         "size_threshold": size_threshold,
         "wake_prob_scale": wake_prob_scale,
         "wake_alpha_scale": wake_alpha_scale,
+        "false_dir": str(false_dir) if false_dir is not None else None,
+        "false_ratio": false_ratio,
     }
     _write_dataset_yaml(
         output_dir, class_id,
         size_threshold=size_threshold, params=gen_params,
     )
+
+    # Generate false-negative (background-only) tiles when requested.
+    stats["false_negatives"] = 0
+    if false_count > 0:
+        stats["false_negatives"] = generate_false_negatives(
+            false_dir=Path(false_dir),  # type: ignore[arg-type]
+            output_dir=output_dir,
+            count=false_count,
+            image_size=image_size,
+            resolution=resolution,
+            geo_scale=geo_scale,
+            rng=rng,
+            start_index=synth_count,
+        )
 
     logger.info("Dataset complete: %s", stats)
     return stats

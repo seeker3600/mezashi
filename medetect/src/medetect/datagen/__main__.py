@@ -215,8 +215,36 @@ def main() -> None:
             "can be tuned separately."
         ),
     )
+    parser.add_argument(
+        "--false_dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory containing false-negative source images (PNG/TIFF). "
+            "When set, tiles are cropped from these images and added to the "
+            "dataset with empty labels. Requires --false_ratio."
+        ),
+    )
+    parser.add_argument(
+        "--false_ratio",
+        type=float,
+        default=0.0,
+        metavar="RATIO",
+        help=(
+            "Fraction of the total dataset (--count) that should be false-negative "
+            "images (0.0–<1.0, default: 0.0). "
+            "E.g. --count 100 --false_ratio 0.2 generates 80 synthetic + 20 false "
+            "negatives = 100 total. Requires --false_dir."
+        ),
+    )
 
     args = parser.parse_args()
+
+    if args.false_ratio and args.false_dir is None:
+        parser.error("--false_ratio requires --false_dir")
+    if args.false_dir and not (0.0 < args.false_ratio < 1.0):
+        parser.error("--false_ratio must be in (0, 1) when --false_dir is set")
 
     stats = generate_dataset(
         bg_dir=args.bg_dir,
@@ -241,6 +269,8 @@ def main() -> None:
         size_threshold=args.size_threshold,
         wake_prob_scale=args.wake_prob_scale,
         wake_alpha_scale=args.wake_alpha_scale,
+        false_dir=args.false_dir,
+        false_ratio=args.false_ratio,
         max_workers=args.workers,
     )
 

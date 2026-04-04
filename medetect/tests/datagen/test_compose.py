@@ -12,6 +12,7 @@ from medetect.datagen.compose import (
     _blend_rgba_layer,
     _compose_one,
     _composite_rgba,
+    _false_source_grid,
     _load_svg_metas,
     _natural_lb_ratio,
     _place_cluster,
@@ -24,6 +25,7 @@ from medetect.datagen.compose import (
     compute_ship_pixel_size,
     find_water_position,
     format_obb_label,
+    generate_false_negatives,
     is_dark_tile,
     make_nodata_mask,
 )
@@ -1157,3 +1159,230 @@ class TestWorkerInit:
         assert len(compose_mod._worker_svg_metas) == 3
         for meta in compose_mod._worker_svg_metas:
             assert meta.lb_ratio > 0
+
+
+class TestFalseSourceGrid:
+    """_false_source_grid のグリッド計算テスト。"""
+
+    def test_png_exact_tiles(self, tmp_path: pathlib.Path) -> None:
+        """PNG 画像のグリッドサイズが正しく計算される。"""
+        from PIL import Image as PILImage
+        img = PILImage.new("RGB", (1280, 640))
+        path = tmp_path / "src.png"
+        img.save(path)
+        result = _false_source_grid(path, image_size=640, resolution=None, geo_scale=None)
+        assert result == (640, 2, 1)
+
+    def test_png_too_small_returns_none(self, tmp_path: pathlib.Path) -> None:
+        """小さすぎる PNG は None を返す。"""
+        from PIL import Image as PILImage
+        img = PILImage.new("RGB", (320, 320))
+        path = tmp_path / "small.png"
+        img.save(path)
+        result = _false_source_grid(path, image_size=640, resolution=None, geo_scale=None)
+        assert result is None
+
+    def test_partial_tile_truncated(self, tmp_path: pathlib.Path) -> None:
+        """端数はタイルに含まれない（切り捨て）。"""
+        from PIL import Image as PILImage
+        # 1500px → 1500//640 = 2 cols, 900px → 900//640 = 1 row
+        img = PILImage.new("RGB", (1500, 900))
+        path = tmp_path / "partial.png"
+        img.save(path)
+        result = _false_source_grid(path, image_size=640, resolution=None, geo_scale=None)
+        assert result == (640, 2, 1)
+
+    def test_geo_scale_applied_to_tif(self, tmp_path: pathlib.Path) -> None:
+        """TIFF に geo_scale が適用される。"""
+        import rasterio
+        from rasterio.transform import from_bounds
+        tif_path = tmp_path / "bg.tif"
+        size = 3200
+        data = np.full((3, size, size), 128, dtype=np.uint8)
+        with rasterio.open(
+            tif_path, "w", driver="GTiff",
+            height=size, width=size, count=3, dtype="uint8",
+            transform=from_bounds(0, 0, size, size, size, size),
+        ) as dst:
+            dst.write(data)
+        # geo_scale=2.0 → src_tile = 640*2 = 1280
+        result = _false_source_grid(tif_path, image_size=640, resolution=None, geo_scale=2.0)
+        assert result is not None
+        src_tile, cols, rows = result
+        assert src_tile == 1280
+        assert cols == size // 1280
+        assert rows == size // 1280
+
+
+class TestGenerateFalseNegatives:
+    """generate_false_negatives の機能テスト。"""
+
+    @staticmethod
+    def _make_source(path: pathlib.Path, width: int, height: int, color: tuple) -> None:
+        from PIL import Image as PILImage
+        PILImage.new("RGB", (width, height), color=color).save(path)
+
+    def test_writes_images_and_empty_labels(self, tmp_path: pathlib.Path) -> None:
+        """False negative タイルと空ラベルが正しく書き出される。"""
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        # 2 sources, each 1280×640 → 2 tiles each (capacity=4)
+        self._make_source(false_dir / "a.png", 1280, 640, (80, 100, 120))
+        self._make_source(false_dir / "b.png", 1280, 640, (60, 80, 100))
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(42)
+        n = generate_false_negatives(
+            false_dir, out_dir, count=3, image_size=640, rng=rng, start_index=0
+        )
+        assert n == 3
+        for i in range(3):
+            assert (out_dir / "images" / "train" / f"{i:06d}.png").exists()
+            lbl = out_dir / "labels" / "train" / f"{i:06d}.txt"
+            assert lbl.exists()
+            assert lbl.read_text(encoding="utf-8") == ""
+
+    def test_start_index_offsets_names(self, tmp_path: pathlib.Path) -> None:
+        """start_index によりファイル番号がオフセットされる。"""
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        self._make_source(false_dir / "a.png", 1280, 640, (80, 100, 120))
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(42)
+        n = generate_false_negatives(
+            false_dir, out_dir, count=2, image_size=640, rng=rng, start_index=100
+        )
+        assert n == 2
+        assert (out_dir / "images" / "train" / "000100.png").exists()
+        assert (out_dir / "images" / "train" / "000101.png").exists()
+        assert not (out_dir / "images" / "train" / "000000.png").exists()
+
+    def test_no_overlap_exhausts_grid(self, tmp_path: pathlib.Path) -> None:
+        """1画像から全タイルを要求しても重複なく書き出せる。"""
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        # 4×4 grid = 16 non-overlapping tiles
+        self._make_source(false_dir / "a.png", 2560, 2560, (80, 100, 120))
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(42)
+        n = generate_false_negatives(
+            false_dir, out_dir, count=16, image_size=640, rng=rng
+        )
+        assert n == 16
+
+    def test_even_distribution_multi_source(self, tmp_path: pathlib.Path) -> None:
+        """複数ソース間で均等配分される（1枚への集中を防ぐ）。"""
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        # 4 sources, each with exactly 1 tile (640×640). Request 4.
+        # With max_per_source = ceil(4/4) = 1, must use all 4 sources.
+        for i in range(4):
+            self._make_source(false_dir / f"src{i}.png", 640, 640, (50 + i * 20, 60, 70))
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(42)
+        n = generate_false_negatives(
+            false_dir, out_dir, count=4, image_size=640, rng=rng
+        )
+        # Each source has exactly 1 tile, so we need all 4 to reach count=4.
+        assert n == 4
+
+    def test_empty_dir_raises(self, tmp_path: pathlib.Path) -> None:
+        """ソース画像がないディレクトリは FileNotFoundError を送出する。"""
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(42)
+        with pytest.raises(FileNotFoundError):
+            generate_false_negatives(
+                false_dir, out_dir, count=2, image_size=640, rng=rng
+            )
+
+    def test_tile_size_matches_image_size(self, tmp_path: pathlib.Path) -> None:
+        """書き出された PNG のサイズが image_size と一致する。"""
+        from PIL import Image as PILImage
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        self._make_source(false_dir / "a.png", 1280, 640, (80, 100, 120))
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(0)
+        generate_false_negatives(
+            false_dir, out_dir, count=1, image_size=320, rng=rng
+        )
+        with PILImage.open(out_dir / "images" / "train" / "000000.png") as img:
+            assert img.size == (320, 320)
+
+
+class TestFalseRatioSplit:
+    """false_ratio による合成/偽陰性の枚数分割のテスト。"""
+
+    def test_ratio_zero_no_false(self) -> None:
+        """false_ratio=0.0 のとき偽陰性は 0 枚。"""
+        # count=10, false_ratio=0.0 → synth=10, false=0
+        total = 10
+        false_ratio = 0.0
+        false_count = round(total * false_ratio)
+        synth_count = total - false_count
+        assert synth_count == 10
+        assert false_count == 0
+
+    def test_ratio_09_gives_correct_split(self) -> None:
+        """count=100, false_ratio=0.9 → 合成10+偽陰性90=計100。"""
+        total = 100
+        false_ratio = 0.9
+        false_count = round(total * false_ratio)
+        synth_count = total - false_count
+        assert synth_count == 10
+        assert false_count == 90
+        assert synth_count + false_count == total
+
+    def test_ratio_02_gives_correct_split(self) -> None:
+        """count=100, false_ratio=0.2 → 合成80+偽陰性20=計100。"""
+        total = 100
+        false_ratio = 0.2
+        false_count = round(total * false_ratio)
+        synth_count = total - false_count
+        assert synth_count == 80
+        assert false_count == 20
+        assert synth_count + false_count == total
+
+    def test_ratio_05_splits_evenly(self) -> None:
+        """count=100, false_ratio=0.5 → 合成50+偽陰性50=計100。"""
+        total = 100
+        false_ratio = 0.5
+        false_count = round(total * false_ratio)
+        synth_count = total - false_count
+        assert synth_count == 50
+        assert false_count == 50
+        assert synth_count + false_count == total
+
+    def test_total_preserved_for_various_counts(self) -> None:
+        """様々な count/ratio で合計が常に count に等しい。"""
+        cases = [
+            (10, 0.3),
+            (7, 0.5),
+            (1000, 0.1),
+            (3, 0.9),
+        ]
+        for total, ratio in cases:
+            false_count = round(total * ratio)
+            synth_count = total - false_count
+            assert synth_count + false_count == total, (
+                f"count={total}, ratio={ratio}: {synth_count}+{false_count}≠{total}"
+            )
