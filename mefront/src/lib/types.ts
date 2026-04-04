@@ -34,6 +34,11 @@ export interface ModelMetadata {
 	 * e.g. { "vehicle": ["large vehicle", "small vehicle"] }
 	 */
 	merge?: Record<string, string[]>;
+	/**
+	 * Expected ground sample distance (GSD) the model was trained at, in metres per pixel.
+	 * Used as the default resolution when processing non-GeoTIFF images.
+	 */
+	expectedResolution?: number;
 }
 
 /** A single oriented bounding box detection */

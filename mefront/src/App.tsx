@@ -1,6 +1,7 @@
-import { useEffect, useReducer } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 import { DetectionCanvas } from "./components/DetectionCanvas";
 import { DropZone } from "./components/DropZone";
+import { GSDDialog } from "./components/GSDInput";
 import { MetadataUrlInput } from "./components/MetadataUrlInput";
 import { ModelLicenseInfo } from "./components/ModelLicenseInfo";
 import { ResultPanel } from "./components/ResultPanel";
@@ -8,6 +9,7 @@ import { StatusMessage } from "./components/StatusMessage";
 import { useDetectionResults } from "./hooks/useDetectionResults";
 import { useImageDetection } from "./hooks/useImageDetection";
 import { appReducer, initialState } from "./lib/appState";
+import { isGeoTIFFFile } from "./lib/geotiff";
 import { fetchModelMetadata } from "./lib/modelMetadata";
 
 function App() {
@@ -19,6 +21,7 @@ function App() {
 		confidenceThreshold,
 		metadataUrl,
 		modelMetadata,
+		userGSD,
 	} = state;
 
 	// Load model metadata whenever the URL changes
@@ -34,6 +37,10 @@ function App() {
 		fetchModelMetadata(metadataUrl)
 			.then((metadata) => {
 				dispatch({ type: "SET_MODEL_METADATA", metadata });
+				dispatch({
+					type: "SET_USER_GSD",
+					value: metadata.expectedResolution ?? null,
+				});
 				dispatch({ type: "SET_STATUS", status: { type: "idle" } });
 			})
 			.catch((err: unknown) => {
@@ -49,7 +56,37 @@ function App() {
 			});
 	}, [metadataUrl]);
 
-	const handleFileSelect = useImageDetection(dispatch, modelMetadata);
+	const runDetection = useImageDetection(dispatch, modelMetadata);
+
+	const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+
+	// Intercept file selection: show GSD dialog for non-GeoTIFF files
+	const handleFileSelect = useCallback(
+		(files: File[]) => {
+			const hasNonGeoTIFF = files.some((f) => !isGeoTIFFFile(f));
+			if (hasNonGeoTIFF) {
+				setPendingFiles(files);
+			} else {
+				runDetection(files);
+			}
+		},
+		[runDetection],
+	);
+
+	const handleGSDConfirm = useCallback(
+		(gsd: number | null) => {
+			dispatch({ type: "SET_USER_GSD", value: gsd });
+			if (pendingFiles) {
+				runDetection(pendingFiles, gsd ?? undefined);
+			}
+			setPendingFiles(null);
+		},
+		[pendingFiles, runDetection],
+	);
+
+	const handleGSDCancel = useCallback(() => {
+		setPendingFiles(null);
+	}, []);
 
 	const { displayDetections, exportDetections, isGeoTIFF, geoMeta, isMerged } =
 		useDetectionResults(detectionSets, confidenceThreshold);
@@ -79,6 +116,15 @@ function App() {
 				name={modelMetadata?.name}
 				license={modelMetadata?.license}
 			/>
+
+			{pendingFiles && (
+				<GSDDialog
+					modelDefault={modelMetadata?.expectedResolution}
+					initialValue={userGSD}
+					onConfirm={handleGSDConfirm}
+					onCancel={handleGSDCancel}
+				/>
+			)}
 
 			<div className="grid gap-6 lg:grid-cols-[1fr_300px]">
 				<div className="space-y-4">

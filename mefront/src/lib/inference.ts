@@ -102,12 +102,13 @@ export async function runInference(
 	metadata: ModelMetadata,
 	onProgress?: (done: number, total: number) => void,
 	geoMeta?: GeoTIFFMeta,
+	pixelSizeMeters?: number,
 ): Promise<Detection[]> {
 	const { onnxUrl, inputSize, labels, task } = metadata;
 	const session = await loadModel(onnxUrl);
 	const handler = getTaskHandler(task);
 
-	// GeoTIFF: 大きい画像は GSD 制約の範囲内で縮小
+	// GeoTIFF / 手動 GSD 指定: 大きい画像は GSD 制約の範囲内で縮小
 	let src = img;
 	let w = imgWidth;
 	let h = imgHeight;
@@ -118,6 +119,20 @@ export async function runInference(
 			w,
 			h,
 			geoMeta.pixelScale,
+			SLICE_THRESHOLD,
+		);
+		if (shrinkScale < 1.0) {
+			const shrunk = createShrunkCanvas(img, w, h, shrinkScale);
+			src = shrunk;
+			w = shrunk.width;
+			h = shrunk.height;
+		}
+	} else if (pixelSizeMeters !== undefined) {
+		// 非 GeoTIFF で地上解像度が指定された場合も同じロジックで縮小
+		shrinkScale = computeGeoTIFFShrinkScale(
+			w,
+			h,
+			{ x: pixelSizeMeters, y: pixelSizeMeters },
 			SLICE_THRESHOLD,
 		);
 		if (shrinkScale < 1.0) {

@@ -91,4 +91,32 @@ describe("validateModelMetadata", () => {
 			validateModelMetadata(validMetadata({ merge: { vehicle: ["unknown"] } })),
 		).toThrow('"unknown"');
 	});
+
+	it("should accept metadata without expectedResolution", () => {
+		expect(() => validateModelMetadata(validMetadata())).not.toThrow();
+	});
+
+	it("should accept metadata with valid expectedResolution", () => {
+		expect(() =>
+			validateModelMetadata(validMetadata({ expectedResolution: 0.3 })),
+		).not.toThrow();
+	});
+
+	it("should reject expectedResolution of 0", () => {
+		expect(() =>
+			validateModelMetadata(validMetadata({ expectedResolution: 0 })),
+		).toThrow('"expectedResolution"');
+	});
+
+	it("should reject negative expectedResolution", () => {
+		expect(() =>
+			validateModelMetadata(validMetadata({ expectedResolution: -1 })),
+		).toThrow('"expectedResolution"');
+	});
+
+	it("should reject non-number expectedResolution", () => {
+		expect(() =>
+			validateModelMetadata(validMetadata({ expectedResolution: "0.5" })),
+		).toThrow('"expectedResolution"');
+	});
 });

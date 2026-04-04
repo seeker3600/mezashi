@@ -36,6 +36,11 @@ export interface AppState {
 	metadataUrl: string;
 	/** Loaded model metadata (null while loading or on error). */
 	modelMetadata: ModelMetadata | null;
+	/**
+	 * User-specified ground sample distance in metres per pixel.
+	 * Used for non-GeoTIFF images. null means "use model default".
+	 */
+	userGSD: number | null;
 }
 
 export const initialState: AppState = {
@@ -45,6 +50,7 @@ export const initialState: AppState = {
 	confidenceThreshold: CONFIDENCE_THRESHOLD,
 	metadataUrl: DEFAULT_METADATA_URL,
 	modelMetadata: null,
+	userGSD: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -64,7 +70,8 @@ export type AppAction =
 	| { type: "SET_STATUS"; status: AppStatus }
 	| { type: "SET_CONFIDENCE"; value: number }
 	| { type: "SET_METADATA_URL"; url: string }
-	| { type: "SET_MODEL_METADATA"; metadata: ModelMetadata | null };
+	| { type: "SET_MODEL_METADATA"; metadata: ModelMetadata | null }
+	| { type: "SET_USER_GSD"; value: number | null };
 
 // ---------------------------------------------------------------------------
 // Reducer
@@ -93,6 +100,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 				confidenceThreshold: state.confidenceThreshold,
 				metadataUrl: state.metadataUrl,
 				modelMetadata: state.modelMetadata,
+				userGSD: state.userGSD,
 			};
 
 		case "SET_STATUS":
@@ -106,6 +114,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
 		case "SET_MODEL_METADATA":
 			return { ...state, modelMetadata: action.metadata };
+
+		case "SET_USER_GSD":
+			return { ...state, userGSD: action.value };
 
 		default:
 			return state;
