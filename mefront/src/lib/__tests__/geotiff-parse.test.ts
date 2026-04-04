@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fromArrayBuffer } from "geotiff";
 import { beforeAll, describe, expect, it } from "vitest";
 import { parseGeoTIFF } from "../geotiff";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // jsdom does not provide ImageData; polyfill for testing
 beforeAll(() => {
@@ -62,8 +65,6 @@ describe("parseGeoTIFF with real Sentinel-2 file", () => {
 		// Try to access tiePoints and fileDir same as parseGeoTIFF
 		const tiePoints = await image.getTiePoints();
 		const fileDir = image.getFileDirectory();
-		const pixelScaleRaw = fileDir.getValue("ModelPixelScale");
-		const geoKeys = image.getGeoKeys();
 
 		expect(tiePoints).toBeDefined();
 		expect(fileDir).toBeDefined();

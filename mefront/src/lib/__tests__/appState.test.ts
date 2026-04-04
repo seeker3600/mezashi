@@ -85,6 +85,7 @@ describe("appReducer", () => {
 				confidenceThreshold: 0.5,
 				metadataUrl: "https://example.com/model.json",
 				modelMetadata: null,
+				userGSD: null,
 			};
 			const next = appReducer(modified, { type: "CLEAR_ALL" });
 			expect(next.currentImage).toBeNull();

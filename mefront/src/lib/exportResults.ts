@@ -140,7 +140,7 @@ export function mergeGeoTIFFDetections(
 	detections2: Detection[],
 	meta2: GeoTIFFMeta,
 	iouThreshold = 0.5,
-): Detection[] {
+): (Detection & { geoMeta: GeoTIFFMeta })[] {
 	// First, convert all detections to geo coordinates for comparison
 	// Use each detection's own geoMeta if it has one, otherwise use meta1/meta2
 	const geoDetections1 = detections1.map((d) => ({
@@ -158,7 +158,7 @@ export function mergeGeoTIFFDetections(
 	}));
 
 	// Start with all detections from first image, preserving their geoMeta if they have one
-	const merged: Detection[] = detections1.map((d) => ({
+	const merged: (Detection & { geoMeta: GeoTIFFMeta })[] = detections1.map((d) => ({
 		...d,
 		geoMeta: d.geoMeta ?? meta1,
 	}));
