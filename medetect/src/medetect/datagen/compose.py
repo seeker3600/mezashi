@@ -890,12 +890,18 @@ def generate_false_negatives(
     if remaining > 0:
         total_cap = sum(c * r for _, _, c, r in source_grids)
         logger.warning(
-            "False-negative sources contain only %d non-overlapping tiles "
-            "(requested %d); using all %d available.",
+            "False-negative sources only provide %d non-overlapping tiles "
+            "(requested %d). Tiles will be repeated to reach the target count.",
             total_cap,
             count,
-            total_cap,
         )
+        # Third pass: distribute remaining tiles round-robin, allowing repeats.
+        source_idx = 0
+        while remaining > 0:
+            path, src_tile, cols, rows, alloc = allocations[source_idx % n_sources]
+            allocations[source_idx % n_sources] = (path, src_tile, cols, rows, alloc + 1)
+            remaining -= 1
+            source_idx += 1
 
     total_to_write = sum(a for *_, a in allocations)
     total_written = 0
@@ -915,7 +921,18 @@ def generate_false_negatives(
             # Build grid positions and shuffle for random selection.
             grid = [(c, r) for r in range(rows) for c in range(cols)]
             rng.shuffle(grid)
-            positions = grid[:alloc]
+            cap = len(grid)
+            if alloc <= cap:
+                positions = grid[:alloc]
+            else:
+                # Need more tiles than non-overlapping capacity: cycle with
+                # re-shuffling at each full cycle for visual variety.
+                positions = []
+                cycle = list(grid)
+                for k in range(alloc):
+                    if k > 0 and k % cap == 0:
+                        rng.shuffle(cycle)
+                    positions.append(cycle[k % cap])
 
             if path.suffix.lower() in tiff_suffixes:
                 with rasterio.open(path) as src:

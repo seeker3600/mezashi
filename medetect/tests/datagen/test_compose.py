@@ -1328,6 +1328,51 @@ class TestGenerateFalseNegatives:
         with PILImage.open(out_dir / "images" / "train" / "000000.png") as img:
             assert img.size == (320, 320)
 
+    def test_count_met_when_capacity_insufficient(
+        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """容量不足でも要求枚数分が出力され、警告が発される。"""
+        import logging
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        # 1 source → 2 non-overlapping tiles (1280 // 640 * 640 // 640 = 2×1 = 2)
+        self._make_source(false_dir / "a.png", 1280, 640, (80, 100, 120))
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(7)
+        with caplog.at_level(logging.WARNING, logger="medetect.datagen.compose"):
+            n = generate_false_negatives(
+                false_dir, out_dir, count=5, image_size=640, rng=rng
+            )
+        assert n == 5
+        assert (out_dir / "images" / "train" / "000004.png").exists()
+        assert any("repeated" in r.message.lower() for r in caplog.records)
+
+    def test_count_met_multi_source_capacity_insufficient(
+        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """複数ソースでも容量不足時に全枚数が出力される。"""
+        import logging
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        # 2 sources × 1 tile = 2 total capacity; request 7
+        self._make_source(false_dir / "a.png", 640, 640, (80, 100, 120))
+        self._make_source(false_dir / "b.png", 640, 640, (60, 80, 100))
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(3)
+        with caplog.at_level(logging.WARNING, logger="medetect.datagen.compose"):
+            n = generate_false_negatives(
+                false_dir, out_dir, count=7, image_size=640, rng=rng
+            )
+        assert n == 7
+        assert (out_dir / "images" / "train" / "000006.png").exists()
+        assert any("repeated" in r.message.lower() for r in caplog.records)
+
 
 class TestFalseRatioSplit:
     """false_ratio による合成/偽陰性の枚数分割のテスト。"""
