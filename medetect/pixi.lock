@@ -6475,7 +6475,7 @@ packages:
 - pypi: ./
   name: medetect
   version: 0.1.0
-  sha256: 5b6b780b802d76e2b8f8f539c413f299ca7b871c7ee51fb8e423f04efb2d16f3
+  sha256: 5d8407bbd4300f99f33423a85054c604c42aadd38d8af087cc36e846c3ad718d
   requires_dist:
   - flatbuffers>=25.12.19,<26
   - ml-dtypes>=0.5.4,<0.6

@@ -48,6 +48,10 @@ licenses = "pip-licenses --format=json --with-urls --packages flatbuffers ml-dty
 args = ["dir"]  # 'datasets/xView_sliced/images/train'
 cmd = "python -c \"from ultralytics.data.split import autosplit; autosplit(r'{{dir}}')\""
 
+[tool.pixi.tasks.resume]
+args = ["pt"]
+cmd = "python -c \"from ultralytics import YOLO; YOLO(r'{{pt}}').train(resume=True)\""
+
 [tool.pixi.tasks.tiff2png]
 args = ["dir"]
 cmd = '''
