@@ -414,15 +414,25 @@ def _write_hull_edge_darken(
     lb_ratio: float,
     half_widths: NDArray,
     rng: random.Random,
+    opacity_range: tuple[float, float] = (0.25, 0.42),
+    edge_frac_range: tuple[float, float] = (0.12, 0.22),
 ) -> None:
     """Draw semi-transparent dark strips along port & starboard edges.
 
     Simulates the shadowed freeboard that is visible in real satellite
     imagery — the hull side is darker than the deck surface.
+
+    Parameters
+    ----------
+    opacity_range
+        (min, max) opacity for the dark strip.  Use a higher range for
+        ``rim_dark`` style, lower for ``vignette``.
+    edge_frac_range
+        (min, max) fraction of hull half-width covered by the strip.
     """
     n = len(half_widths)
-    opacity = rng.uniform(0.30, 0.52)
-    edge_frac = rng.uniform(0.12, 0.22)  # fraction of hull half-width
+    opacity = rng.uniform(*opacity_range)
+    edge_frac = rng.uniform(*edge_frac_range)  # fraction of hull half-width
 
     # Port edge strip (left side)
     port_pts: list[tuple[float, float]] = []
@@ -467,8 +477,17 @@ def _write_deck_highlight(
     half_widths: NDArray,
     colors: ShipColors,
     rng: random.Random,
+    x_offset: float = 0.0,
 ) -> None:
-    """Subtle centreline brightness gradient to simulate deck curvature."""
+    """Subtle centreline brightness gradient to simulate deck curvature.
+
+    Parameters
+    ----------
+    x_offset
+        Lateral offset of the highlight strip centre, as a fraction of
+        hull half-width (positive = starboard).  Use with ``sun_lit``
+        shading style to create an asymmetric sun-lit highlight.
+    """
     n = len(half_widths)
     opacity = rng.uniform(0.16, 0.32)
     width_frac = rng.uniform(0.32, 0.52)
@@ -479,13 +498,13 @@ def _write_deck_highlight(
         t = i / (n - 1)
         y = t * lb_ratio
         hw = float(half_widths[i])
-        pts.append((0.5 - hw * width_frac, y))
+        pts.append((0.5 - hw * width_frac + hw * x_offset, y))
     # Reverse pass — right edge
     for i in range(n - 1, -1, -1):
         t = i / (n - 1)
         y = t * lb_ratio
         hw = float(half_widths[i])
-        pts.append((0.5 + hw * width_frac, y))
+        pts.append((0.5 + hw * width_frac + hw * x_offset, y))
 
     out.write(
         f'  <polygon points="{_polygon_attr(pts)}" '
@@ -1192,16 +1211,53 @@ def generate_ship_svg(
         f'stroke-linejoin="round"/>\n'
     )
 
-    # 1b) Freeboard / waterline edge darkening — semi-transparent dark
-    # strip along the hull perimeter simulates the shadowed hull side
-    # visible in satellite imagery.
+    # 2) Superstructures (with directional shadow)
+    # Pick a consistent sun angle for the whole ship
+    sun_dx = rng.uniform(-0.02, 0.02)
+    sun_dy = rng.uniform(0.01, 0.04) * lb_ratio  # shadow falls roughly aft/side
+
+    # ── Shading style selection ──────────────────────────────────────────
+    # Randomly choose how edge/highlight shading is applied so that ships
+    # don't all look "dark rim + bright centre". Four styles with distinct
+    # visual characters:
+    #
+    #   vignette  (30%) — soft edge darken + deck highlight (current look, but toned down)
+    #   flat      (20%) — no edge darken, no highlight (uniform flat deck)
+    #   rim_dark  (25%) — stronger edge darken, no highlight (high freeboard look)
+    #   sun_lit   (25%) — no edge darken, offset highlight (one side sunlit)
+    shading_style: str = rng.choices(
+        ["vignette", "flat", "rim_dark", "sun_lit"],
+        weights=[30, 20, 25, 25],
+    )[0]
+
+    # 1b) Freeboard / waterline edge darkening
     out.write('  <g clip-path="url(#h)">\n')
-    _write_hull_edge_darken(out, hull_pts, lb_ratio, half_widths, rng)
+    if shading_style == "vignette":
+        _write_hull_edge_darken(
+            out, hull_pts, lb_ratio, half_widths, rng,
+            opacity_range=(0.20, 0.40), edge_frac_range=(0.11, 0.20),
+        )
+    elif shading_style == "rim_dark":
+        _write_hull_edge_darken(
+            out, hull_pts, lb_ratio, half_widths, rng,
+            opacity_range=(0.28, 0.50), edge_frac_range=(0.15, 0.26),
+        )
+    # flat / sun_lit: no edge darken
     out.write('  </g>\n')
 
-    # 1c) Deck centreline highlight — slight brightness along midship axis
+    # 1c) Deck centreline highlight
     out.write('  <g clip-path="url(#h)">\n')
-    _write_deck_highlight(out, lb_ratio, half_widths, colors, rng)
+    if shading_style == "vignette":
+        _write_deck_highlight(out, lb_ratio, half_widths, colors, rng)
+    elif shading_style == "sun_lit":
+        # Shift highlight toward the sun-lit side (opposite of shadow_side)
+        # sun_dx > 0 means sun is from starboard → highlight starboard side
+        offset_sign = 1.0 if sun_dx > 0 else -1.0
+        _write_deck_highlight(
+            out, lb_ratio, half_widths, colors, rng,
+            x_offset=offset_sign * rng.uniform(0.18, 0.38),
+        )
+    # flat / rim_dark: no deck highlight
     out.write('  </g>\n')
 
     # 1d) Hull colour mottling — large irregular patches break up the
@@ -1214,11 +1270,6 @@ def generate_ship_svg(
     out.write('  <g clip-path="url(#h)">\n')
     _write_bow_stern_shading(out, lb_ratio, half_widths, rng)
     out.write('  </g>\n')
-
-    # 2) Superstructures (with directional shadow)
-    # Pick a consistent sun angle for the whole ship
-    sun_dx = rng.uniform(-0.02, 0.02)
-    sun_dy = rng.uniform(0.01, 0.04) * lb_ratio  # shadow falls roughly aft/side
 
     # 1f) Sun-side self-shadow — one half of the hull slightly darker
     out.write('  <g clip-path="url(#h)">\n')

@@ -145,3 +145,32 @@ class TestRasterizeShipSvg:
         assert result_45.shape[0] != result_0.shape[0]  # height changes
         # Ship pixels should be preserved
         assert (result_45[:, :, 3] > 0).sum() > 0
+
+    def test_no_dark_fringe_on_rotated_white_ship(self) -> None:
+        """回転後のエッジに黒フリンジが出ないこと（プリマルチプライドアルファの検証）。
+
+        透明黒キャンバス上の白い矩形を回転させると、Lanczos のストレートアルファ
+        補間によってエッジ半透明ピクセルの RGB が黒に引き寄せられる（黒フリンジ）。
+        プリマルチプライド処理ではこれが起きない。
+        """
+        # White filled rectangle covering most of the viewBox
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 5">'
+            '  <rect x="0.05" y="0.05" width="0.9" height="4.9" fill="rgb(255,255,255)"/>'
+            "</svg>"
+        )
+        result = rasterize_ship_svg(svg, 20, 100, angle_deg=30.0)
+        rgba = result.astype(np.float32)
+        alpha = rgba[:, :, 3]
+        # Semi-transparent edge pixels: alpha in (10, 245)
+        semi = (alpha > 10) & (alpha < 245)
+        if not semi.any():
+            return  # no semi-transparent pixels at this resolution — skip
+        # For a white ship, RGB of semi-transparent pixels must be close to white.
+        # With premultiplied alpha: RGB ≈ 255 before compositing.
+        # With straight alpha (broken): RGB ≈ 255 * (alpha/255) → dark fringe.
+        edge_rgb_mean = rgba[:, :, :3][semi].mean()
+        # Require average edge RGB > 200 out of 255 (white, not dark)
+        assert edge_rgb_mean > 200, (
+            f"Dark fringe detected on rotated ship edges: mean RGB={edge_rgb_mean:.1f}"
+        )

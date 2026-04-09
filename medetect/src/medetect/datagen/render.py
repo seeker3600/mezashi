@@ -221,6 +221,30 @@ _DRAWER = {
 }
 
 
+def _resize_premultiplied(img: Image.Image, out_w: int, out_h: int) -> Image.Image:
+    """Resize an RGBA image using premultiplied alpha to avoid dark-fringe artefacts.
+
+    PIL's Lanczos filter treats each channel independently (straight alpha).
+    When the canvas background is transparent black ``(0,0,0,0)``, interpolating
+    ship-edge pixels with those transparent-black neighbours pulls RGB toward
+    black even at moderate alpha values.  Premultiplying RGB by alpha before
+    downscaling and reversing afterwards (unpremultiply) prevents this colour
+    bleed.
+    """
+    arr = np.array(img, dtype=np.float32)        # H × W × 4
+    alpha = arr[:, :, 3:4] / 255.0              # 0-1, broadcast-ready
+    arr[:, :, :3] *= alpha                       # premultiply RGB
+    premul = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
+    premul = premul.resize((out_w, out_h), Image.LANCZOS)
+    arr2 = np.array(premul, dtype=np.float32)
+    alpha2 = arr2[:, :, 3:4] / 255.0
+    # Unpremultiply — guard against division by near-zero alpha
+    safe_alpha = np.where(alpha2 > 1e-3, alpha2, 1.0)
+    arr2[:, :, :3] /= safe_alpha
+    arr2[:, :, :3] = np.clip(arr2[:, :, :3], 0, 255)
+    return Image.fromarray(arr2.astype(np.uint8), "RGBA")
+
+
 def _draw_elements(
     img: Image.Image,
     parent: ET.Element,
@@ -336,8 +360,9 @@ def rasterize_ship_svg(
         out_w = width_px
         out_h = height_px
 
-    # Downscale from supersample canvas to final output size
+    # Downscale from supersample canvas to final output size.
+    # Use premultiplied-alpha resize to avoid dark fringing at ship edges.
     if rotated_w != out_w or rotated_h != out_h:
-        img = img.resize((out_w, out_h), Image.LANCZOS)
+        img = _resize_premultiplied(img, out_w, out_h)
 
     return np.array(img)

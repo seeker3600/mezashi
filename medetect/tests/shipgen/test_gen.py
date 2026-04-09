@@ -263,6 +263,69 @@ class TestGenerateShipSvg:
         black_rgba_rects = [r for r in rects if r.get("fill", "").startswith("rgba(0,0,0")]
         assert len(black_rgba_rects) == 0, "shadows should not use pure-black rgba"
 
+    def test_shading_style_vignette_has_edge_and_highlight(self) -> None:
+        """vignetteスタイルでは縁暗化とハイライトが両方生成される。"""
+        # seed 42 → shading_style == "vignette" for "frigate"
+        # We iterate seeds to find one that picks vignette
+        import re
+
+        vignette_svgs = []
+        for seed in range(200):
+            svg = generate_ship_svg("frigate", rng=random.Random(seed))
+            root = ET.fromstring(svg)
+            clipped_groups = [
+                e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib
+            ]
+            # vignette has both edge (dark polygons in 1st group) and highlight
+            # (white rgba polygon in 2nd group)
+            has_dark_edge = any(
+                any("rgba(0,0,0" in c.get("fill", "") for c in g)
+                for g in clipped_groups[:1]
+            )
+            has_white_highlight = any(
+                any("rgba(255,255,255" in c.get("fill", "") for c in g)
+                for g in clipped_groups[1:2]
+            )
+            if has_dark_edge and has_white_highlight:
+                vignette_svgs.append(svg)
+        assert len(vignette_svgs) >= 1, "vignette スタイルが1件以上生成されること"
+
+    def test_shading_style_flat_no_edge_no_highlight(self) -> None:
+        """flatスタイルでは縁暗化もハイライトも存在しない。"""
+        # Iterate seeds to find flat-style ships
+        flat_found = False
+        for seed in range(300):
+            svg = generate_ship_svg("frigate", rng=random.Random(seed))
+            root = ET.fromstring(svg)
+            clipped_groups = [
+                e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib
+            ]
+            # Groups 0 (1b) and 1 (1c) should be empty for flat style
+            if len(clipped_groups) >= 2:
+                g1b_empty = len(list(clipped_groups[0])) == 0
+                g1c_empty = len(list(clipped_groups[1])) == 0
+                if g1b_empty and g1c_empty:
+                    flat_found = True
+                    # Verify SVG is still valid XML with a hull polygon
+                    assert root.tag == f"{{{SVG_NS}}}svg"
+                    break
+        assert flat_found, "flat スタイルが1件以上生成されること"
+
+    def test_shading_styles_produce_variety(self) -> None:
+        """複数シードで異なる1b/1cグループの組み合わせが生成される。"""
+        patterns: set[tuple[bool, bool]] = set()
+        for seed in range(100):
+            svg = generate_ship_svg("frigate", rng=random.Random(seed))
+            root = ET.fromstring(svg)
+            clipped_groups = [
+                e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib
+            ]
+            has_edge = len(list(clipped_groups[0])) > 0 if len(clipped_groups) >= 1 else False
+            has_hl = len(list(clipped_groups[1])) > 0 if len(clipped_groups) >= 2 else False
+            patterns.add((has_edge, has_hl))
+        # 少なくとも3種類のパターンが出現すること（4種のうち3+）
+        assert len(patterns) >= 3, f"バリエーションが不足: {patterns}"
+
 
 # ── Ship class registry ──────────────────────────────────────────────────
 
