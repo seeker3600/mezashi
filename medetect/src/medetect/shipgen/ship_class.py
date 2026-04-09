@@ -23,12 +23,17 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (110, 115, 120),  # Dark gray
         (132, 136, 142),  # JMSDF blue-gray
         (98, 102, 108),   # Russian Navy dark
+        (118, 120, 128),  # Slate gray
+        (145, 147, 153),  # Light slate
+        (108, 112, 118),  # Medium-dark gray
     ],
     "navy_dark": [
         (100, 105, 108),  # Non-skid flight deck
         (90, 95, 100),    # Dark deck
         (85, 90, 98),     # Dark blue-gray
         (105, 110, 115),  # Medium-dark
+        (75, 80, 90),     # Very dark gray-blue
+        (95, 100, 108),   # Medium gray-blue
     ],
     # Fishing: broad real-world palette — white, blue, red, dark, and
     # everything in between.  At 0.3 m/px these colours are clearly visible.
@@ -37,18 +42,26 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (208, 208, 204),  # Weathered white
         (218, 217, 212),  # Clean white
         (195, 198, 202),  # Bluish off-white
+        (225, 225, 220),  # Bright white
+        (200, 200, 195),  # Ivory white
         # Blue hulls (common in Asia, Mediterranean, N. Europe)
         (52, 82, 128),    # Medium blue
         (36, 58, 102),    # Deep blue
         (62, 98, 148),    # Cornflower blue
         (28, 46, 86),     # Dark navy blue
+        (45, 75, 125),    # Royal blue
+        (55, 95, 155),    # Bright blue
         # Red / rust hulls (anti-fouling, traditional)
         (150, 52, 42),    # Hull red
         (132, 72, 50),    # Rust red
         (165, 80, 44),    # Orange-red
+        (175, 95, 60),    # Lighter rust
         # Dark hulls
         (42, 44, 50),     # Near-black
         (46, 70, 60),     # Dark green-black
+        # Cyan / teal (less common but present)
+        (55, 135, 145),   # Teal
+        (70, 130, 150),   # Slate blue
     ],
     # Longliners / small white-painted fishing vessels.
     "fishing_white": [
@@ -57,6 +70,8 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (213, 212, 207),  # Warm white
         (200, 203, 202),  # Weathered white
         (225, 222, 218),  # Very bright white
+        (210, 215, 210),  # Greenish white
+        (220, 215, 220),  # Pinkish white
     ],
     # Work vessels (tugs, pilot boats, workboats, pushers):
     # safety/visibility colours dominate — high-chroma red/orange as well
@@ -71,6 +86,9 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (82, 72, 58),     # Weathered brown-gray
         (112, 108, 104),  # Mid-gray utility vessel
         (148, 144, 138),  # Light gray work vessel
+        (200, 110, 60),   # Burnt orange
+        (165, 75, 50),    # Darker orange-red
+        (55, 65, 85),     # Dark blue-gray
     ],
     # Barges: primarily dark steel, rust, and earthy tones.
     "barge_dull": [
@@ -82,6 +100,61 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (86, 84, 80),     # Medium steel gray
         (44, 44, 46),     # Near-black steel
         (78, 62, 50),     # Weathered brown
+        (95, 72, 48),     # Tan-rust
+        (65, 52, 40),     # Dark chocolate brown
+        (72, 68, 62),     # Medium steel
+    ],
+    # Blue variants — common in Asian fishing fleets
+    "blue_variants": [
+        (25, 55, 95),     # Deep navy
+        (40, 75, 125),    # Royal blue
+        (55, 100, 155),   # Bright blue
+        (70, 120, 160),   # Light blue
+        (35, 70, 115),    # Medium navy
+        (45, 85, 140),    # Azure
+        (20, 50, 90),     # Very dark blue
+        (60, 110, 150),   # Cerulean
+    ],
+    # Red / orange variants — anti-fouling, safety marking
+    "red_orange": [
+        (185, 60, 35),    # Bright red
+        (165, 85, 45),    # Rust orange
+        (200, 70, 40),    # Orange-red
+        (145, 55, 35),    # Dark red
+        (175, 95, 55),    # Burnt sienna
+        (210, 100, 50),   # Safety orange
+        (155, 75, 50),    # Reddish-brown
+        (190, 85, 60),    # Coral-red
+    ],
+    # Brown / tan variants — earthy, industrial, aged
+    "brown_tan": [
+        (115, 95, 75),    # Light brown
+        (95, 75, 60),     # Medium brown
+        (75, 60, 50),     # Dark brown
+        (130, 110, 90),   # Tan
+        (145, 120, 95),   # Light tan
+        (100, 85, 70),    # Earthy brown
+        (85, 68, 55),     # Weathered brown
+        (110, 88, 70),    # Russet
+    ],
+    # Green variants — rare but present (environmental vessels, research)
+    "green_variants": [
+        (40, 75, 60),     # Dark forest green
+        (55, 100, 80),    # Medium green
+        (65, 120, 95),    # Sage green
+        (45, 85, 70),     # Evergreen
+        (50, 95, 75),     # Muted green
+        (35, 65, 55),     # Dark teal-green
+    ],
+    # Gray variants — common utility colours
+    "gray_variants": [
+        (95, 95, 95),     # Medium gray
+        (75, 75, 75),     # Dark gray
+        (120, 120, 120),  # Light gray
+        (110, 110, 110),  # Medium-light gray
+        (85, 85, 85),     # Medium-dark gray
+        (100, 100, 100),  # Neutral gray
+        (65, 65, 65),     # Very dark gray
     ],
 }
 
@@ -156,12 +229,25 @@ class ShipColors:
 
 
 def sample_colors(family: str, rng: random.Random) -> ShipColors:
-    """Sample a colour scheme from the given palette family."""
+    """Sample a colour scheme from the given palette family.
+    
+    Parameters
+    ----------
+    family
+        Palette family name (e.g. 'fishing_mixed', 'navy_gray', 'blue_variants').
+    rng
+        Random number generator.
+    
+    Returns
+    -------
+    ShipColors
+        Hull colour and superstructure base colour for the ship instance.
+    """
     base = rng.choice(_PALETTES[family])
     hull = (
-        _clamp(base[0] + rng.randint(-8, 8)),
-        _clamp(base[1] + rng.randint(-8, 8)),
-        _clamp(base[2] + rng.randint(-8, 8)),
+        _clamp(base[0] + rng.randint(-12, 12)),
+        _clamp(base[1] + rng.randint(-12, 12)),
+        _clamp(base[2] + rng.randint(-12, 12)),
     )
 
     # Superstructure / wheelhouse colour strategy:
