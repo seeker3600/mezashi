@@ -16,35 +16,62 @@ from ultralytics.utils import DATASETS_DIR
 
 import fiftyone as fo
 
+from medetect.viewer.obb import detect_task, load_yolo_obb_dataset
+
+
+def _load_detect_dataset(yaml_path: Path, split: str) -> fo.Dataset:
+    """Load a standard YOLO detect dataset via FiftyOne's built-in loader."""
+    yaml_dst = Path(DATASETS_DIR) / "dataset.yaml"
+    shutil.copy(yaml_path, yaml_dst)
+    try:
+        return fo.Dataset.from_dir(
+            yaml_path=str(yaml_dst),
+            dataset_type=fo.types.YOLOv5Dataset,
+            split=split,
+        )
+    finally:
+        try:
+            os.remove(yaml_dst)
+        except FileNotFoundError:
+            pass
+
+
 def main() -> None:
     logger = logging.getLogger(__name__)
 
     parser = argparse.ArgumentParser(
         description="Launch FiftyOne viewer for a YOLO-format dataset YAML."
     )
-    parser.add_argument("--yaml", type=Path, help="Dataset YAML path (YOLO format).")
+    parser.add_argument("--yaml", type=Path, required=True, help="Dataset YAML path (YOLO format).")
     parser.add_argument("--split", type=str, default="val", help="Dataset split to view (e.g. 'val', 'train').")
+    parser.add_argument(
+        "--task",
+        choices=["auto", "obb", "detect"],
+        default="auto",
+        help="Dataset task type.  'auto' detects from label format (default: auto).",
+    )
 
     args = parser.parse_args()
-
     yaml_path: Path = args.yaml.resolve()
 
-    logger.info("dataset_dir: %s", DATASETS_DIR)
+    task = args.task
+    if task == "auto":
+        task = detect_task(yaml_path, split=args.split)
+        logger.info("Auto-detected task: %s", task)
+
     logger.info("yaml_path: %s", yaml_path)
+    logger.info("split: %s", args.split)
+    logger.info("task: %s", task)
 
-    yaml_dst = Path(DATASETS_DIR) / "dataset.yaml"
-    shutil.copy(yaml_path, yaml_dst)
-
-    dataset = fo.Dataset.from_dir(
-        yaml_path=str(yaml_dst),
-        dataset_type=fo.types.YOLOv5Dataset,
-        split=args.split,
-    )
+    if task == "obb":
+        dataset = load_yolo_obb_dataset(yaml_path, split=args.split)
+    else:
+        logger.info("dataset_dir: %s", DATASETS_DIR)
+        dataset = _load_detect_dataset(yaml_path, split=args.split)
 
     session = fo.launch_app(dataset)
     session.wait()
 
-    os.remove(yaml_dst)
 
 if __name__ == "__main__":
     main()
