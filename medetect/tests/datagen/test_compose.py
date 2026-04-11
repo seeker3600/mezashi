@@ -668,9 +668,15 @@ class TestSvgLbWeight:
         w_good = _svg_lb_weight(3.5, 10.0)   # low lb, appropriate for 10 m
         assert w_bad < w_good
 
-    def test_weight_positive(self) -> None:
-        """重みは常に正。"""
-        assert _svg_lb_weight(15.0, 5.0) > 0.0
+    def test_hard_reject_above_twice_natural(self) -> None:
+        """natural の 2.0 倍を超える lb_ratio は hard-reject (weight=0.0)。"""
+        # 5m 船: natural≈3.15, 2×natural≈6.30 → lb=15.0 は超過
+        assert _svg_lb_weight(15.0, 5.0) == 0.0
+
+    def test_within_twice_natural_has_positive_weight(self) -> None:
+        """natural の 2.0 倍以内の lb_ratio は正の重みを返す。"""
+        # 5m 船: natural≈3.15, 2×natural≈6.30 → lb=6.0 は OK
+        assert _svg_lb_weight(6.0, 5.0) > 0.0
 
 
 class TestLoadSvgMetas:
@@ -812,9 +818,23 @@ class TestSvgLbWeight:
         w_good = _svg_lb_weight(3.5, 10.0)   # 10m 目標に適した lb
         assert w_bad < w_good
 
-    def test_weight_always_positive(self) -> None:
-        """重みは常に正。"""
-        assert _svg_lb_weight(15.0, 5.0) > 0.0
+    def test_hard_reject_above_twice_natural(self) -> None:
+        """natural の 2.0 倍を超える lb_ratio は hard-reject (weight=0.0)。"""
+        # 5m 船: natural≈3.15, 2×natural≈6.30 → lb=15.0 は超過
+        assert _svg_lb_weight(15.0, 5.0) == 0.0
+
+    def test_within_twice_natural_has_positive_weight(self) -> None:
+        """natural の 2.0 倍以内の lb_ratio は正の重みを返す。"""
+        # 5m 船: natural≈3.15, 2×natural≈6.30 → lb=6.0 は OK
+        assert _svg_lb_weight(6.0, 5.0) > 0.0
+
+    def test_hard_reject_boundary_small_ship(self) -> None:
+        """小型船 (15m) で、駆逐艦相当の高 lb は 0.0 になる。"""
+        # 15m 船: natural=3.45, 2×natural=6.90
+        # patrol SVG の lb=5.5〜10.0 → 上端 (10.0) はリジェクト
+        assert _svg_lb_weight(10.0, 15.0) == 0.0
+        # lb=6.0 は 2×natural=6.90 以内 → OK
+        assert _svg_lb_weight(6.0, 15.0) > 0.0
 
     def test_small_target_prefers_low_lb(self) -> None:
         """小型船ターゲットでは、低 lb_ratio の SVG が高く評価される。"""

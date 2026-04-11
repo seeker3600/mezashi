@@ -346,13 +346,17 @@ def _svg_lb_weight(lb_ratio: float, target_length_m: float) -> float:
     """Preference weight for an SVG with *lb_ratio* when generating ships
     of *target_length_m* metres.
 
-    lb_ratios within 1.5× the natural value for that length score 1.0;
-    those exceeding it are exponentially down-weighted so that unnaturally
-    thin silhouettes are avoided for small ships.
+    lb_ratios within 1.45× the natural value for that length score 1.0.
+    Those between 1.45× and 1.8× are steeply down-weighted.
+    Those exceeding 1.8× natural are hard-rejected (weight 0.0) to prevent
+    wire-like silhouettes for small ships.  The 1.8× ceiling corresponds
+    closely to the empirical maximum L/B observed across real vessel classes.
     """
     natural = _natural_lb_ratio(target_length_m)
-    excess = max(0.0, lb_ratio - natural * 1.5)
-    return math.exp(-excess / 2.0)
+    if lb_ratio > natural * 1.8:
+        return 0.0
+    excess = max(0.0, lb_ratio - natural * 1.45)
+    return math.exp(-excess / 1.0)
 
 
 def _pick_svg(
