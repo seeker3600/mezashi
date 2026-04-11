@@ -1,0 +1,355 @@
+"""Tests for medetect.yolo.expand_obb."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from medetect.yolo.expand_obb import (
+    _expand_obb,
+    _obb_dimensions,
+    _process_label_file,
+    expand_obb_dataset,
+)
+
+
+class TestObbDimensions:
+    def test_axis_aligned_returns_shorter_and_longer(self) -> None:
+        """軸に平行なOBBでは短辺がwidth、長辺がheightになる。"""
+        corners = np.array(
+            [[40, 30], [60, 30], [60, 70], [40, 70]], dtype=float
+        )
+        width, height = _obb_dimensions(corners)
+        assert width == pytest.approx(20.0)
+        assert height == pytest.approx(40.0)
+
+    def test_square_returns_equal_dims(self) -> None:
+        """正方形のOBBでは幅と高さが等しい。"""
+        corners = np.array(
+            [[40, 40], [60, 40], [60, 60], [40, 60]], dtype=float
+        )
+        width, height = _obb_dimensions(corners)
+        assert width == pytest.approx(20.0)
+        assert height == pytest.approx(20.0)
+
+    def test_rotated_returns_correct_dims(self) -> None:
+        """45度回転したOBBでも正しい寸法を返す。"""
+        s = np.sqrt(2) / 2
+        u = np.array([s * 10, s * 10])
+        v = np.array([-s * 20, s * 20])
+        center = np.array([50.0, 50.0])
+        corners = np.array([
+            center - u - v,
+            center + u - v,
+            center + u + v,
+            center - u + v,
+        ])
+        width, height = _obb_dimensions(corners)
+        assert width == pytest.approx(20.0)
+        assert height == pytest.approx(40.0)
+
+
+class TestExpandObb:
+    def test_expand_height_axis_aligned(self) -> None:
+        """軸に平行なOBBの高さ(長辺)を10px広げる。"""
+        corners = np.array(
+            [[40, 30], [60, 30], [60, 70], [40, 70]], dtype=float
+        )
+        result = _expand_obb(corners, expand_width=0, expand_height=10)
+        expected = np.array(
+            [[40, 25], [60, 25], [60, 75], [40, 75]], dtype=float
+        )
+        np.testing.assert_allclose(result, expected)
+
+    def test_expand_width_axis_aligned(self) -> None:
+        """軸に平行なOBBの幅(短辺)を6px広げる。"""
+        corners = np.array(
+            [[40, 30], [60, 30], [60, 70], [40, 70]], dtype=float
+        )
+        result = _expand_obb(corners, expand_width=6, expand_height=0)
+        expected = np.array(
+            [[37, 30], [63, 30], [63, 70], [37, 70]], dtype=float
+        )
+        np.testing.assert_allclose(result, expected)
+
+    def test_expand_both_axis_aligned(self) -> None:
+        """軸に平行なOBBの幅と高さを同時に広げる。"""
+        corners = np.array(
+            [[40, 30], [60, 30], [60, 70], [40, 70]], dtype=float
+        )
+        result = _expand_obb(corners, expand_width=6, expand_height=10)
+        expected = np.array(
+            [[37, 25], [63, 25], [63, 75], [37, 75]], dtype=float
+        )
+        np.testing.assert_allclose(result, expected)
+
+    def test_no_expansion_returns_same_corners(self) -> None:
+        """expand=0なら同じコーナー座標を返す。"""
+        corners = np.array(
+            [[40, 30], [60, 30], [60, 70], [40, 70]], dtype=float
+        )
+        result = _expand_obb(corners, expand_width=0, expand_height=0)
+        np.testing.assert_allclose(result, corners)
+
+    def test_expand_rotated_preserves_center(self) -> None:
+        """回転したOBBの拡張後もセンターが変わらない。"""
+        s = np.sqrt(2) / 2
+        u = np.array([s * 10, s * 10])
+        v = np.array([-s * 20, s * 20])
+        center = np.array([50.0, 50.0])
+        corners = np.array([
+            center - u - v,
+            center + u - v,
+            center + u + v,
+            center - u + v,
+        ])
+        result = _expand_obb(corners, expand_width=4, expand_height=6)
+        result_center = result.mean(axis=0)
+        np.testing.assert_allclose(result_center, center, atol=1e-10)
+
+    def test_expand_rotated_increases_dims(self) -> None:
+        """回転したOBBの拡張後に寸法が正しく増加する。"""
+        s = np.sqrt(2) / 2
+        u = np.array([s * 10, s * 10])
+        v = np.array([-s * 20, s * 20])
+        center = np.array([50.0, 50.0])
+        corners = np.array([
+            center - u - v,
+            center + u - v,
+            center + u + v,
+            center - u + v,
+        ])
+        result = _expand_obb(corners, expand_width=4, expand_height=6)
+        width, height = _obb_dimensions(result)
+        assert width == pytest.approx(24.0)
+        assert height == pytest.approx(46.0)
+
+
+class TestProcessLabelFile:
+    @pytest.fixture()
+    def dataset(self, tmp_path):
+        """100x100 画像付きのミニデータセットを作る。"""
+        from PIL import Image
+
+        ds_root = tmp_path / "dataset"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+        Image.new("RGB", (100, 100)).save(img_dir / "test.png")
+        return ds_root
+
+    def test_constant_expand_height(self, dataset) -> None:
+        """定数でOBBの高さを広げる。"""
+        lbl_path = dataset / "labels" / "train" / "test.txt"
+        # 20x40 box centered at (50, 50): width=20, height=40
+        lbl_path.write_text(
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+
+        result = _process_label_file(
+            lbl_path,
+            img_w=100,
+            img_h=100,
+            expand_width=0,
+            expand_height=10,
+            expand_width_weighted=0,
+            expand_height_weighted=0,
+            median_width=0,
+            median_height=0,
+        )
+
+        assert result["updated"] == 1
+        assert result["labels_expanded"] == 1
+
+        tokens = lbl_path.read_text().strip().split()
+        coords = [float(t) for t in tokens[1:]]
+        corners = np.array(coords).reshape(4, 2)
+        # Height expanded by 10: y goes from 0.3→0.25 and 0.7→0.75
+        np.testing.assert_allclose(
+            corners,
+            [[0.40, 0.25], [0.60, 0.25], [0.60, 0.75], [0.40, 0.75]],
+            atol=1e-5,
+        )
+
+    def test_weighted_expand_width(self, dataset) -> None:
+        """加重付きでOBBの幅を広げる。幅が狭いほど多く広がる。"""
+        lbl_path = dataset / "labels" / "train" / "test.txt"
+        # Box with width=10 (short), height=40 (long)
+        lbl_path.write_text(
+            "0 0.450000 0.300000 0.550000 0.300000 "
+            "0.550000 0.700000 0.450000 0.700000\n"
+        )
+
+        # median_width=20, base=4 → expansion = 4 * (20/10) = 8
+        result = _process_label_file(
+            lbl_path,
+            img_w=100,
+            img_h=100,
+            expand_width=0,
+            expand_height=0,
+            expand_width_weighted=4,
+            expand_height_weighted=0,
+            median_width=20,
+            median_height=40,
+        )
+
+        assert result["updated"] == 1
+        tokens = lbl_path.read_text().strip().split()
+        coords = [float(t) for t in tokens[1:]]
+        corners = np.array(coords).reshape(4, 2)
+        # Width: 10+8=18, center_x=50 → x: (50-9)/100=0.41, (50+9)/100=0.59
+        np.testing.assert_allclose(
+            corners[:, 0], [0.41, 0.59, 0.59, 0.41], atol=1e-5
+        )
+
+    def test_no_change_when_no_expansion(self, dataset) -> None:
+        """展開量が0ならファイルは変更されない。"""
+        lbl_path = dataset / "labels" / "train" / "test.txt"
+        original = (
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+        lbl_path.write_text(original)
+
+        result = _process_label_file(
+            lbl_path,
+            img_w=100,
+            img_h=100,
+            expand_width=0,
+            expand_height=0,
+            expand_width_weighted=0,
+            expand_height_weighted=0,
+            median_width=0,
+            median_height=0,
+        )
+
+        assert result["updated"] == 0
+        assert lbl_path.read_text() == original
+
+    def test_clamps_to_image_bounds(self, dataset) -> None:
+        """画像境界を越えるOBBは[0,1]にクランプされる。"""
+        lbl_path = dataset / "labels" / "train" / "test.txt"
+        # Box near the edge: center(90,50), width=10, height=40
+        lbl_path.write_text(
+            "0 0.850000 0.300000 0.950000 0.300000 "
+            "0.950000 0.700000 0.850000 0.700000\n"
+        )
+
+        _process_label_file(
+            lbl_path,
+            img_w=100,
+            img_h=100,
+            expand_width=30,
+            expand_height=0,
+            expand_width_weighted=0,
+            expand_height_weighted=0,
+            median_width=0,
+            median_height=0,
+        )
+
+        tokens = lbl_path.read_text().strip().split()
+        coords = [float(t) for t in tokens[1:]]
+        # All x-coordinates clamped to [0.0, 1.0]
+        assert all(0.0 <= c <= 1.0 for c in coords)
+
+
+class TestExpandObbDataset:
+    def test_full_pipeline(self, tmp_path) -> None:
+        """データセット全体でOBB拡張パイプラインが動作する。"""
+        from PIL import Image
+
+        ds_root = tmp_path / "dataset"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+
+        Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
+        Image.new("RGB", (100, 100)).save(img_dir / "img2.png")
+
+        (lbl_dir / "img1.txt").write_text(
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+        (lbl_dir / "img2.txt").write_text(
+            "1 0.450000 0.300000 0.550000 0.300000 "
+            "0.550000 0.700000 0.450000 0.700000\n"
+        )
+
+        stats = expand_obb_dataset(
+            ds_root,
+            expand_height=10,
+            expand_width=0,
+            max_workers=1,
+        )
+
+        assert stats["files_processed"] == 2
+        assert stats["files_updated"] == 2
+        assert stats["labels_expanded"] == 2
+
+    def test_weighted_pipeline(self, tmp_path) -> None:
+        """加重付きOBB拡張で中央値ベースの重み付けが効く。"""
+        from PIL import Image
+
+        ds_root = tmp_path / "dataset"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+
+        Image.new("RGB", (100, 100)).save(img_dir / "narrow.png")
+        Image.new("RGB", (100, 100)).save(img_dir / "wide.png")
+
+        # narrow: width=10, height=40
+        (lbl_dir / "narrow.txt").write_text(
+            "0 0.450000 0.300000 0.550000 0.300000 "
+            "0.550000 0.700000 0.450000 0.700000\n"
+        )
+        # wide: width=30, height=40
+        (lbl_dir / "wide.txt").write_text(
+            "0 0.350000 0.300000 0.650000 0.300000 "
+            "0.650000 0.700000 0.350000 0.700000\n"
+        )
+
+        stats = expand_obb_dataset(
+            ds_root,
+            expand_width_weighted=4,
+            max_workers=1,
+        )
+
+        assert stats["files_processed"] == 2
+        assert stats["files_updated"] == 2
+
+        # Check that narrow box got more expansion than wide box
+        narrow_tokens = (lbl_dir / "narrow.txt").read_text().strip().split()
+        wide_tokens = (lbl_dir / "wide.txt").read_text().strip().split()
+        narrow_corners = np.array([float(t) for t in narrow_tokens[1:]]).reshape(4, 2)
+        wide_corners = np.array([float(t) for t in wide_tokens[1:]]).reshape(4, 2)
+
+        narrow_w = narrow_corners[:, 0].max() - narrow_corners[:, 0].min()
+        wide_w = wide_corners[:, 0].max() - wide_corners[:, 0].min()
+
+        # narrow original width: 0.10 → expanded more
+        # wide original width: 0.30 → expanded less
+        # Both should be larger than original
+        assert narrow_w > 0.10
+        assert wide_w > 0.30
+        # Narrow expansion ratio should be larger
+        narrow_expansion = narrow_w - 0.10
+        wide_expansion = wide_w - 0.30
+        assert narrow_expansion > wide_expansion
+
+    def test_no_labels_returns_empty_stats(self, tmp_path) -> None:
+        """ラベルがない場合は空のstatsを返す。"""
+        ds_root = tmp_path / "dataset"
+        (ds_root / "labels").mkdir(parents=True)
+
+        stats = expand_obb_dataset(ds_root, expand_height=5)
+        assert stats["files_processed"] == 0
+
+    def test_missing_labels_dir_raises(self, tmp_path) -> None:
+        """labelsディレクトリが無い場合はFileNotFoundError。"""
+        with pytest.raises(FileNotFoundError):
+            expand_obb_dataset(tmp_path, expand_height=5)

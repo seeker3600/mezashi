@@ -10,6 +10,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+from medetect.yolo.expand_obb import expand_obb_dataset
 from medetect.yolo.relabel import relabel_yolo_detect_dataset
 from medetect.yolo.tiff2png import convert_tiffs_to_png
 from medetect.yolo.train import train_yolo_model
@@ -108,6 +109,58 @@ def main() -> None:
     )
 
     train_parser = subparsers.add_parser("train", help="Train a YOLO model.")
+
+    expand_parser = subparsers.add_parser(
+        "expand-obb",
+        help="Expand OBB width/height in a YOLO OBB dataset.",
+    )
+    expand_parser.add_argument(
+        "dir",
+        type=Path,
+        help="Dataset root directory (must contain images/ and labels/).",
+    )
+    expand_parser.add_argument(
+        "--expand-height",
+        type=float,
+        default=0.0,
+        metavar="N",
+        help="Expand OBB height (longer dimension) by N pixels (constant).",
+    )
+    expand_parser.add_argument(
+        "--expand-width",
+        type=float,
+        default=0.0,
+        metavar="N",
+        help="Expand OBB width (shorter dimension) by N pixels (constant).",
+    )
+    expand_parser.add_argument(
+        "--expand-height-weighted",
+        type=float,
+        default=0.0,
+        metavar="N",
+        help=(
+            "Expand OBB height with inverse-proportional weighting. "
+            "Actual expansion = N × (median_height / current_height)."
+        ),
+    )
+    expand_parser.add_argument(
+        "--expand-width-weighted",
+        type=float,
+        default=0.0,
+        metavar="N",
+        help=(
+            "Expand OBB width with inverse-proportional weighting. "
+            "Actual expansion = N × (median_width / current_width)."
+        ),
+    )
+    expand_parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of worker threads (default: CPU count).",
+    )
+
     args = parser.parse_args()
 
     if args.command == "tiff2png":
@@ -131,6 +184,15 @@ def main() -> None:
             imgsz=args.imgsz,
             seed=args.seed,
             disable_augs=args.disable_augs,
+        )
+    elif args.command == "expand-obb":
+        expand_obb_dataset(
+            args.dir,
+            expand_height=args.expand_height,
+            expand_width=args.expand_width,
+            expand_height_weighted=args.expand_height_weighted,
+            expand_width_weighted=args.expand_width_weighted,
+            max_workers=args.workers,
         )
 
 if __name__ == "__main__":
