@@ -8,6 +8,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -193,6 +194,26 @@ def _collect_one(
     return label_path, size, widths, heights
 
 
+_BACKUP_DIR_NAME = "labels_before_expand"
+
+
+def _backup_labels(dataset_root: Path) -> None:
+    """Copy ``labels/`` to ``labels_before_expand/`` (first run only)."""
+    backup = dataset_root / _BACKUP_DIR_NAME
+    labels = dataset_root / "labels"
+    shutil.copytree(labels, backup)
+    logger.info("Backed up labels to %s", backup)
+
+
+def _restore_labels_from_backup(dataset_root: Path) -> None:
+    """Overwrite ``labels/`` with contents from ``labels_before_expand/``."""
+    backup = dataset_root / _BACKUP_DIR_NAME
+    labels = dataset_root / "labels"
+    shutil.rmtree(labels)
+    shutil.copytree(backup, labels)
+    logger.info("Restored labels from %s", backup)
+
+
 # ------------------------------------------------------------------
 # Public API
 # ------------------------------------------------------------------
@@ -230,6 +251,14 @@ def expand_obb_dataset(
 
     if not labels_root.is_dir():
         raise FileNotFoundError(f"labels directory not found: {labels_root}")
+
+    backup_root = dataset_root / _BACKUP_DIR_NAME
+    if backup_root.exists() and any(backup_root.iterdir()):
+        # Subsequent run — restore original labels before re-expanding.
+        _restore_labels_from_backup(dataset_root)
+    else:
+        # First run — create backup of untouched labels.
+        _backup_labels(dataset_root)
 
     if max_workers is None:
         max_workers = os.cpu_count() or 1

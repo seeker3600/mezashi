@@ -353,3 +353,85 @@ class TestExpandObbDataset:
         """labelsディレクトリが無い場合はFileNotFoundError。"""
         with pytest.raises(FileNotFoundError):
             expand_obb_dataset(tmp_path, expand_height=5)
+
+    def test_first_run_creates_backup(self, tmp_path) -> None:
+        """初回実行でlabels_before_expandにバックアップを作成する。"""
+        from PIL import Image
+
+        ds_root = tmp_path / "dataset"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+
+        Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
+        original = (
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+        (lbl_dir / "img1.txt").write_text(original)
+
+        expand_obb_dataset(ds_root, expand_height=10, max_workers=1)
+
+        backup_path = ds_root / "labels_before_expand" / "train" / "img1.txt"
+        assert backup_path.exists()
+        assert backup_path.read_text() == original
+
+    def test_second_run_restores_from_backup(self, tmp_path) -> None:
+        """2回目以降はバックアップから復元してから再拡張する。"""
+        from PIL import Image
+
+        ds_root = tmp_path / "dataset"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+
+        Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
+        original = (
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+        (lbl_dir / "img1.txt").write_text(original)
+
+        # First run: expand by 10
+        expand_obb_dataset(ds_root, expand_height=10, max_workers=1)
+        tokens1 = (lbl_dir / "img1.txt").read_text().strip().split()
+        corners1 = np.array([float(t) for t in tokens1[1:]]).reshape(4, 2)
+
+        # Second run: expand by 20 (should re-expand from original, not stack)
+        expand_obb_dataset(ds_root, expand_height=20, max_workers=1)
+        tokens2 = (lbl_dir / "img1.txt").read_text().strip().split()
+        corners2 = np.array([float(t) for t in tokens2[1:]]).reshape(4, 2)
+
+        # Height 10 expansion: y 0.3→0.25, 0.7→0.75
+        np.testing.assert_allclose(
+            corners1[:, 1], [0.25, 0.25, 0.75, 0.75], atol=1e-5
+        )
+        # Height 20 expansion from original: y 0.3→0.20, 0.7→0.80
+        np.testing.assert_allclose(
+            corners2[:, 1], [0.20, 0.20, 0.80, 0.80], atol=1e-5
+        )
+
+    def test_backup_not_overwritten_on_second_run(self, tmp_path) -> None:
+        """2回目の実行でバックアップは上書きされない（元のデータが保持される）。"""
+        from PIL import Image
+
+        ds_root = tmp_path / "dataset"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+
+        Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
+        original = (
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+        (lbl_dir / "img1.txt").write_text(original)
+
+        expand_obb_dataset(ds_root, expand_height=10, max_workers=1)
+        expand_obb_dataset(ds_root, expand_height=20, max_workers=1)
+
+        backup_path = ds_root / "labels_before_expand" / "train" / "img1.txt"
+        assert backup_path.read_text() == original
