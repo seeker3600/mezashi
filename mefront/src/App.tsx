@@ -96,6 +96,9 @@ function App() {
 	const isProcessing =
 		status.type === "loading" || status.type === "processing";
 	const hasImage = currentImage != null;
+	const detectionCanvasKey = hasImage
+		? `${detectionSets.length}:${currentImage.width}x${currentImage.height}`
+		: "empty";
 
 	return (
 		<div className="mx-auto flex min-h-screen max-w-6xl flex-col p-4">
@@ -137,6 +140,7 @@ function App() {
 					{hasImage && (
 						<>
 							<DetectionCanvas
+								key={detectionCanvasKey}
 								imageSource={currentImage.source}
 								detections={displayDetections}
 								imageWidth={currentImage.width}

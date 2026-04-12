@@ -21,6 +21,16 @@ function makeDetection(overrides: Partial<Detection> = {}): Detection {
 	};
 }
 
+function expectMergedResult(
+	result: ReturnType<typeof mergeDetectionSets>,
+): Exclude<ReturnType<typeof mergeDetectionSets>, null> {
+	expect(result).not.toBeNull();
+	if (result === null) {
+		throw new Error("Expected merged detection result");
+	}
+	return result;
+}
+
 describe("buildPixelResultJSON", () => {
 	it("should return correct structure", () => {
 		const dets = [makeDetection()];
@@ -259,10 +269,9 @@ describe("mergeDetectionSets", () => {
 		const sets: DetectionSet[] = [
 			{ detections: dets, task: "obb", isGeoTIFF: true, geoMeta: meta1 },
 		];
-		const result = mergeDetectionSets(sets);
-		expect(result).not.toBeNull();
-		expect(result!.detections).toBe(dets);
-		expect(result!.meta).toBe(meta1);
+		const result = expectMergedResult(mergeDetectionSets(sets));
+		expect(result.detections).toBe(dets);
+		expect(result.meta).toBe(meta1);
 	});
 
 	it("should merge 2 GeoTIFF sets", () => {
@@ -272,9 +281,8 @@ describe("mergeDetectionSets", () => {
 			{ detections: dets1, task: "obb", isGeoTIFF: true, geoMeta: meta1 },
 			{ detections: dets2, task: "obb", isGeoTIFF: true, geoMeta: meta2 },
 		];
-		const result = mergeDetectionSets(sets);
-		expect(result).not.toBeNull();
-		expect(result!.detections).toHaveLength(2);
+		const result = expectMergedResult(mergeDetectionSets(sets));
+		expect(result.detections).toHaveLength(2);
 	});
 
 	it("should merge 3 GeoTIFF sets and deduplicate", () => {
@@ -287,15 +295,14 @@ describe("mergeDetectionSets", () => {
 			{ detections: dets2, task: "obb", isGeoTIFF: true, geoMeta: meta2 },
 			{ detections: dets3, task: "obb", isGeoTIFF: true, geoMeta: meta3 },
 		];
-		const result = mergeDetectionSets(sets);
-		expect(result).not.toBeNull();
-		expect(result!.detections).toHaveLength(3);
-		expect(result!.meta).toBe(meta3);
+		const result = expectMergedResult(mergeDetectionSets(sets));
+		expect(result.detections).toHaveLength(3);
+		expect(result.meta).toBe(meta3);
 
 		// Verify each detection has its correct geoMeta
-		const det1 = result!.detections.find((d) => d.cx === 10);
-		const det2 = result!.detections.find((d) => d.cx === 200);
-		const det3 = result!.detections.find((d) => d.cx === 400);
+		const det1 = result.detections.find((d) => d.cx === 10);
+		const det2 = result.detections.find((d) => d.cx === 200);
+		const det3 = result.detections.find((d) => d.cx === 400);
 		expect(det1?.geoMeta).toBe(meta1);
 		expect(det2?.geoMeta).toBe(meta2);
 		expect(det3?.geoMeta).toBe(meta3);
@@ -312,9 +319,8 @@ describe("mergeDetectionSets", () => {
 			{ detections: detsNonGeo, task: "obb", isGeoTIFF: false },
 			{ detections: dets2, task: "obb", isGeoTIFF: true, geoMeta: meta2 },
 		];
-		const result = mergeDetectionSets(sets);
-		expect(result).not.toBeNull();
+		const result = expectMergedResult(mergeDetectionSets(sets));
 		// Only the 2 GeoTIFF sets should be merged
-		expect(result!.detections).toHaveLength(2);
+		expect(result.detections).toHaveLength(2);
 	});
 });

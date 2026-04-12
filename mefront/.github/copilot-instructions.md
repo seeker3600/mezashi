@@ -55,6 +55,7 @@ describe("labels", () => {
 - Tailwind for styling; minimize custom CSS.
 - Package manager is **pnpm only** — never introduce npm / yarn / bun lockfiles.
 - Lint & format is **Biome only** — do not add ESLint rules or Prettier config beyond what exists.
+- ソースを修正した場合、最後にテストとlintを必ず通すこと。バグったまま完了しないでください。
 
 ## Language policy
 - Issue / PR text → **日本語**

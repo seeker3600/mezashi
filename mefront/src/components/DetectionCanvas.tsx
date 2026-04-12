@@ -103,12 +103,6 @@ export function DetectionCanvas({
 		[disabled, onFileSelect],
 	);
 
-	// Reset zoom and pan when image changes
-	useEffect(() => {
-		setScale(1);
-		setOffset({ x: 0, y: 0 });
-	}, [imageSource, imageWidth, imageHeight]);
-
 	const handleWheel = useCallback(
 		(e: React.WheelEvent<HTMLCanvasElement>) => {
 			e.preventDefault();

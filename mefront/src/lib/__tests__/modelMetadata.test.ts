@@ -26,7 +26,8 @@ describe("validateModelMetadata", () => {
 	});
 
 	it("should reject missing task", () => {
-		const { task: _, ...noTask } = validMetadata();
+		const noTask = { ...validMetadata() };
+		delete noTask.task;
 		expect(() => validateModelMetadata(noTask)).toThrow('"task"');
 	});
 
@@ -94,7 +95,8 @@ describe("validateModelMetadata", () => {
 	});
 
 	it("should reject metadata without expectedResolution", () => {
-		const { expectedResolution: _, ...noRes } = validMetadata();
+		const noRes = { ...validMetadata() };
+		delete noRes.expectedResolution;
 		expect(() => validateModelMetadata(noRes)).toThrow('"expectedResolution"');
 	});
 

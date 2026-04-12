@@ -6,20 +6,25 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { parseGeoTIFF } from "../geotiff";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+type RasterBand = ArrayLike<number>;
 
 // jsdom does not provide ImageData; polyfill for testing
 beforeAll(() => {
 	if (typeof globalThis.ImageData === "undefined") {
-		(globalThis as any).ImageData = class ImageData {
-			data: Uint8ClampedArray;
-			width: number;
-			height: number;
-			constructor(data: Uint8ClampedArray, width: number, height: number) {
-				this.data = data;
-				this.width = width;
-				this.height = height;
-			}
-		};
+		Object.defineProperty(globalThis, "ImageData", {
+			configurable: true,
+			writable: true,
+			value: class ImageData {
+				data: Uint8ClampedArray;
+				width: number;
+				height: number;
+				constructor(data: Uint8ClampedArray, width: number, height: number) {
+					this.data = data;
+					this.width = width;
+					this.height = height;
+				}
+			},
+		});
 	}
 });
 
@@ -50,15 +55,16 @@ describe("parseGeoTIFF with real Sentinel-2 file", () => {
 		const rasters = await image.readRasters();
 		const numBands = rasters.length;
 		expect(numBands).toBeGreaterThan(0);
+		const redBand = rasters[0] as RasterBand;
+		const greenBand = (numBands >= 3 ? rasters[1] : rasters[0]) as RasterBand;
+		const blueBand = (numBands >= 3 ? rasters[2] : rasters[0]) as RasterBand;
 
 		// Build RGBA same as parseGeoTIFF does
 		const rgba = new Uint8ClampedArray(width * height * 4);
 		for (let i = 0; i < width * height; i++) {
-			rgba[i * 4] = (rasters[0] as any)[i]; // R
-			rgba[i * 4 + 1] =
-				numBands >= 3 ? (rasters[1] as any)[i] : (rasters[0] as any)[i];
-			rgba[i * 4 + 2] =
-				numBands >= 3 ? (rasters[2] as any)[i] : (rasters[0] as any)[i];
+			rgba[i * 4] = redBand[i] ?? 0; // R
+			rgba[i * 4 + 1] = greenBand[i] ?? 0;
+			rgba[i * 4 + 2] = blueBand[i] ?? 0;
 			rgba[i * 4 + 3] = 255;
 		}
 
@@ -75,10 +81,13 @@ describe("parseGeoTIFF with real Sentinel-2 file", () => {
 		// Polyfill File.arrayBuffer for jsdom
 		const file = new File([buf], "Sentinel-2.tiff");
 		if (!file.arrayBuffer) {
-			(file as any).arrayBuffer = () =>
-				Promise.resolve(
-					buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-				);
+			Object.defineProperty(file, "arrayBuffer", {
+				configurable: true,
+				value: () =>
+					Promise.resolve(
+						buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+					),
+			});
 		}
 
 		const { imageData, meta } = await parseGeoTIFF(file);
