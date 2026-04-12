@@ -5,7 +5,7 @@ import {
 	createShrunkCanvas,
 	prepareTile,
 } from "./imageUtils";
-import { SLICE_THRESHOLD, TILE_OVERLAP } from "./labels";
+import { TILE_OVERLAP } from "./labels";
 import { applyLabelMerge, buildMergeMap } from "./mergeLabels";
 import type { TaskHandler } from "./tasks";
 import { getTaskHandler } from "./tasks";
@@ -127,25 +127,27 @@ export async function runInference(
 		);
 	}
 
-	if (shrinkScale < 1.0) {
-		// Floor: shrunk image must be at least inputSize px in its larger dimension.
-		// This guards against CRS unit mismatch (e.g. geographic GeoTIFFs where
-		// pixelScale is in degrees rather than metres), which would otherwise
-		// produce a near-zero scale and a 0-px canvas.
-		shrinkScale = Math.max(
-			shrinkScale,
-			Math.min(1.0, inputSize / Math.max(w, h)),
-		);
-		const shrunk = createShrunkCanvas(img, w, h, shrinkScale);
-		src = shrunk;
-		w = shrunk.width;
-		h = shrunk.height;
+	if (shrinkScale !== 1.0) {
+		if (shrinkScale < 1.0) {
+			// Floor: shrunk image must be at least inputSize px in its larger dimension.
+			// This guards against CRS unit mismatch (e.g. geographic GeoTIFFs where
+			// pixelScale is in degrees rather than metres), which would otherwise
+			// produce a near-zero scale and a 0-px canvas.
+			shrinkScale = Math.max(
+				shrinkScale,
+				Math.min(1.0, inputSize / Math.max(w, h)),
+			);
+		}
+		const rescaled = createShrunkCanvas(img, w, h, shrinkScale);
+		src = rescaled;
+		w = rescaled.width;
+		h = rescaled.height;
 	}
 
 	let detections: Detection[];
 
 	// Decide whether to use slice inference
-	if (w <= SLICE_THRESHOLD && h <= SLICE_THRESHOLD) {
+	if (w <= inputSize && h <= inputSize) {
 		// Single pass
 		const { input, scale, padX, padY } = prepareTile(
 			src,
@@ -219,7 +221,7 @@ export async function runInference(
 	}
 
 	// 縮小した場合、検出座標を元の画像座標に変換
-	if (shrinkScale < 1.0) {
+	if (shrinkScale !== 1.0) {
 		for (const d of detections) {
 			d.cx /= shrinkScale;
 			d.cy /= shrinkScale;

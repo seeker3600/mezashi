@@ -45,21 +45,21 @@ export function canvasToFloat32CHW(
 }
 
 /**
- * 画像の GSD をモデルの訓練解像度 (targetGSDMeters) に合わせるための縮小率を計算する。
+ * 画像の GSD をモデルの訓練解像度 (targetGSDMeters) に合わせるスケール係数を計算する。
  *
- * - 画像の GSD がモデルの期待値以上（解像度が粗い）なら縮小不要 → 1.0 を返す
- * - 画像の GSD がモデルの期待値より小さい（高解像度）なら縮小する
+ * - GSD がモデル期待値より小さい（高解像度）→ 1 未満の縮小率
+ * - GSD がモデル期待値より大きい（低解像度）→ 1 超の拡大率
+ * - GSD が一致する場合 → 1.0
  *
  * @param pixelScale      画像の GSD (メートル/px)。投影座標系を前提とする。
  * @param targetGSDMeters モデルの訓練 GSD (メートル/px)。ModelMetadata.expectedResolution。
- * @returns 0 < scale <= 1.0 の縮小率
+ * @returns scale > 0 のスケール係数
  */
 export function computeGeoTIFFShrinkScale(
 	pixelScale: { x: number; y: number },
 	targetGSDMeters: number,
 ): number {
 	const currentGSD = Math.max(pixelScale.x, pixelScale.y);
-	if (currentGSD >= targetGSDMeters) return 1.0;
 	return currentGSD / targetGSDMeters;
 }
 

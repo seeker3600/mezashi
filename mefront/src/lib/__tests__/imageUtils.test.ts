@@ -7,10 +7,10 @@ describe("computeGeoTIFFShrinkScale", () => {
 		expect(scale).toBe(1.0);
 	});
 
-	it("should return 1.0 when image GSD is coarser than targetGSD", () => {
-		// 10m/px image, model expects 1m/px → no downscale (upscaling would hurt)
+	it("should upscale when image GSD is coarser than targetGSD", () => {
+		// 10m/px image, model expects 1m/px → scale = 10/1 = 10.0
 		const scale = computeGeoTIFFShrinkScale({ x: 10, y: 10 }, 1.0);
-		expect(scale).toBe(1.0);
+		expect(scale).toBe(10.0);
 	});
 
 	it("should downscale when image GSD is finer than targetGSD", () => {
