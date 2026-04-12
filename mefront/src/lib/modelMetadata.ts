@@ -122,15 +122,12 @@ export function validateModelMetadata(
 		}
 	}
 
-	// Optional: validate expectedResolution
-	if (obj.expectedResolution !== undefined) {
-		if (
-			typeof obj.expectedResolution !== "number" ||
-			obj.expectedResolution <= 0
-		) {
-			throw new Error(
-				'メタデータの "expectedResolution" は 0 より大きい数値（m/px）である必要があります',
-			);
-		}
+	if (
+		typeof obj.expectedResolution !== "number" ||
+		obj.expectedResolution <= 0
+	) {
+		throw new Error(
+			'メタデータの "expectedResolution" は 0 より大きい数値（m/px）である必要があります',
+		);
 	}
 }

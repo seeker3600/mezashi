@@ -1,5 +1,3 @@
-import { MIN_GSD_METERS } from "./labels";
-
 /**
  * Load an image file (jpg/png) into an HTMLImageElement.
  */
@@ -47,42 +45,22 @@ export function canvasToFloat32CHW(
 }
 
 /**
- * GeoTIFF 画像を入力制限サイズに収めるための縮小率を計算する。
+ * 画像の GSD をモデルの訓練解像度 (targetGSDMeters) に合わせるための縮小率を計算する。
  *
- * - 画像が threshold 以下なら縮小不要 (1.0 を返す)
- * - threshold を超える場合、threshold に収まる率を算出
- * - ただし GSD が MIN_GSD_METERS を超えない範囲に制限
- * - 元画像の GSD が既に MIN_GSD_METERS 以上なら縮小しない (1.0 を返す)
+ * - 画像の GSD がモデルの期待値以上（解像度が粗い）なら縮小不要 → 1.0 を返す
+ * - 画像の GSD がモデルの期待値より小さい（高解像度）なら縮小する
  *
- * @param imgWidth  元画像の幅 (px)
- * @param imgHeight 元画像の高さ (px)
- * @param pixelScale GeoTIFF の pixelScale (メートル/px)。投影座標系を前提とする。
- * @param threshold  入力制限サイズ (px)
+ * @param pixelScale      画像の GSD (メートル/px)。投影座標系を前提とする。
+ * @param targetGSDMeters モデルの訓練 GSD (メートル/px)。ModelMetadata.expectedResolution。
  * @returns 0 < scale <= 1.0 の縮小率
  */
 export function computeGeoTIFFShrinkScale(
-	imgWidth: number,
-	imgHeight: number,
 	pixelScale: { x: number; y: number },
-	threshold: number,
+	targetGSDMeters: number,
 ): number {
-	const maxDim = Math.max(imgWidth, imgHeight);
-	if (maxDim <= threshold) return 1.0;
-
-	// 現在の GSD (大きい方を採用)
 	const currentGSD = Math.max(pixelScale.x, pixelScale.y);
-
-	// 既に 50cm/px 以上なら縮小不可
-	if (currentGSD >= MIN_GSD_METERS) return 1.0;
-
-	// threshold に収めるための縮小率
-	const fitScale = threshold / maxDim;
-
-	// GSD が 50cm を超えないための最小縮小率: currentGSD / scale <= 0.5 → scale >= currentGSD / 0.5
-	const minScale = currentGSD / MIN_GSD_METERS;
-
-	// fitScale と minScale の大きい方を採用 (= より控えめな縮小)
-	return Math.max(fitScale, minScale);
+	if (currentGSD >= targetGSDMeters) return 1.0;
+	return currentGSD / targetGSDMeters;
 }
 
 /**

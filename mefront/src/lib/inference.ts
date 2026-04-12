@@ -1,4 +1,5 @@
 import * as ort from "onnxruntime-web";
+import { pixelScaleMeters } from "./geotiff";
 import {
 	computeGeoTIFFShrinkScale,
 	createShrunkCanvas,
@@ -91,8 +92,7 @@ function mapDetectionsToOriginal(
  * Run full inference on an image element, using slice inference for large images.
  * Returns detections in original image pixel coordinates.
  *
- * GeoTIFF の場合、SLICE_THRESHOLD を超える画像は可能な限り縮小するが、
- * GSD (地上分解能) が 制限値 を超えない範囲に制限する。
+ * GSD が指定された場合、画像を expectedResolution に合わせて縮小する。
  * 縮小後もなお SLICE_THRESHOLD を超える場合はタイル化して推論する。
  */
 export async function runInference(
@@ -116,31 +116,30 @@ export async function runInference(
 
 	if (geoMeta) {
 		shrinkScale = computeGeoTIFFShrinkScale(
-			w,
-			h,
-			geoMeta.pixelScale,
-			SLICE_THRESHOLD,
+			pixelScaleMeters(geoMeta),
+			metadata.expectedResolution,
 		);
-		if (shrinkScale < 1.0) {
-			const shrunk = createShrunkCanvas(img, w, h, shrinkScale);
-			src = shrunk;
-			w = shrunk.width;
-			h = shrunk.height;
-		}
 	} else if (pixelSizeMeters !== undefined) {
 		// 非 GeoTIFF で地上解像度が指定された場合も同じロジックで縮小
 		shrinkScale = computeGeoTIFFShrinkScale(
-			w,
-			h,
 			{ x: pixelSizeMeters, y: pixelSizeMeters },
-			SLICE_THRESHOLD,
+			metadata.expectedResolution,
 		);
-		if (shrinkScale < 1.0) {
-			const shrunk = createShrunkCanvas(img, w, h, shrinkScale);
-			src = shrunk;
-			w = shrunk.width;
-			h = shrunk.height;
-		}
+	}
+
+	if (shrinkScale < 1.0) {
+		// Floor: shrunk image must be at least inputSize px in its larger dimension.
+		// This guards against CRS unit mismatch (e.g. geographic GeoTIFFs where
+		// pixelScale is in degrees rather than metres), which would otherwise
+		// produce a near-zero scale and a 0-px canvas.
+		shrinkScale = Math.max(
+			shrinkScale,
+			Math.min(1.0, inputSize / Math.max(w, h)),
+		);
+		const shrunk = createShrunkCanvas(img, w, h, shrinkScale);
+		src = shrunk;
+		w = shrunk.width;
+		h = shrunk.height;
 	}
 
 	let detections: Detection[];

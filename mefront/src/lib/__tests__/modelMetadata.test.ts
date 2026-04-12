@@ -9,6 +9,7 @@ function validMetadata(overrides: Record<string, unknown> = {}) {
 		inputSize: 640,
 		labels: ["plane"],
 		license: { name: "MIT" },
+		expectedResolution: 1.0,
 		...overrides,
 	};
 }
@@ -92,8 +93,9 @@ describe("validateModelMetadata", () => {
 		).toThrow('"unknown"');
 	});
 
-	it("should accept metadata without expectedResolution", () => {
-		expect(() => validateModelMetadata(validMetadata())).not.toThrow();
+	it("should reject metadata without expectedResolution", () => {
+		const { expectedResolution: _, ...noRes } = validMetadata();
+		expect(() => validateModelMetadata(noRes)).toThrow('"expectedResolution"');
 	});
 
 	it("should accept metadata with valid expectedResolution", () => {

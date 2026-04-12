@@ -70,7 +70,12 @@ export async function parseGeoTIFF(file: File): Promise<{
 		(geoKeys?.GeographicTypeGeoKey as number | undefined) ??
 		null;
 
-	const meta: GeoTIFFMeta = { tiePoint, pixelScale: scale, epsg };
+	// Geographic CRS (e.g. WGS84 / EPSG:4326) has no ProjectedCSTypeGeoKey;
+	// its pixelScale is in degrees, not metres.
+	const isGeographic =
+		(geoKeys?.ProjectedCSTypeGeoKey as number | undefined) === undefined;
+
+	const meta: GeoTIFFMeta = { tiePoint, pixelScale: scale, epsg, isGeographic };
 
 	return { imageData, meta };
 }
@@ -100,4 +105,26 @@ export function pixelToGeo(
 		x: meta.tiePoint.x + px * meta.pixelScale.x,
 		y: meta.tiePoint.y - py * meta.pixelScale.y,
 	};
+}
+
+/**
+ * Metres per degree of latitude/longitude at the equator.
+ * Used to convert geographic CRS pixel scales (degrees/px) to metres/px.
+ */
+const METRES_PER_DEGREE = 111_320;
+
+/**
+ * Return the pixel scale of a GeoTIFF in metres per pixel.
+ * Geographic CRS (isGeographic=true) stores pixelScale in degrees; this
+ * function converts those to metres using the equatorial approximation.
+ * Projected CRS already stores metres so pixelScale is returned as-is.
+ */
+export function pixelScaleMeters(meta: GeoTIFFMeta): { x: number; y: number } {
+	if (meta.isGeographic) {
+		return {
+			x: meta.pixelScale.x * METRES_PER_DEGREE,
+			y: meta.pixelScale.y * METRES_PER_DEGREE,
+		};
+	}
+	return meta.pixelScale;
 }

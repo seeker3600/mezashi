@@ -36,9 +36,9 @@ export interface ModelMetadata {
 	merge?: Record<string, string[]>;
 	/**
 	 * Expected ground sample distance (GSD) the model was trained at, in metres per pixel.
-	 * Used as the default resolution when processing non-GeoTIFF images.
+	 * Images are rescaled to match this GSD before inference.
 	 */
-	expectedResolution?: number;
+	expectedResolution: number;
 }
 
 /** A single oriented bounding box detection */
@@ -72,10 +72,12 @@ export interface OBBCorners {
 export interface GeoTIFFMeta {
 	/** Tie point: pixel (0,0) maps to this geo coordinate */
 	tiePoint: { x: number; y: number };
-	/** Pixel scale in geo units per pixel */
+	/** Pixel scale in native CRS units per pixel (degrees for geographic CRS, metres for projected) */
 	pixelScale: { x: number; y: number };
 	/** EPSG code of the coordinate reference system */
 	epsg: number | null;
+	/** True when the CRS is geographic (pixelScale is in degrees, not metres) */
+	isGeographic: boolean;
 }
 
 /** Full inference result */

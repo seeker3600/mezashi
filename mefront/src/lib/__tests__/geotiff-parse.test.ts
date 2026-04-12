@@ -90,5 +90,7 @@ describe("parseGeoTIFF with real Sentinel-2 file", () => {
 		expect(meta.tiePoint).toBeDefined();
 		expect(meta.pixelScale).toBeDefined();
 		expect(meta.epsg).not.toBeUndefined();
+		// Sentinel-2 downloaded from Copernicus Browser is typically WGS84 (geographic)
+		expect(meta.isGeographic).toBe(true);
 	});
 });
