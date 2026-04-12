@@ -36,6 +36,8 @@ interface DetectionCanvasProps {
 	imageHeight: number;
 	onFileSelect?: (files: File[]) => void;
 	disabled?: boolean;
+	showBoxes?: boolean;
+	showLabels?: boolean;
 }
 
 export function DetectionCanvas({
@@ -45,6 +47,8 @@ export function DetectionCanvas({
 	imageHeight,
 	onFileSelect,
 	disabled = false,
+	showBoxes = true,
+	showLabels = true,
 }: DetectionCanvasProps) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -219,57 +223,70 @@ export function DetectionCanvas({
 			]);
 
 			// Draw OBB polygon
-			ctx.beginPath();
-			ctx.moveTo(scaledCorners[0][0], scaledCorners[0][1]);
-			for (let i = 1; i < scaledCorners.length; i++) {
-				ctx.lineTo(scaledCorners[i][0], scaledCorners[i][1]);
+			if (showBoxes) {
+				ctx.beginPath();
+				ctx.moveTo(scaledCorners[0][0], scaledCorners[0][1]);
+				for (let i = 1; i < scaledCorners.length; i++) {
+					ctx.lineTo(scaledCorners[i][0], scaledCorners[i][1]);
+				}
+				ctx.closePath();
+				ctx.strokeStyle = hexToRgba(color, 0.8);
+				// Divide by scale so line width stays constant on screen when zooming
+				ctx.lineWidth =
+					Math.max(2, Math.min(displayWidth, displayHeight) / 500) / scale;
+				ctx.stroke();
 			}
-			ctx.closePath();
-			ctx.strokeStyle = hexToRgba(color, 0.8);
-			// Divide by scale so line width stays constant on screen when zooming
-			ctx.lineWidth =
-				Math.max(2, Math.min(displayWidth, displayHeight) / 500) / scale;
-			ctx.stroke();
 
 			// Draw label inside OBB with rotation
-			const label = `${det.className} ${(det.confidence * 100).toFixed(0)}%`;
-			// Divide by scale so font size stays constant on screen when zooming
-			const fontSize =
-				Math.max(12, Math.min(displayWidth, displayHeight) / 80) / scale;
-			ctx.font = `bold ${fontSize}px sans-serif`;
-			const textMetrics = ctx.measureText(label);
-			const textW = textMetrics.width;
-			const asc = textMetrics.actualBoundingBoxAscent;
-			const desc = textMetrics.actualBoundingBoxDescent;
-			// pad is in canvas units: dividing by scale keeps it constant in screen pixels
-			const pad = 3 / scale;
-			const boxW = textW + 2 * pad;
-			const boxH = asc + desc + 2 * pad;
+			if (showLabels) {
+				const label = `${det.className} ${(det.confidence * 100).toFixed(0)}%`;
+				// Divide by scale so font size stays constant on screen when zooming
+				const fontSize =
+					Math.max(12, Math.min(displayWidth, displayHeight) / 80) / scale;
+				ctx.font = `bold ${fontSize}px sans-serif`;
+				const textMetrics = ctx.measureText(label);
+				const textW = textMetrics.width;
+				const asc = textMetrics.actualBoundingBoxAscent;
+				const desc = textMetrics.actualBoundingBoxDescent;
+				// pad is in canvas units: dividing by scale keeps it constant in screen pixels
+				const pad = 3 / scale;
+				const boxW = textW + 2 * pad;
+				const boxH = asc + desc + 2 * pad;
 
-			// Scale center coordinates
-			const cx = det.cx * fitScale;
-			const cy = det.cy * fitScale;
+				// Scale center coordinates
+				const cx = det.cx * fitScale;
+				const cy = det.cy * fitScale;
 
-			// Save context state
-			ctx.save();
+				// Save context state
+				ctx.save();
 
-			// Move to OBB center and rotate
-			ctx.translate(cx, cy);
-			ctx.rotate(det.angle);
+				// Move to OBB center and rotate
+				ctx.translate(cx, cy);
+				ctx.rotate(det.angle);
 
-			// Draw label background centered at OBB center (slightly transparent)
-			ctx.fillStyle = hexToRgba(color, 0.75);
-			ctx.fillRect(-boxW / 2, -boxH / 2, boxW, boxH);
-			ctx.fillStyle = "rgba(255,255,255,0.95)";
-			// Baseline offset to visually center text in box
-			ctx.fillText(label, -textW / 2, (asc - desc) / 2);
+				// Draw label background centered at OBB center (slightly transparent)
+				ctx.fillStyle = hexToRgba(color, 0.75);
+				ctx.fillRect(-boxW / 2, -boxH / 2, boxW, boxH);
+				ctx.fillStyle = "rgba(255,255,255,0.95)";
+				// Baseline offset to visually center text in box
+				ctx.fillText(label, -textW / 2, (asc - desc) / 2);
 
-			// Restore context state
-			ctx.restore();
+				// Restore context state
+				ctx.restore();
+			}
 		}
 
 		ctx.restore();
-	}, [imageSource, detections, imageWidth, imageHeight, scale, offset]);
+	}, [
+		imageSource,
+		detections,
+		imageWidth,
+		imageHeight,
+		scale,
+		offset,
+		showBoxes,
+		showLabels,
+	]);
 
 	if (!imageSource) return null;
 

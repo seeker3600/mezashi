@@ -59,6 +59,8 @@ function App() {
 	const runDetection = useImageDetection(dispatch, modelMetadata);
 
 	const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+	const [showBoxes, setShowBoxes] = useState(true);
+	const [showLabels, setShowLabels] = useState(true);
 
 	// Intercept file selection: show GSD dialog for non-GeoTIFF files
 	const handleFileSelect = useCallback(
@@ -141,6 +143,8 @@ function App() {
 								imageHeight={currentImage.height}
 								onFileSelect={handleFileSelect}
 								disabled={isProcessing}
+								showBoxes={showBoxes}
+								showLabels={showLabels}
 							/>
 							<div className="flex items-center gap-4">
 								<button
@@ -150,7 +154,25 @@ function App() {
 									className="rounded-md bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
 								>
 									別の画像を選択
-								</button>
+								</button>{" "}
+								<label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300">
+									<input
+										type="checkbox"
+										checked={showBoxes}
+										onChange={(e) => setShowBoxes(e.target.checked)}
+										className="h-4 w-4 accent-blue-600"
+									/>
+									OBB枠
+								</label>
+								<label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300">
+									<input
+										type="checkbox"
+										checked={showLabels}
+										onChange={(e) => setShowLabels(e.target.checked)}
+										className="h-4 w-4 accent-blue-600"
+									/>
+									ラベル
+								</label>{" "}
 								<StatusMessage status={status} />
 							</div>
 						</>
