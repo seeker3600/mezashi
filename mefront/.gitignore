@@ -29,5 +29,4 @@ TODO.md
 
 samples/
 scripts/medetect-licenses.json
-public/models/*.json
-public/models/*.onnx
+public/models/test/*

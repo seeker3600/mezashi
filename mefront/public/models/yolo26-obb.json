@@ -1,0 +1,16 @@
+{
+  "name": "sample - YOLOv26-OBB",
+  "task": "obb",
+  "onnxUrl": "/models/yolo26n-obb.onnx",
+  "inputSize": 640,
+  "labels": [
+    "ship"
+  ],
+  "merge": {},
+  "expectedResolution": 1.0,
+  "license": {
+    "name": "Academic Use Only (Non-Commercial) - DOTA Terms",
+    "url": "https://captain-whu.github.io/DOTA/dataset.html",
+    "text": "DOTA images and annotations are for academic purposes only; any commercial use is prohibited. Use of Google Earth images must comply with Google Earth's terms of use. See: https://captain-whu.github.io/DOTA/dataset.html"
+  }
+}
