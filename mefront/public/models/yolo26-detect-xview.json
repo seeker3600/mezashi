@@ -3,11 +3,7 @@
   "task": "detect",
   "onnxUrl": "/models/yolo26n-detect-xview.onnx",
   "inputSize": 640,
-  "labels": [
-    "Small Ship",
-    "Fixed-wing Aircraft",
-    "Large Vessel"
-  ],
+  "labels": ["Small Ship", "Fixed-wing Aircraft", "Large Vessel"],
   "expectedResolution": 0.3,
   "license": {
     "name": "Mixed: Ultralytics (AGPL-3.0) + COCO (annotations: CC BY 4.0; images: various) + xView (CC BY-NC-SA 4.0)",

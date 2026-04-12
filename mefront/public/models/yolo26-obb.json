@@ -1,11 +1,9 @@
 {
   "name": "sample - YOLOv26-OBB",
   "task": "obb",
-  "onnxUrl": "/models/yolo26n-obb.onnx",
+  "onnxUrl": "/models/yolo26-obb.onnx",
   "inputSize": 640,
-  "labels": [
-    "ship"
-  ],
+  "labels": ["ship"],
   "merge": {},
   "expectedResolution": 1.0,
   "license": {
