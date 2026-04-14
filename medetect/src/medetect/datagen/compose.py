@@ -560,7 +560,160 @@ def _stamp_occupancy(
     occupancy[:] = np.array(img) > 0
 
 
+def _obb_on_water(
+    water_mask: NDArray[np.bool_],
+    cx: int,
+    cy: int,
+    w: int,
+    h: int,
+    angle_rad: float,
+    required: int = 4,
+) -> bool:
+    """Return True if the OBB is sufficiently on water.
+
+    Checks the 4 OBB corners plus the ship centre — 5 points total.
+    At least *required* of them must lie on a water pixel.  This is O(1)
+    and reliably rejects ships that are mostly on land without the cost of
+    full polygon rasterisation.
+    """
+    corners = compute_obb_corners(float(cx), float(cy), float(w), float(h), angle_rad)
+    h_mask, w_mask = water_mask.shape
+    points = list(corners) + [(float(cx), float(cy))]
+    on_water = 0
+    for x, y in points:
+        xi, yi = round(x), round(y)
+        if 0 <= xi < w_mask and 0 <= yi < h_mask and water_mask[yi, xi]:
+            on_water += 1
+    return on_water >= required
+
+
 # ── Cluster logic ─────────────────────────────────────────────────────────
+
+
+def _place_area_cluster(
+    water_mask: NDArray[np.bool_],
+    occupancy: NDArray[np.bool_],
+    svg_metas: list[_SvgMeta] | None,
+    resolution_m: float,
+    rng: random.Random,
+    n_ships: int,
+    blur_sigma: float,
+    alpha_range: tuple[float, float],
+    class_id: int,
+    image_size: int,
+    background: NDArray[np.uint8],
+    length_range: tuple[float, float] | None,
+    length_exponent: float,
+    size_threshold: float | None,
+    mixed: bool,
+) -> list[str]:
+    """Place ships in a loose 2D area with fully random headings (anchorage layout).
+
+    Unlike the raft layout, ships are not constrained to a line.  Each ship
+    gets an independent random heading and is placed at a random position
+    within a circular area.  Intra-cluster collision is prevented via the
+    shared occupancy map (ships already placed in this cluster are blocked
+    for subsequent ones).
+    """
+    labels: list[str] = []
+
+    # Reference ship used for area-radius estimation and uniform-mode sizing.
+    svg_text_ref = _pick_svg(svg_metas, rng, length_range)
+    _, cls0, bw0, lh0, _ = _render_ship(
+        svg_text_ref, resolution_m, rng, blur_sigma, length_range,
+        length_exponent=length_exponent,
+    )
+
+    # Radius large enough to accommodate n_ships with some spacing.
+    area_radius = max(lh0, int(max(bw0, lh0) * math.sqrt(n_ships) * 0.8))
+
+    available = water_mask & ~occupancy
+    pos = find_water_position(available, area_radius * 2, area_radius * 2, 0.0, rng)
+    if pos is None:
+        return labels
+
+    area_cx, area_cy = pos
+    cluster_alpha = rng.uniform(*alpha_range)
+    water_tint = _sample_water_tint(background, area_cx, area_cy)
+
+    cluster_buf = np.zeros((image_size, image_size, 4), dtype=np.uint8)
+    placed: list[tuple[int, int, int, int, float, int]] = []
+
+    for i in range(n_ships):
+        # Fully independent random heading per ship.
+        angle_deg = rng.uniform(0, 360)
+        angle_rad = math.radians(angle_deg)
+
+        if i == 0:
+            rotated, cls_name, bw, lh, lb = _render_ship(
+                svg_text_ref, resolution_m, rng, blur_sigma, length_range,
+                angle_deg=angle_deg, length_exponent=length_exponent,
+            )
+        elif mixed:
+            svg_text_i = _pick_svg(svg_metas, rng, length_range)
+            rotated, cls_name, bw, lh, lb = _render_ship(
+                svg_text_i, resolution_m, rng, blur_sigma, length_range,
+                angle_deg=angle_deg, length_exponent=length_exponent,
+            )
+        else:
+            svg_text_u = _pick_svg(svg_metas, rng, length_range)
+            _cls2, lb = parse_svg_metadata(svg_text_u)
+            scale = rng.uniform(0.9, 1.1)
+            jit_bw = max(2, round(bw0 * scale))
+            jit_lh = max(3, round(lh0 * scale))
+            rotated = rasterize_ship_svg(svg_text_u, jit_bw, jit_lh, angle_deg=angle_deg)
+            if blur_sigma > 0 and min(jit_bw, jit_lh) > 2:
+                pil_img = Image.fromarray(rotated)
+                pil_img = pil_img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
+                rotated = np.array(pil_img)
+            cls_name, bw, lh = cls0, jit_bw, jit_lh
+
+        # Try random positions within the circular area.
+        for _ in range(60):
+            r = area_radius * math.sqrt(rng.random())  # uniform-area sampling
+            theta = rng.uniform(0.0, 2.0 * math.pi)
+            cx = int(area_cx + r * math.cos(theta))
+            cy = int(area_cy + r * math.sin(theta))
+
+            rh, rw = rotated.shape[:2]
+            if (
+                cx - rw // 2 < 0 or cx + rw // 2 >= image_size
+                or cy - rh // 2 < 0 or cy + rh // 2 >= image_size
+            ):
+                continue
+            if not _obb_on_water(water_mask, cx, cy, bw, lh, angle_rad):
+                continue
+
+            # Check CURRENT occupancy — includes ships already placed in this
+            # cluster so that intra-cluster ships don't overlap.
+            # Use the rotated AABB (axis-aligned bounding box of the OBB) so the
+            # query covers the ship's full footprint regardless of angle_rad.
+            cos_abs = abs(math.cos(angle_rad))
+            sin_abs = abs(math.sin(angle_rad))
+            half_chk_x = int((bw * cos_abs + lh * sin_abs) / 2) + 1
+            half_chk_y = int((bw * sin_abs + lh * cos_abs) / 2) + 1
+            cy0 = max(0, cy - half_chk_y)
+            cy1 = min(image_size, cy + half_chk_y)
+            cx0 = max(0, cx - half_chk_x)
+            cx1 = min(image_size, cx + half_chk_x)
+            if occupancy[cy0:cy1, cx0:cx1].any():
+                continue
+
+            _composite_rgba(cluster_buf, rotated, cx - rw // 2, cy - rh // 2)
+            cid = _ship_class_id(lh, resolution_m, class_id, size_threshold)
+            placed.append((cx, cy, bw, lh, angle_rad, cid))
+            _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
+            break
+
+    if placed:
+        _blend_rgba_layer(background, cluster_buf, cluster_alpha, water_tint)
+        for cx, cy, bw, lh, angle_rad, cid in placed:
+            corners = compute_obb_corners(
+                float(cx), float(cy), float(bw), float(lh), angle_rad,
+            )
+            labels.append(format_obb_label(cid, corners, image_size, image_size))
+
+    return labels
 
 
 def _place_cluster(
@@ -580,88 +733,95 @@ def _place_cluster(
     size_threshold: float | None = None,
     mixed_prob: float = 0.5,
 ) -> list[str]:
-    """Place a cluster of ships side-by-side.  Returns label lines.
+    """Place a cluster of ships.  Returns label lines.
 
-    Ships are laid out perpendicular to the heading direction so their
-    hulls touch.  Two cluster modes are supported:
+    Three layout modes are chosen randomly per cluster:
 
-    - **Uniform** (``mixed=False``): all ships are the same visual size
-      (±10 %), like a naval formation or moored fleet of sister ships.
-    - **Mixed** (``mixed=True``): each ship is independently sized and
-      typed, like a busy anchorage or commercial harbour.
+    - **raft_tight** (35 %): ships side-by-side with actual hull-to-hull contact.
+      Heading consistent within ±5°.  Each ship is staggered longitudinally so
+      bow/stern positions are not perfectly aligned.  OBBs intentionally overlap
+      slightly (negative gap) to ensure real hull contact, not just OBB adjacency.
+    - **raft_open** (30 %): ships side-by-side with variable gaps and ±20° heading
+      jitter.  Small longitudinal stagger applied.
+    - **area_scattered** (35 %): ships scattered within a 2D circular area, each
+      with a fully independent random heading — simulates an anchorage.
 
-    The mode is chosen probabilistically per cluster via *mixed_prob*.
+    Within each layout mode the uniform/mixed sizing distinction is applied
+    via *mixed_prob*.
     """
     n_ships = rng.randint(*cluster_size_range)
-    base_angle = rng.uniform(0, 360)
     labels: list[str] = []
-
-    # Decide cluster mode for this invocation.
     mixed = rng.random() < mixed_prob
 
-    # Pick the first ship (will be rendered with angle in the loop,
-    # but we need to determine size for base-position search)
+    # Choose layout mode for this cluster.
+    layout = rng.choices(
+        ["raft_tight", "raft_open", "area_scattered"],
+        weights=[0.35, 0.30, 0.35],
+    )[0]
+
+    if layout == "area_scattered":
+        return _place_area_cluster(
+            water_mask, occupancy, svg_metas, resolution_m, rng,
+            n_ships, blur_sigma, alpha_range, class_id, image_size, background,
+            length_range, length_exponent, size_threshold, mixed,
+        )
+
+    # raft_tight / raft_open: line arrangement, ships placed side-by-side.
+    tight = layout == "raft_tight"
+    heading_jitter = 5.0 if tight else 20.0   # ± degrees per ship
+    stagger_frac = 0.30 if tight else 0.15     # longitudinal stagger as fraction of lh
+
+    base_angle = rng.uniform(0, 360)
+    base_angle_rad = math.radians(base_angle)
+    cos_base = math.cos(base_angle_rad)
+    sin_base = math.sin(base_angle_rad)
+
     svg_text = _pick_svg(svg_metas, rng, length_range)
-    # Render without rotation just to get the size
-    rgba0, cls0, bw0, lh0, lb0 = _render_ship(
+    _rgba0, cls0, bw0, lh0, _lb0 = _render_ship(
         svg_text, resolution_m, rng, blur_sigma, length_range,
         length_exponent=length_exponent,
     )
-    angle0_rad = math.radians(base_angle)
 
-    # Find a base position on available (water & unoccupied) area
     available = water_mask & ~occupancy
-    pos = find_water_position(available, bw0 * 2, lh0 * 2, angle0_rad, rng)
+    pos = find_water_position(available, bw0 * 2, lh0 * 2, base_angle_rad, rng)
     if pos is None:
         return labels
 
     base_cx, base_cy = pos
-    # Running perpendicular cursor: starts at 0, advances by each ship's beam
-    cursor = 0
+    cursor = 0.0
 
-    # Unified cluster alpha and water tint — ships in the same cluster
-    # share environmental conditions.
     cluster_alpha = rng.uniform(*alpha_range)
     water_tint = _sample_water_tint(background, base_cx, base_cy)
 
-    # Accumulate all cluster ships into an RGBA buffer, then blend once.
-    # This avoids double-blending artefacts in the gaps between hulls.
     cluster_buf = np.zeros((image_size, image_size, 4), dtype=np.uint8)
-    placed: list[tuple[int, int, int, int, float, int]] = []  # (cx, cy, bw, lh, angle_rad, cid)
+    placed: list[tuple[int, int, int, int, float, int]] = []
 
-    # Snapshot of occupancy BEFORE this cluster starts.
-    # Each ship checks against this to avoid landing on OTHER clusters/ships,
-    # while still allowing intra-cluster side-by-side proximity.
+    # Snapshot of occupancy BEFORE this cluster.  Inter-cluster conflicts are
+    # checked against this; intra-cluster adjacency (including overlap for
+    # raft_tight) is allowed and managed by the cursor geometry.
     pre_occupancy = occupancy.copy()
 
     for i in range(n_ships):
-        # Small angle jitter within the cluster
-        angle_deg = base_angle + rng.uniform(-10, 10)
+        angle_deg = base_angle + rng.uniform(-heading_jitter, heading_jitter)
         angle_rad = math.radians(angle_deg)
 
         if i == 0:
-            # First ship: already rendered above, re-render with jitter angle.
             rotated, cls_name, bw, lh, lb = _render_ship(
                 svg_text, resolution_m, rng, blur_sigma, length_range,
                 angle_deg=angle_deg, length_exponent=length_exponent,
             )
         elif mixed:
-            # Mixed cluster: each subsequent ship is independently typed and
-            # sized — drawn from the full length_range without size pinning.
             svg_text_i = _pick_svg(svg_metas, rng, length_range)
             rotated, cls_name, bw, lh, lb = _render_ship(
                 svg_text_i, resolution_m, rng, blur_sigma, length_range,
                 angle_deg=angle_deg, length_exponent=length_exponent,
             )
         else:
-            # Uniform cluster: different SVG but pinned to ±10% of first ship's
-            # pixel size so all hulls look like they belong to the same class.
             svg_text = _pick_svg(svg_metas, rng, length_range)
             _cls, lb = parse_svg_metadata(svg_text)
             scale = rng.uniform(0.9, 1.1)
             jit_bw = max(2, round(bw0 * scale))
             jit_lh = max(3, round(lh0 * scale))
-            # Render rotated SVG
             rotated = rasterize_ship_svg(
                 svg_text, jit_bw, jit_lh, angle_deg=angle_deg
             )
@@ -671,39 +831,64 @@ def _place_cluster(
                 rotated = np.array(img)
             cls_name, bw, lh = cls0, jit_bw, jit_lh
 
-        # Offset across the beam (side-by-side / hull-to-hull).
-        offset = cursor + bw // 2
-        cx = base_cx + int(offset * math.cos(angle_rad))
-        cy = base_cy + int(offset * math.sin(angle_rad))
-        cursor += bw + rng.randint(0, 1)  # hull-to-hull, almost touching
+        # Projected half-width of this ship along the row offset direction.
+        jitter_rad = abs(angle_rad - base_angle_rad)
+        proj_half = (bw * math.cos(jitter_rad) + lh * math.sin(jitter_rad)) / 2.0
 
-        # Image boundary check
+        # Gap between adjacent ships in the row:
+        # raft_tight: negative gap so OBBs overlap slightly → actual hull contact
+        #   along the midship section.  Ships are not rectangles; gap_px = 0 only
+        #   creates a single-point tangency at the widest cross-section.
+        # raft_open: mix of tight/touching/gapped as before.
+        if i == 0:
+            gap_px = 0.0
+        elif tight:
+            gap_px = -bw * rng.uniform(0.08, 0.20)
+        else:
+            gap_mode = rng.random()
+            if gap_mode < 1 / 3:
+                gap_px = 0.0
+            elif gap_mode < 2 / 3:
+                gap_px = rng.uniform(0.0, 1.0)
+            else:
+                gap_px = rng.uniform(bw * 0.2, bw * 0.8)
+
+        # Longitudinal stagger: each ship is displaced along its own length axis
+        # (perpendicular to the row offset direction) so bow/stern positions are
+        # not all aligned on a single transverse line.
+        # At angle = base_angle: length axis = (-sin_base, cos_base).
+        stagger_px = rng.uniform(-lh * stagger_frac, lh * stagger_frac)
+
+        offset = cursor + proj_half + gap_px
+        cx = base_cx + round(offset * cos_base + stagger_px * (-sin_base))
+        cy = base_cy + round(offset * sin_base + stagger_px * cos_base)
+
         rh, rw = rotated.shape[:2]
         if (cx - rw // 2 < 0 or cx + rw // 2 >= image_size
                 or cy - rh // 2 < 0 or cy + rh // 2 >= image_size):
-            break  # cluster has fallen off the edge — stop here
+            break  # cluster has reached the image boundary
 
-        # Water check + occupancy check against OTHER events (not this cluster).
-        # Intra-cluster adjacency is intentional; inter-cluster overlap is not.
+        if not _obb_on_water(water_mask, cx, cy, bw, lh, angle_rad):
+            break  # cluster has reached the coastline
+
+        # Occupancy check against OTHER clusters only (pre_occupancy).
         half_bw = max(1, bw // 2)
         half_lh = max(1, lh // 2)
         cy0 = max(0, cy - half_lh)
         cy1 = min(image_size, cy + half_lh)
         cx0 = max(0, cx - half_bw)
         cx1 = min(image_size, cx + half_bw)
-        if not water_mask[cy0:cy1, cx0:cx1].any():
-            continue
         if pre_occupancy[cy0:cy1, cx0:cx1].any():
+            cursor = offset + proj_half  # skip this slot
             continue
 
-        # Porter-Duff source-over onto cluster buffer (no background yet)
+        cursor = offset + proj_half
+
         _composite_rgba(cluster_buf, rotated, cx - rw // 2, cy - rh // 2)
         cid = _ship_class_id(lh, resolution_m, class_id, size_threshold)
         placed.append((cx, cy, bw, lh, angle_rad, cid))
-        # Update occupancy immediately to prevent within-cluster overlap
         _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
 
-    # Blend the combined cluster layer onto the background once.
     if placed:
         _blend_rgba_layer(background, cluster_buf, cluster_alpha, water_tint)
         for cx, cy, bw, lh, angle_rad, cid in placed:

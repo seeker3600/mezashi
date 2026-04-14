@@ -1050,6 +1050,143 @@ def _obb_area(label: str, img_size: int = 200) -> float:
     )
 
 
+def _parse_obb_polygon(label: str, img_size: int) -> list[tuple[float, float]]:
+    """YOLO OBB ラベルから4頂点のポリゴンを返す。"""
+    parts = label.split()
+    coords = [float(v) * img_size for v in parts[1:]]
+    return [(coords[i], coords[i + 1]) for i in range(0, 8, 2)]
+
+
+def _cross_2d(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _polygon_area(poly: list[tuple[float, float]]) -> float:
+    n = len(poly)
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1]
+    return abs(area) / 2.0
+
+
+def _segment_intersect(
+    p1: tuple[float, float], p2: tuple[float, float],
+    p3: tuple[float, float], p4: tuple[float, float],
+) -> tuple[float, float] | None:
+    """Two segments intersection point (or None)."""
+    d1 = (p2[0] - p1[0], p2[1] - p1[1])
+    d2 = (p4[0] - p3[0], p4[1] - p3[1])
+    cross = d1[0] * d2[1] - d1[1] * d2[0]
+    if abs(cross) < 1e-12:
+        return None
+    t = ((p3[0] - p1[0]) * d2[1] - (p3[1] - p1[1]) * d2[0]) / cross
+    u = ((p3[0] - p1[0]) * d1[1] - (p3[1] - p1[1]) * d1[0]) / cross
+    if 0 <= t <= 1 and 0 <= u <= 1:
+        return (p1[0] + t * d1[0], p1[1] + t * d1[1])
+    return None
+
+
+def _point_in_polygon(pt: tuple[float, float], poly: list[tuple[float, float]]) -> bool:
+    n = len(poly)
+    inside = False
+    x, y = pt
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _polygon_intersection(
+    poly_a: list[tuple[float, float]],
+    poly_b: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Sutherland-Hodgman polygon clipping: clip poly_a by poly_b."""
+    output = list(poly_a)
+    n = len(poly_b)
+    for i in range(n):
+        if not output:
+            return []
+        edge_start = poly_b[i]
+        edge_end = poly_b[(i + 1) % n]
+        inp = output
+        output = []
+        for j in range(len(inp)):
+            curr = inp[j]
+            prev = inp[j - 1]
+            curr_inside = _cross_2d(edge_start, edge_end, curr) >= 0
+            prev_inside = _cross_2d(edge_start, edge_end, prev) >= 0
+            if curr_inside:
+                if not prev_inside:
+                    ix = _segment_intersect(prev, curr, edge_start, edge_end)
+                    if ix:
+                        output.append(ix)
+                output.append(curr)
+            elif prev_inside:
+                ix = _segment_intersect(prev, curr, edge_start, edge_end)
+                if ix:
+                    output.append(ix)
+    return output
+
+
+def _polygon_iou(
+    poly_a: list[tuple[float, float]],
+    poly_b: list[tuple[float, float]],
+) -> float:
+    """Compute IoU between two convex polygons."""
+    inter = _polygon_intersection(poly_a, poly_b)
+    if len(inter) < 3:
+        return 0.0
+    inter_area = _polygon_area(inter)
+    area_a = _polygon_area(poly_a)
+    area_b = _polygon_area(poly_b)
+    union = area_a + area_b - inter_area
+    if union < 1e-12:
+        return 0.0
+    return inter_area / union
+
+
+def _point_to_segment_dist(
+    pt: tuple[float, float],
+    seg_a: tuple[float, float],
+    seg_b: tuple[float, float],
+) -> float:
+    """Minimum distance from a point to a line segment."""
+    dx, dy = seg_b[0] - seg_a[0], seg_b[1] - seg_a[1]
+    len_sq = dx * dx + dy * dy
+    if len_sq < 1e-12:
+        return math.hypot(pt[0] - seg_a[0], pt[1] - seg_a[1])
+    t = max(0.0, min(1.0, ((pt[0] - seg_a[0]) * dx + (pt[1] - seg_a[1]) * dy) / len_sq))
+    proj_x = seg_a[0] + t * dx
+    proj_y = seg_a[1] + t * dy
+    return math.hypot(pt[0] - proj_x, pt[1] - proj_y)
+
+
+def _polygon_min_distance(
+    poly_a: list[tuple[float, float]],
+    poly_b: list[tuple[float, float]],
+) -> float:
+    """Minimum distance between two convex polygons (0 if overlapping)."""
+    # Check overlap
+    inter = _polygon_intersection(poly_a, poly_b)
+    if len(inter) >= 3 and _polygon_area(inter) > 1e-6:
+        return 0.0
+    # Min vertex-to-edge distance
+    best = float("inf")
+    for poly_x, poly_y in [(poly_a, poly_b), (poly_b, poly_a)]:
+        n = len(poly_y)
+        for pt in poly_x:
+            for i in range(n):
+                d = _point_to_segment_dist(pt, poly_y[i], poly_y[(i + 1) % n])
+                if d < best:
+                    best = d
+    return best
+
+
 class TestPlaceCluster:
     """_place_cluster の均一モード / 混合モードの動作検証。"""
 
@@ -1150,8 +1287,75 @@ class TestPlaceCluster:
             f"Mixed clusters should exhibit size diversity (ratio={ratio:.2f})"
         )
 
+    def test_no_significant_overlap(self, scene) -> None:
+        """クラスター内の船同士が大きく重ならないことを検証する。
 
-class TestWorkerInit:
+        raft_tight レイアウトでは意図的に OBB を僅かに重複させて実際の船腹接触を
+        実現するため、最大 IoU は 0 にならない。上限を 0.30 として過度な重複を
+        防ぐ（raft_tight の理論最大は ~0.11; 小型船のピクセル丸めで最大 ~0.25）。
+        """
+        max_iou = 0.0
+        for seed in range(30):
+            wm = scene["water_mask"].copy()
+            oc = np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool)
+            rng = random.Random(seed)
+            labels = _place_cluster(
+                wm, oc, None,
+                resolution_m=5.0, rng=rng,
+                cluster_size_range=(4, 4),
+                blur_sigma=0.0,
+                alpha_range=(0.8, 0.9),
+                class_id=0,
+                image_size=self._IMAGE_SIZE,
+                background=scene["background"].copy(),
+                length_range=(30.0, 80.0),
+                mixed_prob=0.5,
+            )
+            if len(labels) < 2:
+                continue
+            polys = [_parse_obb_polygon(l, self._IMAGE_SIZE) for l in labels]
+            for a in range(len(polys)):
+                for b in range(a + 1, len(polys)):
+                    iou = _polygon_iou(polys[a], polys[b])
+                    if iou > max_iou:
+                        max_iou = iou
+        assert max_iou < 0.30, (
+            f"Ships overlap too much (max IoU={max_iou:.3f})"
+        )
+
+    def test_gap_variety(self, scene) -> None:
+        """クラスター間に隙間・接触・ぴったりの3状態が出現することを検証する。"""
+        min_gaps: list[float] = []
+        for seed in range(50):
+            wm = scene["water_mask"].copy()
+            oc = np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool)
+            rng = random.Random(seed)
+            labels = _place_cluster(
+                wm, oc, None,
+                resolution_m=5.0, rng=rng,
+                cluster_size_range=(3, 3),
+                blur_sigma=0.0,
+                alpha_range=(0.8, 0.9),
+                class_id=0,
+                image_size=self._IMAGE_SIZE,
+                background=scene["background"].copy(),
+                length_range=(30.0, 80.0),
+                mixed_prob=0.5,
+            )
+            if len(labels) < 2:
+                continue
+            polys = [_parse_obb_polygon(l, self._IMAGE_SIZE) for l in labels]
+            for a in range(len(polys) - 1):
+                gap = _polygon_min_distance(polys[a], polys[a + 1])
+                min_gaps.append(gap)
+
+        assert len(min_gaps) >= 10, "テスト成立に必要なサンプル数を得られなかった"
+        # Three regimes: tight/touching (gap <= 1), small gap (1 < gap <= 4),
+        # visible gap (gap > 4)
+        tight = sum(1 for g in min_gaps if g <= 1.5)
+        gapped = sum(1 for g in min_gaps if g > 3.0)
+        assert tight > 0, "隙間なし（tight/touching）の配置が一度も出現しなかった"
+        assert gapped > 0, "隙間あり（gapped）の配置が一度も出現しなかった"
     """_worker_init によるワーカープロセス初期化のテスト。"""
 
     def test_none_svg_dir_sets_none(self) -> None:
