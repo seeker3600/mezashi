@@ -50,6 +50,71 @@ def parse_svg_metadata(svg_text: str) -> tuple[str, float]:
     return ship_class, lb_ratio
 
 
+def _strip_tag(tag: str) -> str:
+    return tag.split("}")[-1]
+
+
+def _parse_points(points_str: str) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    for pair in points_str.split():
+        parts = pair.split(",")
+        if len(parts) != 2:
+            continue
+        points.append((float(parts[0]), float(parts[1])))
+    return points
+
+
+def _find_hull_elements(
+    root: ET.Element,
+) -> tuple[list[tuple[float, float]], ET.Element | None]:
+    """Return hull polygon points and the drawable hull polygon element if present."""
+    hull_points: list[tuple[float, float]] = []
+    for el in root.iter():
+        if _strip_tag(el.tag) != "clipPath":
+            continue
+        for child in el:
+            if _strip_tag(child.tag) == "polygon":
+                hull_points = _parse_points(child.get("points", ""))
+                if hull_points:
+                    break
+        if hull_points:
+            break
+
+    drawable_hull: ET.Element | None = None
+    hull_signature = tuple(hull_points)
+    for child in root:
+        if _strip_tag(child.tag) != "polygon":
+            continue
+        child_points = tuple(_parse_points(child.get("points", "")))
+        if hull_signature and child_points == hull_signature:
+            drawable_hull = child
+            break
+        if not hull_signature and child.get("fill") not in {None, "", "none"}:
+            hull_points = list(child_points)
+            drawable_hull = child
+            break
+
+    return hull_points, drawable_hull
+
+
+def extract_hull_polygon(svg_text: str) -> list[tuple[float, float]]:
+    """Extract the ship hull polygon in SVG viewBox coordinates."""
+    root = ET.fromstring(svg_text)
+    hull_points, _drawable_hull = _find_hull_elements(root)
+    if not hull_points:
+        raise ValueError("Hull polygon not found in SVG")
+    return hull_points
+
+
+def extract_hull_fill(svg_text: str) -> tuple[int, int, int, int]:
+    """Extract the RGBA fill colour of the drawable hull polygon."""
+    root = ET.fromstring(svg_text)
+    _hull_points, drawable_hull = _find_hull_elements(root)
+    if drawable_hull is None:
+        return (128, 128, 128, 255)
+    return parse_color(drawable_hull.get("fill", "rgb(128,128,128)"))
+
+
 # ── SVG → raster ─────────────────────────────────────────────────────────
 
 def _rotate_point(
@@ -245,6 +310,17 @@ def _resize_premultiplied(img: Image.Image, out_w: int, out_h: int) -> Image.Ima
     return Image.fromarray(arr2.astype(np.uint8), "RGBA")
 
 
+def resize_rgba_premultiplied(
+    rgba: NDArray[np.uint8],
+    out_w: int,
+    out_h: int,
+) -> NDArray[np.uint8]:
+    """Resize an RGBA array with premultiplied-alpha filtering."""
+    img = Image.fromarray(rgba, "RGBA")
+    resized = _resize_premultiplied(img, out_w, out_h)
+    return np.array(resized, dtype=np.uint8)
+
+
 def _draw_elements(
     img: Image.Image,
     parent: ET.Element,
@@ -256,12 +332,27 @@ def _draw_elements(
     sin_a: float,
     cx_center: float,
     cy_center: float,
+    skip_element: ET.Element | None = None,
 ) -> None:
     """Recursively render child elements, descending into ``<g>`` groups."""
     for el in parent:
-        tag = el.tag.split("}")[-1]  # strip XML namespace
+        if el is skip_element:
+            continue
+        tag = _strip_tag(el.tag)
         if tag == "g":
-            _draw_elements(img, el, sx, sy, vb_x, vb_y, cos_a, sin_a, cx_center, cy_center)
+            _draw_elements(
+                img,
+                el,
+                sx,
+                sy,
+                vb_x,
+                vb_y,
+                cos_a,
+                sin_a,
+                cx_center,
+                cy_center,
+                skip_element,
+            )
         else:
             drawer = _DRAWER.get(tag)
             if drawer is not None:
@@ -275,6 +366,7 @@ def rasterize_ship_svg(
     *,
     angle_deg: float = 0.0,
     supersample: int = 4,
+    exclude_hull: bool = False,
 ) -> NDArray[np.uint8]:
     """Render an SVG ship to an RGBA numpy array, optionally rotated.
 
@@ -299,6 +391,9 @@ def rasterize_ship_svg(
         Rotation angle in degrees (default 0.0).
     supersample
         Internal rendering scale factor (default 4).
+    exclude_hull
+        When ``True``, skip the top-level hull fill/stroke polygon and render
+        only the clipped shading/details layers.
 
     Returns
     -------
@@ -310,6 +405,7 @@ def rasterize_ship_svg(
     import math
 
     root = ET.fromstring(svg_text)
+    _hull_points, drawable_hull = _find_hull_elements(root)
     vb = root.get("viewBox", "0 0 1 1").split()
     vb_x, vb_y = float(vb[0]), float(vb[1])
     vb_w, vb_h = float(vb[2]), float(vb[3])
@@ -350,7 +446,19 @@ def rasterize_ship_svg(
     cx_center = rotated_w / 2.0
     cy_center = rotated_h / 2.0
 
-    _draw_elements(img, root, sx, sy, adj_vb_x, adj_vb_y, cos_a, sin_a, cx_center, cy_center)
+    _draw_elements(
+        img,
+        root,
+        sx,
+        sy,
+        adj_vb_x,
+        adj_vb_y,
+        cos_a,
+        sin_a,
+        cx_center,
+        cy_center,
+        drawable_hull if exclude_hull else None,
+    )
 
     # Output size = rotated bounding-box of (width_px, height_px)
     if angle_deg != 0.0:

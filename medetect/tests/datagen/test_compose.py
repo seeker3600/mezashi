@@ -6,15 +6,23 @@ import random
 
 import numpy as np
 import pytest
+from PIL import Image, ImageDraw
+
+import medetect.datagen.compose as compose_mod
 
 from medetect.datagen.compose import (
     _SvgMeta,
+    _alpha_mask,
     _blend_rgba_layer,
     _compose_one,
     _composite_rgba,
+    _dilate_mask,
     _false_source_grid,
+    _geometry_projection_extents,
     _load_svg_metas,
+    _mask_row_extents,
     _natural_lb_ratio,
+    _tight_pair_metrics,
     _place_cluster,
     _ship_class_id,
     _stamp_occupancy,
@@ -440,6 +448,18 @@ class TestBlendRgbaLayer:
         # Interior pixel should be changed from 100
         assert bg[5, 5, 0] != 100
         # Pixel outside the layer alpha should remain 100
+        assert bg[0, 0, 0] == 100
+
+    def test_blends_without_water_tint(self) -> None:
+        """water_tint が None の場合、船の色をそのまま使う。"""
+        bg = np.full((10, 10, 3), 100, dtype=np.uint8)
+        layer = np.zeros((10, 10, 4), dtype=np.uint8)
+        layer[3:7, 3:7, :3] = 200
+        layer[3:7, 3:7, 3] = 255
+
+        _blend_rgba_layer(bg, layer, 1.0, None)
+        # Interior pixel should be blended without tinting
+        assert bg[5, 5, 0] != 100
         assert bg[0, 0, 0] == 100
 
 
@@ -1187,6 +1207,168 @@ def _polygon_min_distance(
     return best
 
 
+def _count_connected_components(mask: np.ndarray, min_size: int = 1) -> int:
+    """Count 8-connected components in a boolean mask."""
+    visited = np.zeros_like(mask, dtype=bool)
+    height, width = mask.shape
+    components = 0
+    for y in range(height):
+        for x in range(width):
+            if not mask[y, x] or visited[y, x]:
+                continue
+            stack = [(x, y)]
+            visited[y, x] = True
+            count = 0
+            while stack:
+                cx, cy = stack.pop()
+                count += 1
+                for ny in range(max(0, cy - 1), min(height, cy + 2)):
+                    for nx in range(max(0, cx - 1), min(width, cx + 2)):
+                        if visited[ny, nx] or not mask[ny, nx]:
+                            continue
+                        visited[ny, nx] = True
+                        stack.append((nx, ny))
+            if count >= min_size:
+                components += 1
+    return components
+
+
+class _ForcedLayoutRandom(random.Random):
+    """Random subclass that forces a specific cluster layout."""
+
+    def __init__(self, seed: int, layout: str, base_angle: float = 0.0) -> None:
+        super().__init__(seed)
+        self._layout = layout
+        self._base_angle = base_angle
+        self._uniform_calls = 0
+
+    def choices(self, population, weights=None, *, cum_weights=None, k=1):
+        pop_list = list(population)
+        _layout_map = {
+            "flush": "raft_tight",
+            "partial": "raft_open",
+            "gapped": "area_scattered",
+        }
+        if set(pop_list) == {"raft_tight", "raft_open", "area_scattered"} and k == 1:
+            return [_layout_map.get(self._layout, self._layout)]
+        return super().choices(
+            population, weights=weights, cum_weights=cum_weights, k=k,
+        )
+
+    def uniform(self, a, b):
+        if self._uniform_calls == 0 and a == 0 and b == 360:
+            self._uniform_calls += 1
+            return self._base_angle
+        if a < 0 < b and max(abs(a), abs(b)) <= 2.0:
+            self._uniform_calls += 1
+            return 0.0
+        self._uniform_calls += 1
+        return super().uniform(a, b)
+
+
+def _make_tapered_hull_rgba(beam_px: int, length_px: int) -> np.ndarray:
+    """Create a simple tapered hull mask for tight-placement tests."""
+    img = Image.new("RGBA", (beam_px, length_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    tip = max(1, round(length_px * 0.16))
+    half_x = (beam_px - 1) / 2.0
+    points = [
+        (half_x, 0),
+        (beam_px - 1, tip),
+        (beam_px - 1, max(tip + 1, length_px - tip - 1)),
+        (half_x, length_px - 1),
+        (0, max(tip + 1, length_px - tip - 1)),
+        (0, tip),
+    ]
+    draw.polygon(points, fill=(220, 220, 220, 255))
+    return np.array(img, dtype=np.uint8)
+
+
+def _render_ship_sequence_factory(
+    sizes: list[tuple[int, int]],
+):
+    """Return a deterministic _render_ship mock with predefined sizes."""
+    calls = {"count": 0}
+
+    def _mock_render_ship(
+        svg_text: str,
+        resolution_m: float,
+        rng: random.Random,
+        blur_sigma: float,
+        length_range: tuple[float, float] | None = None,
+        angle_deg: float = 0.0,
+        length_exponent: float = 1.0,
+        supersample: int = 4,
+    ) -> tuple[np.ndarray, str, int, int, float]:
+        index = min(calls["count"], len(sizes) - 1)
+        beam_px, length_px = sizes[index]
+        calls["count"] += 1
+        rgba = _make_tapered_hull_rgba(beam_px, length_px)
+        lb_ratio = length_px / max(beam_px, 1)
+        return rgba, "mock_hull", beam_px, length_px, lb_ratio
+
+    return _mock_render_ship
+
+
+def _capture_cluster_hulls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[np.ndarray, int, int]]:
+    """Capture every hull composited into a cluster buffer."""
+    captured: list[tuple[np.ndarray, int, int]] = []
+    original = compose_mod._composite_rgba
+
+    def _record_hull(
+        layer: np.ndarray,
+        ship_rgba: np.ndarray,
+        x0: int,
+        y0: int,
+    ) -> None:
+        captured.append((ship_rgba.copy(), x0, y0))
+        original(layer, ship_rgba, x0, y0)
+
+    monkeypatch.setattr(compose_mod, "_composite_rgba", _record_hull)
+    return captured
+
+
+def _captured_pair_metrics(
+    placement_a: tuple[np.ndarray, int, int],
+    placement_b: tuple[np.ndarray, int, int],
+) -> tuple[int, bool, float]:
+    """Return overlap, touching flag, and row-axis penetration for two hulls."""
+    rgba_a, x0_a, y0_a = placement_a
+    rgba_b, x0_b, y0_b = placement_b
+    mask_a = _alpha_mask(rgba_a)
+    mask_b = _alpha_mask(rgba_b)
+    cx_a = x0_a + rgba_a.shape[1] // 2
+    cy_a = y0_a + rgba_a.shape[0] // 2
+    cx_b = x0_b + rgba_b.shape[1] // 2
+    cy_b = y0_b + rgba_b.shape[0] // 2
+    min_a, max_a = _mask_row_extents(mask_a, 1.0, 0.0)
+    min_b, _max_b = _mask_row_extents(mask_b, 1.0, 0.0)
+    overlap_px, touching = _tight_pair_metrics(
+        mask_a,
+        _dilate_mask(mask_a, radius=1),
+        mask_b,
+        _dilate_mask(mask_b, radius=1),
+        cx_a,
+        cy_a,
+        cx_b,
+        cy_b,
+    )
+    penetration_px = (cx_a + max_a) - (cx_b + min_b)
+    return overlap_px, touching, penetration_px
+
+
+def _capture_vector_cluster(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Capture raft ship placements passed into the vector cluster renderer."""
+    captured: list = []
+
+    def _mock_render_vector_cluster(ships, image_size, blur_sigma, scene_scale, **kwargs):
+        captured[:] = list(ships)
+        return np.zeros((image_size, image_size, 4), dtype=np.uint8)
+
+    monkeypatch.setattr(compose_mod, "_render_vector_raft_cluster", _mock_render_vector_cluster)
+    return captured
+
+
 class TestPlaceCluster:
     """_place_cluster の均一モード / 混合モードの動作検証。"""
 
@@ -1291,8 +1473,9 @@ class TestPlaceCluster:
         """クラスター内の船同士が大きく重ならないことを検証する。
 
         raft_tight レイアウトでは意図的に OBB を僅かに重複させて実際の船腹接触を
-        実現するため、最大 IoU は 0 にならない。上限を 0.30 として過度な重複を
-        防ぐ（raft_tight の理論最大は ~0.11; 小型船のピクセル丸めで最大 ~0.25）。
+        実現するため、最大 IoU は 0 にならない。実マスクでの接触を必須にした結果、
+        幅 2 px 級の極小船では 1 列の重なりだけで IoU が約 1/3 まで上がり得る。
+        そのため上限を 0.35 とし、深いめり込みだけを防ぐ。
         """
         max_iou = 0.0
         for seed in range(30):
@@ -1319,7 +1502,7 @@ class TestPlaceCluster:
                     iou = _polygon_iou(polys[a], polys[b])
                     if iou > max_iou:
                         max_iou = iou
-        assert max_iou < 0.30, (
+        assert max_iou < 0.35, (
             f"Ships overlap too much (max IoU={max_iou:.3f})"
         )
 
@@ -1356,6 +1539,209 @@ class TestPlaceCluster:
         gapped = sum(1 for g in min_gaps if g > 3.0)
         assert tight > 0, "隙間なし（tight/touching）の配置が一度も出現しなかった"
         assert gapped > 0, "隙間あり（gapped）の配置が一度も出現しなかった"
+
+    @pytest.mark.parametrize(
+        ("sizes", "description"),
+        [
+            ([(4, 18), (4, 18), (5, 20)], "small-small"),
+            ([(14, 72), (14, 72), (16, 80)], "large-large"),
+            ([(4, 18), (4, 18), (14, 72)], "small-large"),
+        ],
+    )
+    def test_tight_cluster_hulls_touch_without_deep_overlap(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+        sizes: list[tuple[int, int]],
+        description: str,
+    ) -> None:
+        """tight クラスターで船腹が接触しつつ過度にめり込まない。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <defs>'
+            '    <clipPath id="h">'
+            '      <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1"/>'
+            '    </clipPath>'
+            '  </defs>'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)" stroke="rgb(20,20,20)"/>'
+            '</svg>'
+        )
+        captured = _capture_vector_cluster(monkeypatch)
+        monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            compose_mod,
+            "_render_ship",
+            _render_ship_sequence_factory(sizes),
+        )
+
+        rng = _ForcedLayoutRandom(7, "flush", base_angle=0.5)
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=rng,
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+        )
+
+        assert len(labels) == 2, f"tight {description} で2隻配置されなかった"
+        assert len(captured) == 2, f"tight {description} の vector capture に失敗した"
+
+        gap = captured[0].hull_geom.distance(captured[1].hull_geom)
+        overlap_area = captured[0].hull_geom.intersection(captured[1].hull_geom).area
+        min_a, max_a = _geometry_projection_extents(captured[0].hull_geom, 1.0, 0.0)
+        min_b, _max_b = _geometry_projection_extents(captured[1].hull_geom, 1.0, 0.0)
+        penetration_px = max_a - min_b
+
+        assert gap <= 1e-6 or overlap_area > 0.0, f"tight {description} がベクトル幾何で接触していない"
+        assert penetration_px <= 1.0, (
+            f"tight {description} が row 方向にめり込みすぎている "
+            f"(gap={gap:.3f}, overlap_area={overlap_area:.3f}, penetration={penetration_px:.2f})"
+        )
+
+    def test_force_tight_layout_overrides_random_layout(self, scene) -> None:
+        """強制 tight スイッチで open/scattered 選択を上書きできる。"""
+        rng = _ForcedLayoutRandom(11, "gapped", base_angle=0.0)
+        labels = _place_cluster(
+            scene["water_mask"],
+            scene["occupancy"],
+            None,
+            resolution_m=5.0,
+            rng=rng,
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(30.0, 80.0),
+            mixed_prob=0.5,
+            force_tight=True,
+        )
+
+        assert len(labels) >= 2, "強制 tight でクラスターが生成されなかった"
+        polys = [_parse_obb_polygon(label, self._IMAGE_SIZE) for label in labels]
+        gaps = [
+            _polygon_min_distance(polys[i], polys[i + 1])
+            for i in range(len(polys) - 1)
+        ]
+        assert gaps, "強制 tight のギャップ検証対象が得られなかった"
+        assert max(gaps) <= 1.5, (
+            f"強制 tight なのに隣接船に明確な隙間が残っている: max_gap={max(gaps):.2f}"
+        )
+
+    def test_tight_cluster_labels_keep_subpixel_offsets(self, scene, monkeypatch: pytest.MonkeyPatch) -> None:
+        """tight クラスターのラベル座標がサブピクセル位置を保持する。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <defs>'
+            '    <clipPath id="h">'
+            '      <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1"/>'
+            '    </clipPath>'
+            '  </defs>'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)" stroke="rgb(20,20,20)"/>'
+            '</svg>'
+        )
+        monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+
+        def _mock_rasterize(svg_text, bw, lh, angle_deg=0.0, supersample=4, exclude_hull=False):
+            if exclude_hull:
+                return np.zeros((lh, bw, 4), dtype=np.uint8)
+            return _make_tapered_hull_rgba(bw, lh)
+
+        monkeypatch.setattr(compose_mod, "rasterize_ship_svg", _mock_rasterize)
+        monkeypatch.setattr(
+            compose_mod,
+            "_render_ship",
+            _render_ship_sequence_factory([(4, 18), (4, 18)]),
+        )
+
+        rng = _ForcedLayoutRandom(7, "flush", base_angle=0.5)
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=rng,
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+            force_tight=True,
+        )
+
+        assert len(labels) == 2, "tight クラスターで2隻配置されなかった"
+        second_poly = _parse_obb_polygon(labels[1], self._IMAGE_SIZE)
+        fractions = [
+            abs(coord - round(coord))
+            for x, y in second_poly
+            for coord in (x, y)
+        ]
+        assert max(fractions) >= 0.05, (
+            "tight クラスターの座標がまだ整数ピクセルに量子化されている"
+        )
+
+    def test_tight_cluster_final_render_has_no_background_slit(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """tight クラスターの最終描画が背景スリットで分断されない。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <defs>'
+            '    <clipPath id="h">'
+            '      <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1"/>'
+            '    </clipPath>'
+            '  </defs>'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)" stroke="rgb(20,20,20)"/>'
+            '</svg>'
+        )
+        monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            compose_mod,
+            "_render_ship",
+            _render_ship_sequence_factory([(6, 24), (6, 24)]),
+        )
+
+        background = scene["background"].copy()
+        rng = _ForcedLayoutRandom(7, "flush", base_angle=0.0)
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=rng,
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=background,
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+            force_tight=True,
+        )
+
+        assert len(labels) == 2, "tight クラスターで2隻配置されなかった"
+        ship_mask = np.any(background != scene["background"], axis=2)
+        assert _count_connected_components(ship_mask, min_size=20) == 1, (
+            "tight クラスターの最終描画が背景スリットで 2 つに分断されている"
+        )
     """_worker_init によるワーカープロセス初期化のテスト。"""
 
     def test_none_svg_dir_sets_none(self) -> None:

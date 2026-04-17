@@ -42,8 +42,13 @@ def main() -> None:
     parser.add_argument(
         "--bg_dir",
         type=Path,
-        required=True,
         help="Directory containing Sentinel-2 *_visual.tif background images.",
+    )
+    parser.add_argument(
+        "--debug_bg_color",
+        type=str,
+        default=None,
+        help="Debug: use solid color background instead of images. Specify color like '#FFFFFF' or 'white'.",
     )
     parser.add_argument(
         "--output_dir",
@@ -104,6 +109,14 @@ def main() -> None:
             "Probability that a cluster contains mixed ship types and sizes "
             "rather than uniform sister ships (default: 0.5). "
             "0.0 = always uniform (same size), 1.0 = always mixed."
+        ),
+    )
+    parser.add_argument(
+        "--force_tight_clusters",
+        action="store_true",
+        help=(
+            "Temporarily force every generated cluster to use the raft_tight "
+            "layout for visual debugging."
         ),
     )
     parser.add_argument(
@@ -249,6 +262,12 @@ def main() -> None:
             "boundaries to prevent ships from being placed on land."
         ),
     )
+    parser.add_argument(
+        "--disable-water-tint",
+        action="store_true",
+        default=False,
+        help="Disable water-colour tinting on ship hulls (debug/analysis option).",
+    )
 
     args = parser.parse_args()
 
@@ -284,6 +303,9 @@ def main() -> None:
         false_ratio=args.false_ratio,
         max_workers=args.workers,
         coastline=args.coastline,
+        force_tight_clusters=args.force_tight_clusters,
+        debug_bg_color=args.debug_bg_color,
+        disable_water_tint=args.disable_water_tint,
     )
 
     print(f"Done: {stats}")

@@ -3,7 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from medetect.datagen.render import parse_color, parse_svg_metadata, rasterize_ship_svg
+from medetect.datagen.render import (
+    extract_hull_polygon,
+    parse_color,
+    parse_svg_metadata,
+    rasterize_ship_svg,
+)
 
 
 class TestParseColor:
@@ -48,6 +53,25 @@ class TestParseSvgMetadata:
         cls, ratio = parse_svg_metadata(svg)
         assert cls == "unknown"
         assert ratio == pytest.approx(5.0)
+
+
+class TestExtractHullPolygon:
+    def test_prefers_clippath_hull_polygon(self) -> None:
+        """clipPath 内の hull polygon を優先して抽出する。"""
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <defs>'
+            '    <clipPath id="h">'
+            '      <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1"/>'
+            '    </clipPath>'
+            '  </defs>'
+            '  <polygon points="0,0 1,0 1,4 0,4" fill="rgb(20,20,20)"/>'
+            '</svg>'
+        )
+        points = extract_hull_polygon(svg)
+        assert points == pytest.approx(
+            [(0.5, 0.0), (1.0, 1.0), (1.0, 3.0), (0.5, 4.0), (0.0, 3.0), (0.0, 1.0)]
+        )
 
 
 class TestRasterizeShipSvg:
@@ -174,3 +198,25 @@ class TestRasterizeShipSvg:
         assert edge_rgb_mean > 200, (
             f"Dark fringe detected on rotated ship edges: mean RGB={edge_rgb_mean:.1f}"
         )
+
+    def test_exclude_hull_keeps_detail_layers(self) -> None:
+        """exclude_hull=True でも hull 上の detail は描画される。"""
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <defs>'
+            '    <clipPath id="h">'
+            '      <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1"/>'
+            '    </clipPath>'
+            '  </defs>'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(120,120,120)" stroke="rgb(20,20,20)"/>'
+            '  <g clip-path="url(#h)">'
+            '    <circle cx="0.5" cy="2" r="0.25" fill="rgb(255,255,255)"/>'
+            '  </g>'
+            '</svg>'
+        )
+
+        result = rasterize_ship_svg(svg, 40, 160, exclude_hull=True)
+
+        assert result[80, 20, 3] > 0
+        assert result[80, 20, :3].mean() > 200
+        assert result[120, 20, 3] == 0
