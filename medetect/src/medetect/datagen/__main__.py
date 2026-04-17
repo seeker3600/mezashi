@@ -42,13 +42,8 @@ def main() -> None:
     parser.add_argument(
         "--bg_dir",
         type=Path,
+        required=True,
         help="Directory containing Sentinel-2 *_visual.tif background images.",
-    )
-    parser.add_argument(
-        "--debug_bg_color",
-        type=str,
-        default=None,
-        help="Debug: use solid color background instead of images. Specify color like '#FFFFFF' or 'white'.",
     )
     parser.add_argument(
         "--output_dir",
@@ -86,7 +81,10 @@ def main() -> None:
         type=_parse_range,
         default="0:10",
         metavar="MIN:MAX",
-        help="Range of ships per image (default: 0:10).",
+        help=(
+            "Range of placement events per image (single ship or cluster group, "
+            "default: 0:10)."
+        ),
     )
     parser.add_argument(
         "--cluster_prob",
@@ -109,14 +107,6 @@ def main() -> None:
             "Probability that a cluster contains mixed ship types and sizes "
             "rather than uniform sister ships (default: 0.5). "
             "0.0 = always uniform (same size), 1.0 = always mixed."
-        ),
-    )
-    parser.add_argument(
-        "--force_tight_clusters",
-        action="store_true",
-        help=(
-            "Temporarily force every generated cluster to use the raft_tight "
-            "layout for visual debugging."
         ),
     )
     parser.add_argument(
@@ -207,9 +197,11 @@ def main() -> None:
         type=float,
         default=1.0,
         help=(
-            "Wake occurrence probability multiplier (default: 1.0). "
+            "single ships only: wake occurrence probability multiplier "
+            "(default: 1.0). "
             "Applied to the built-in per-state probabilities "
             "(STOPPED 20%%, SLOW 50%%, MEDIUM 80%%, FAST 90%%). "
+            "Clustered ships currently do not render wakes. "
             "0.0 = never generate wakes. "
             "0.5 = halve all probabilities. "
             "2.0 = double all probabilities (capped at 100%% per state)."
@@ -220,8 +212,10 @@ def main() -> None:
         type=float,
         default=1.0,
         help=(
-            "Wake opacity/intensity multiplier (default: 1.0). "
+            "single ships only: wake opacity/intensity multiplier "
+            "(default: 1.0). "
             "Controls how strongly a wake appears when it is generated. "
+            "Clustered ships currently do not render wakes. "
             "0.0 = fully transparent (disables rendering). "
             "1.5 = 50%% brighter wakes. "
             "Independent of --wake_prob_scale: probability and intensity "
@@ -262,13 +256,6 @@ def main() -> None:
             "boundaries to prevent ships from being placed on land."
         ),
     )
-    parser.add_argument(
-        "--disable-water-tint",
-        action="store_true",
-        default=False,
-        help="Disable water-colour tinting on ship hulls (debug/analysis option).",
-    )
-
     args = parser.parse_args()
 
     if args.false_ratio and args.false_dir is None:
@@ -303,9 +290,6 @@ def main() -> None:
         false_ratio=args.false_ratio,
         max_workers=args.workers,
         coastline=args.coastline,
-        force_tight_clusters=args.force_tight_clusters,
-        debug_bg_color=args.debug_bg_color,
-        disable_water_tint=args.disable_water_tint,
     )
 
     print(f"Done: {stats}")

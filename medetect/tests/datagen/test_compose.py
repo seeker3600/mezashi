@@ -12,17 +12,13 @@ import medetect.datagen.compose as compose_mod
 
 from medetect.datagen.compose import (
     _SvgMeta,
-    _alpha_mask,
     _blend_rgba_layer,
     _compose_one,
     _composite_rgba,
-    _dilate_mask,
     _false_source_grid,
     _geometry_projection_extents,
     _load_svg_metas,
-    _mask_row_extents,
     _natural_lb_ratio,
-    _tight_pair_metrics,
     _place_cluster,
     _ship_class_id,
     _stamp_occupancy,
@@ -970,6 +966,57 @@ class TestWriteDatasetYaml:
         assert "  4: ship_large\n" in content
 
 
+class TestGenerateDatasetParams:
+    """generate_dataset の記録パラメータ整合を検証する。"""
+
+    def test_removed_debug_params_are_not_written(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+        """削除対象のデバッグ系パラメータは dataset.yaml 用 params に含めない。"""
+        bg_dir = tmp_path / "bg"
+        bg_dir.mkdir()
+        (bg_dir / "scene_visual.tif").write_bytes(b"placeholder")
+
+        captured: dict[str, object] = {}
+
+        class _DummyExecutor:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            def submit(self, *args, **kwargs):
+                msg = "count=0 should not submit compose tasks"
+                raise AssertionError(msg)
+
+        def _capture_yaml(
+            output_dir: pathlib.Path,
+            class_id: int,
+            *,
+            size_threshold: float | None = None,
+            params: dict[str, object] | None = None,
+        ) -> None:
+            captured["params"] = dict(params or {})
+
+        monkeypatch.setattr(compose_mod.concurrent.futures, "ProcessPoolExecutor", _DummyExecutor)
+        monkeypatch.setattr(compose_mod, "_write_dataset_yaml", _capture_yaml)
+
+        compose_mod.generate_dataset(
+            bg_dir=bg_dir,
+            output_dir=tmp_path / "out",
+            count=0,
+            max_workers=1,
+        )
+
+        params = captured["params"]
+        assert isinstance(params, dict)
+        assert "force_tight_clusters" not in params
+        assert "debug_bg_color" not in params
+        assert "disable_water_tint" not in params
+
+
 class TestAugmentTile:
     """augment_tile によるタイルの色オーグメンテーション検証。"""
 
@@ -1284,77 +1331,26 @@ def _make_tapered_hull_rgba(beam_px: int, length_px: int) -> np.ndarray:
     return np.array(img, dtype=np.uint8)
 
 
-def _render_ship_sequence_factory(
+def _resolve_ship_dimensions_sequence_factory(
     sizes: list[tuple[int, int]],
 ):
-    """Return a deterministic _render_ship mock with predefined sizes."""
+    """Return a deterministic _resolve_ship_dimensions mock with predefined sizes."""
     calls = {"count": 0}
 
-    def _mock_render_ship(
+    def _mock_resolve_ship_dimensions(
         svg_text: str,
         resolution_m: float,
         rng: random.Random,
-        blur_sigma: float,
         length_range: tuple[float, float] | None = None,
-        angle_deg: float = 0.0,
         length_exponent: float = 1.0,
-        supersample: int = 4,
-    ) -> tuple[np.ndarray, str, int, int, float]:
+    ) -> tuple[str, int, int, float]:
         index = min(calls["count"], len(sizes) - 1)
         beam_px, length_px = sizes[index]
         calls["count"] += 1
-        rgba = _make_tapered_hull_rgba(beam_px, length_px)
         lb_ratio = length_px / max(beam_px, 1)
-        return rgba, "mock_hull", beam_px, length_px, lb_ratio
+        return "mock_hull", beam_px, length_px, lb_ratio
 
-    return _mock_render_ship
-
-
-def _capture_cluster_hulls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[np.ndarray, int, int]]:
-    """Capture every hull composited into a cluster buffer."""
-    captured: list[tuple[np.ndarray, int, int]] = []
-    original = compose_mod._composite_rgba
-
-    def _record_hull(
-        layer: np.ndarray,
-        ship_rgba: np.ndarray,
-        x0: int,
-        y0: int,
-    ) -> None:
-        captured.append((ship_rgba.copy(), x0, y0))
-        original(layer, ship_rgba, x0, y0)
-
-    monkeypatch.setattr(compose_mod, "_composite_rgba", _record_hull)
-    return captured
-
-
-def _captured_pair_metrics(
-    placement_a: tuple[np.ndarray, int, int],
-    placement_b: tuple[np.ndarray, int, int],
-) -> tuple[int, bool, float]:
-    """Return overlap, touching flag, and row-axis penetration for two hulls."""
-    rgba_a, x0_a, y0_a = placement_a
-    rgba_b, x0_b, y0_b = placement_b
-    mask_a = _alpha_mask(rgba_a)
-    mask_b = _alpha_mask(rgba_b)
-    cx_a = x0_a + rgba_a.shape[1] // 2
-    cy_a = y0_a + rgba_a.shape[0] // 2
-    cx_b = x0_b + rgba_b.shape[1] // 2
-    cy_b = y0_b + rgba_b.shape[0] // 2
-    min_a, max_a = _mask_row_extents(mask_a, 1.0, 0.0)
-    min_b, _max_b = _mask_row_extents(mask_b, 1.0, 0.0)
-    overlap_px, touching = _tight_pair_metrics(
-        mask_a,
-        _dilate_mask(mask_a, radius=1),
-        mask_b,
-        _dilate_mask(mask_b, radius=1),
-        cx_a,
-        cy_a,
-        cx_b,
-        cy_b,
-    )
-    penetration_px = (cx_a + max_a) - (cx_b + min_b)
-    return overlap_px, touching, penetration_px
+    return _mock_resolve_ship_dimensions
 
 
 def _capture_vector_cluster(monkeypatch: pytest.MonkeyPatch) -> list:
@@ -1571,8 +1567,8 @@ class TestPlaceCluster:
         monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
         monkeypatch.setattr(
             compose_mod,
-            "_render_ship",
-            _render_ship_sequence_factory(sizes),
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory(sizes),
         )
 
         rng = _ForcedLayoutRandom(7, "flush", base_angle=0.5)
@@ -1607,37 +1603,6 @@ class TestPlaceCluster:
             f"(gap={gap:.3f}, overlap_area={overlap_area:.3f}, penetration={penetration_px:.2f})"
         )
 
-    def test_force_tight_layout_overrides_random_layout(self, scene) -> None:
-        """強制 tight スイッチで open/scattered 選択を上書きできる。"""
-        rng = _ForcedLayoutRandom(11, "gapped", base_angle=0.0)
-        labels = _place_cluster(
-            scene["water_mask"],
-            scene["occupancy"],
-            None,
-            resolution_m=5.0,
-            rng=rng,
-            cluster_size_range=(3, 3),
-            blur_sigma=0.0,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=scene["background"].copy(),
-            length_range=(30.0, 80.0),
-            mixed_prob=0.5,
-            force_tight=True,
-        )
-
-        assert len(labels) >= 2, "強制 tight でクラスターが生成されなかった"
-        polys = [_parse_obb_polygon(label, self._IMAGE_SIZE) for label in labels]
-        gaps = [
-            _polygon_min_distance(polys[i], polys[i + 1])
-            for i in range(len(polys) - 1)
-        ]
-        assert gaps, "強制 tight のギャップ検証対象が得られなかった"
-        assert max(gaps) <= 1.5, (
-            f"強制 tight なのに隣接船に明確な隙間が残っている: max_gap={max(gaps):.2f}"
-        )
-
     def test_tight_cluster_labels_keep_subpixel_offsets(self, scene, monkeypatch: pytest.MonkeyPatch) -> None:
         """tight クラスターのラベル座標がサブピクセル位置を保持する。"""
         mock_svg = (
@@ -1661,8 +1626,8 @@ class TestPlaceCluster:
         monkeypatch.setattr(compose_mod, "rasterize_ship_svg", _mock_rasterize)
         monkeypatch.setattr(
             compose_mod,
-            "_render_ship",
-            _render_ship_sequence_factory([(4, 18), (4, 18)]),
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(4, 18), (4, 18)]),
         )
 
         rng = _ForcedLayoutRandom(7, "flush", base_angle=0.5)
@@ -1680,7 +1645,6 @@ class TestPlaceCluster:
             background=scene["background"].copy(),
             length_range=(20.0, 80.0),
             mixed_prob=1.0,
-            force_tight=True,
         )
 
         assert len(labels) == 2, "tight クラスターで2隻配置されなかった"
@@ -1714,8 +1678,8 @@ class TestPlaceCluster:
         monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
         monkeypatch.setattr(
             compose_mod,
-            "_render_ship",
-            _render_ship_sequence_factory([(6, 24), (6, 24)]),
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(6, 24), (6, 24)]),
         )
 
         background = scene["background"].copy()
@@ -1734,7 +1698,6 @@ class TestPlaceCluster:
             background=background,
             length_range=(20.0, 80.0),
             mixed_prob=1.0,
-            force_tight=True,
         )
 
         assert len(labels) == 2, "tight クラスターで2隻配置されなかった"
@@ -2041,3 +2004,31 @@ class TestFalseRatioSplit:
             assert synth_count + false_count == total, (
                 f"count={total}, ratio={ratio}: {synth_count}+{false_count}≠{total}"
             )
+
+
+class TestDatagenCli:
+    """datagen CLI の公開オプション整合を検証する。"""
+
+    def test_help_omits_removed_debug_options(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--help から削除対象オプションが消え、説明文が現行仕様に一致する。"""
+        import sys
+
+        import medetect.datagen.__main__ as datagen_main
+
+        monkeypatch.setattr(sys, "argv", ["medetect.datagen", "--help"])
+
+        with pytest.raises(SystemExit) as exc_info:
+            datagen_main.main()
+
+        assert exc_info.value.code == 0
+        help_text = capsys.readouterr().out
+
+        assert "--force_tight_clusters" not in help_text
+        assert "--debug_bg_color" not in help_text
+        assert "--disable-water-tint" not in help_text
+        assert "placement events per image" in help_text
+        assert "single ships only" in help_text

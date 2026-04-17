@@ -41,7 +41,7 @@ from medetect.datagen.render import (
     rasterize_ship_svg,
     resize_rgba_premultiplied,
 )
-from medetect.datagen.wake import MotionState, pick_motion_state, render_wake
+from medetect.datagen.wake import pick_motion_state, render_wake
 from medetect.datagen.water_mask import (
     CoastlineIndex,
     erode_mask,
@@ -519,6 +519,26 @@ def _blend_rgba_layer(
     background[:] = blended.clip(0, 255).astype(np.uint8)
 
 
+def _resolve_ship_dimensions(
+    svg_text: str,
+    resolution_m: float,
+    rng: random.Random,
+    length_range: tuple[float, float] | None = None,
+    length_exponent: float = 1.0,
+) -> tuple[str, int, int, float]:
+    """Return ``(class_name, beam_px, length_px, lb_ratio)`` without rasterizing."""
+    ship_class, lb_ratio = parse_svg_metadata(svg_text)
+    beam_px, length_px = compute_ship_pixel_size(
+        ship_class,
+        lb_ratio,
+        resolution_m,
+        rng,
+        length_range,
+        length_exponent,
+    )
+    return ship_class, beam_px, length_px, lb_ratio
+
+
 def _render_ship(
     svg_text: str,
     resolution_m: float,
@@ -533,9 +553,12 @@ def _render_ship(
 
     The ship is rotated during SVG rasterization (not post-hoc) for better quality.
     """
-    ship_class, lb_ratio = parse_svg_metadata(svg_text)
-    beam_px, length_px = compute_ship_pixel_size(
-        ship_class, lb_ratio, resolution_m, rng, length_range, length_exponent,
+    ship_class, beam_px, length_px, lb_ratio = _resolve_ship_dimensions(
+        svg_text,
+        resolution_m,
+        rng,
+        length_range,
+        length_exponent,
     )
 
     # Rasterize with rotation applied during SVG rendering
@@ -825,106 +848,6 @@ def _stamp_occupancy(
     occupancy[:] = np.array(img) > 0
 
 
-def _alpha_mask(
-    rgba: NDArray[np.uint8],
-    threshold: int = 32,
-) -> NDArray[np.bool_]:
-    """Return a binary hull mask from the rendered alpha channel."""
-    return rgba[:, :, 3] >= threshold
-
-
-def _dilate_mask(
-    mask: NDArray[np.bool_],
-    radius: int = 1,
-) -> NDArray[np.bool_]:
-    """Dilate a binary mask by *radius* pixels."""
-    if radius <= 0 or not mask.any():
-        return mask.copy()
-    img = Image.fromarray(mask.astype(np.uint8) * 255)
-    dilated = img.filter(ImageFilter.MaxFilter(size=radius * 2 + 1))
-    return np.array(dilated) > 0
-
-
-def _mask_row_extents(
-    mask: NDArray[np.bool_],
-    axis_x: float,
-    axis_y: float,
-) -> tuple[float, float]:
-    """Return min/max pixel-centre projection onto the cluster row axis."""
-    ys, xs = np.nonzero(mask)
-    if len(xs) == 0:
-        return 0.0, 0.0
-    cx = (mask.shape[1] - 1) / 2.0
-    cy = (mask.shape[0] - 1) / 2.0
-    rel_x = xs.astype(np.float32) - cx
-    rel_y = ys.astype(np.float32) - cy
-    proj = rel_x * axis_x + rel_y * axis_y
-    return float(proj.min()), float(proj.max())
-
-
-def _mask_intersection_count(
-    mask_a: NDArray[np.bool_],
-    ax0: int,
-    ay0: int,
-    mask_b: NDArray[np.bool_],
-    bx0: int,
-    by0: int,
-) -> int:
-    """Return the number of overlapping true pixels for two placed masks."""
-    ax1 = ax0 + mask_a.shape[1]
-    ay1 = ay0 + mask_a.shape[0]
-    bx1 = bx0 + mask_b.shape[1]
-    by1 = by0 + mask_b.shape[0]
-
-    x0 = max(ax0, bx0)
-    y0 = max(ay0, by0)
-    x1 = min(ax1, bx1)
-    y1 = min(ay1, by1)
-    if x0 >= x1 or y0 >= y1:
-        return 0
-
-    crop_a = mask_a[y0 - ay0 : y1 - ay0, x0 - ax0 : x1 - ax0]
-    crop_b = mask_b[y0 - by0 : y1 - by0, x0 - bx0 : x1 - bx0]
-    return int(np.count_nonzero(crop_a & crop_b))
-
-
-def _tight_pair_metrics(
-    prev_mask: NDArray[np.bool_],
-    prev_dilated: NDArray[np.bool_],
-    curr_mask: NDArray[np.bool_],
-    curr_dilated: NDArray[np.bool_],
-    prev_cx: int,
-    prev_cy: int,
-    curr_cx: int,
-    curr_cy: int,
-) -> tuple[int, bool]:
-    """Return overlap pixels and whether two hull masks visually touch."""
-    prev_x0 = prev_cx - prev_mask.shape[1] // 2
-    prev_y0 = prev_cy - prev_mask.shape[0] // 2
-    curr_x0 = curr_cx - curr_mask.shape[1] // 2
-    curr_y0 = curr_cy - curr_mask.shape[0] // 2
-
-    overlap_px = _mask_intersection_count(
-        prev_mask, prev_x0, prev_y0,
-        curr_mask, curr_x0, curr_y0,
-    )
-    touching = overlap_px > 0
-    if not touching:
-        touching = _mask_intersection_count(
-            prev_dilated, prev_x0, prev_y0,
-            curr_mask, curr_x0, curr_y0,
-        ) > 0 or _mask_intersection_count(
-            prev_mask, prev_x0, prev_y0,
-            curr_dilated, curr_x0, curr_y0,
-        ) > 0
-    return overlap_px, touching
-
-
-def _tight_overlap_limit(area_a: int, area_b: int) -> int:
-    """Return a small raster-overlap allowance for tight clusters."""
-    return min(24, max(2, round(min(area_a, area_b) * 0.01)))
-
-
 def _obb_on_water(
     water_mask: NDArray[np.bool_],
     cx: float,
@@ -971,7 +894,6 @@ def _place_area_cluster(
     length_exponent: float,
     size_threshold: float | None,
     mixed: bool,
-    disable_water_tint: bool = False,
 ) -> list[str]:
     """Place ships in a loose 2D area with fully random headings (anchorage layout).
 
@@ -985,10 +907,12 @@ def _place_area_cluster(
 
     # Reference ship used for area-radius estimation and uniform-mode sizing.
     svg_text_ref = _pick_svg(svg_metas, rng, length_range)
-    _, cls0, bw0, lh0, _ = _render_ship(
-        svg_text_ref, resolution_m, rng, blur_sigma, length_range,
-        length_exponent=length_exponent,
-        supersample=1 if disable_water_tint else 4,
+    cls0, bw0, lh0, _ = _resolve_ship_dimensions(
+        svg_text_ref,
+        resolution_m,
+        rng,
+        length_range,
+        length_exponent,
     )
 
     # Radius large enough to accommodate n_ships with some spacing.
@@ -1001,7 +925,7 @@ def _place_area_cluster(
 
     area_cx, area_cy = pos
     cluster_alpha = rng.uniform(*alpha_range)
-    water_tint = None if disable_water_tint else _sample_water_tint(background, area_cx, area_cy)
+    water_tint = _sample_water_tint(background, area_cx, area_cy)
 
     scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
     scene_size = image_size * scene_scale
@@ -1014,10 +938,12 @@ def _place_area_cluster(
         angle_rad = math.radians(angle_deg)
 
         if i == 0:
-            _rotated_base, cls_name, bw, lh, lb = _render_ship(
-                svg_text_ref, resolution_m, rng, blur_sigma, length_range,
-                angle_deg=angle_deg, length_exponent=length_exponent,
-                supersample=1,
+            cls_name, bw, lh, lb = _resolve_ship_dimensions(
+                svg_text_ref,
+                resolution_m,
+                rng,
+                length_range,
+                length_exponent,
             )
             rotated = _rasterize_ship_scene(
                 svg_text_ref,
@@ -1029,10 +955,12 @@ def _place_area_cluster(
             )
         elif mixed:
             svg_text_i = _pick_svg(svg_metas, rng, length_range)
-            _rotated_base, cls_name, bw, lh, lb = _render_ship(
-                svg_text_i, resolution_m, rng, blur_sigma, length_range,
-                angle_deg=angle_deg, length_exponent=length_exponent,
-                supersample=1,
+            cls_name, bw, lh, lb = _resolve_ship_dimensions(
+                svg_text_i,
+                resolution_m,
+                rng,
+                length_range,
+                length_exponent,
             )
             rotated = _rasterize_ship_scene(
                 svg_text_i,
@@ -1119,8 +1047,6 @@ def _place_cluster(
     length_exponent: float = 1.0,
     size_threshold: float | None = None,
     mixed_prob: float = 0.5,
-    force_tight: bool = False,
-    disable_water_tint: bool = False,
 ) -> list[str]:
     """Place a cluster of ships.  Returns label lines.
 
@@ -1142,20 +1068,16 @@ def _place_cluster(
     mixed = rng.random() < mixed_prob
 
     # Choose layout mode for this cluster.
-    if force_tight:
-        layout = "raft_tight"
-    else:
-        layout = rng.choices(
-            ["raft_tight", "raft_open", "area_scattered"],
-            weights=[0.35, 0.30, 0.35],
-        )[0]
+    layout = rng.choices(
+        ["raft_tight", "raft_open", "area_scattered"],
+        weights=[0.35, 0.30, 0.35],
+    )[0]
 
     if layout == "area_scattered":
         return _place_area_cluster(
             water_mask, occupancy, svg_metas, resolution_m, rng,
             n_ships, blur_sigma, alpha_range, class_id, image_size, background,
             length_range, length_exponent, size_threshold, mixed,
-            disable_water_tint=disable_water_tint,
         )
 
     # raft_tight / raft_open: line arrangement, ships placed side-by-side.
@@ -1170,10 +1092,12 @@ def _place_cluster(
     scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
 
     svg_text = _pick_svg(svg_metas, rng, length_range)
-    _rgba0, cls0, bw0, lh0, _lb0 = _render_ship(
-        svg_text, resolution_m, rng, blur_sigma, length_range,
-        length_exponent=length_exponent,
-        supersample=1,
+    cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
+        svg_text,
+        resolution_m,
+        rng,
+        length_range,
+        length_exponent,
     )
 
     available = water_mask & ~occupancy
@@ -1183,7 +1107,7 @@ def _place_cluster(
 
     base_cx, base_cy = pos
     cluster_alpha = rng.uniform(*alpha_range)
-    water_tint = None if disable_water_tint else _sample_water_tint(background, base_cx, base_cy)
+    water_tint = _sample_water_tint(background, base_cx, base_cy)
     placed: list[_RaftShipPlacement] = []
 
     # Snapshot of occupancy BEFORE this cluster.  Inter-cluster conflicts are
@@ -1317,17 +1241,21 @@ def _place_cluster(
 
         if i == 0:
             svg_text_i = svg_text
-            _rotated_base, cls_name, bw, lh, lb = _render_ship(
-                svg_text_i, resolution_m, rng, blur_sigma, length_range,
-                angle_deg=angle_deg, length_exponent=length_exponent,
-                supersample=1,
+            cls_name, bw, lh, lb = _resolve_ship_dimensions(
+                svg_text_i,
+                resolution_m,
+                rng,
+                length_range,
+                length_exponent,
             )
         elif mixed:
             svg_text_i = _pick_svg(svg_metas, rng, length_range)
-            _rotated_base, cls_name, bw, lh, lb = _render_ship(
-                svg_text_i, resolution_m, rng, blur_sigma, length_range,
-                angle_deg=angle_deg, length_exponent=length_exponent,
-                supersample=1,
+            cls_name, bw, lh, lb = _resolve_ship_dimensions(
+                svg_text_i,
+                resolution_m,
+                rng,
+                length_range,
+                length_exponent,
             )
         else:
             svg_text_i = _pick_svg(svg_metas, rng, length_range)
@@ -1745,9 +1673,6 @@ def generate_dataset(
     false_dir: Path | str | None = None,
     false_ratio: float = 0.0,
     coastline: Path | str | None = None,
-    force_tight_clusters: bool = False,
-    debug_bg_color: str | None = None,
-    disable_water_tint: bool = False,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format.
 
@@ -1776,7 +1701,8 @@ def generate_dataset(
         ``0.5`` = upsample 2× (zoom in).  ``resolution`` still controls ship
         sizes in metres.
     ships_per_image
-        ``(min, max)`` number of ships per tile.
+        ``(min, max)`` number of placement events per tile.  Each event is
+        either one single ship or one cluster group.
     cluster_prob
         Probability that a ship group forms a side-by-side cluster.
     cluster_size
@@ -1842,18 +1768,15 @@ def generate_dataset(
         synth_count = count
 
     # Collect inputs
-    if debug_bg_color is not None:
-        visual_files = []
-    else:
-        if bg_dir is None:
-            msg = "bg_dir must be specified when debug_bg_color is not set"
-            raise ValueError(msg)
-        visual_files = sorted(bg_dir.glob("*_visual.tif"))
-        if not visual_files:
-            visual_files = sorted(bg_dir.glob("*.tif"))
-        if not visual_files:
-            msg = f"No TIF files found in {bg_dir}"
-            raise FileNotFoundError(msg)
+    if bg_dir is None:
+        msg = "bg_dir must be specified"
+        raise ValueError(msg)
+    visual_files = sorted(bg_dir.glob("*_visual.tif"))
+    if not visual_files:
+        visual_files = sorted(bg_dir.glob("*.tif"))
+    if not visual_files:
+        msg = f"No TIF files found in {bg_dir}"
+        raise FileNotFoundError(msg)
 
     # Validate SVG dir now (before spawning workers) so errors surface early.
     svg_dir: Path | None = None
@@ -1873,10 +1796,7 @@ def generate_dataset(
 
     # Pre-generate per-task parameters using the main RNG so that results
     # are reproducible with the same seed regardless of worker count.
-    if debug_bg_color is not None:
-        task_tifs = [None] * synth_count
-    else:
-        task_tifs = [rng.choice(visual_files) for _ in range(synth_count)]
+    task_tifs = [rng.choice(visual_files) for _ in range(synth_count)]
     task_seeds = [rng.randint(0, 2**32 - 1) for _ in range(synth_count)]
 
     if max_workers is None:
@@ -1907,9 +1827,6 @@ def generate_dataset(
         size_threshold=size_threshold,
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
-        force_tight_clusters=force_tight_clusters,
-        debug_bg_color=debug_bg_color,
-        disable_water_tint=disable_water_tint,
     )
 
     # Limit in-flight futures to avoid flooding the IPC queue with thousands
@@ -2012,9 +1929,6 @@ def generate_dataset(
         "false_dir": str(false_dir) if false_dir is not None else None,
         "false_ratio": false_ratio,
         "coastline": str(coastline_path) if coastline_path is not None else None,
-        "force_tight_clusters": force_tight_clusters,
-        "debug_bg_color": debug_bg_color,
-        "disable_water_tint": disable_water_tint,
     }
     _write_dataset_yaml(
         output_dir, class_id,
@@ -2066,9 +1980,6 @@ def _run_compose_task(
     size_threshold: float | None,
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
-    force_tight_clusters: bool = False,
-    debug_bg_color: str | None = None,
-    disable_water_tint: bool = False,
 ) -> tuple[int, int]:
     """Worker function for one dataset image.
 
@@ -2100,10 +2011,7 @@ def _run_compose_task(
         size_threshold=size_threshold,
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
-        force_tight_clusters=force_tight_clusters,
         coastline_index=_worker_coastline_index,
-        debug_bg_color=debug_bg_color,
-        disable_water_tint=disable_water_tint,
     )
 
     if result is None:
@@ -2121,7 +2029,7 @@ def _run_compose_task(
 
 def _compose_one(
     *,
-    tif_path: Path | None,
+    tif_path: Path,
     svg_metas: list[_SvgMeta] | None,
     image_size: int,
     resolution: float | None,
@@ -2143,120 +2051,107 @@ def _compose_one(
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
     coastline_index: CoastlineIndex | None = None,
-    force_tight_clusters: bool = False,
-    debug_bg_color: str | None = None,
-    disable_water_tint: bool = False,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image.  Returns ``(tile, labels, n_clusters)``."""
-    if debug_bg_color is not None:
-        # Create solid color background
-        img = Image.new('RGB', (image_size, image_size), color=debug_bg_color)
-        tile = np.array(img)
-        water_mask = np.ones((image_size, image_size), dtype=bool)
-        ship_resolution = resolution if resolution is not None else 10.0
-    else:
-        with rasterio.open(tif_path) as src:
-            if geo_scale is not None:
-                # Ignore geographic CRS; use a fixed pixel scale.
-                # geo_scale=1.0 → 1 TIFF px = 1 output px
-                # geo_scale=2.0 → 2 TIFF px = 1 output px (zoom out)
-                src_tile = max(1, round(image_size * geo_scale))
-                ship_resolution = resolution if resolution is not None else 10.0
+    with rasterio.open(tif_path) as src:
+        if geo_scale is not None:
+            # Ignore geographic CRS; use a fixed pixel scale.
+            # geo_scale=1.0 → 1 TIFF px = 1 output px
+            # geo_scale=2.0 → 2 TIFF px = 1 output px (zoom out)
+            src_tile = max(1, round(image_size * geo_scale))
+            ship_resolution = resolution if resolution is not None else 10.0
+        else:
+            native_res = (src.res[0] + src.res[1]) / 2.0
+
+            # Handle geographic CRS (degree units)
+            if src.crs and src.crs.is_geographic:
+                center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
+                native_res = native_res * 111320.0 * math.cos(math.radians(center_lat))
+
+            if resolution is not None:
+                src_tile = max(1, round(image_size * resolution / native_res))
             else:
-                native_res = (src.res[0] + src.res[1]) / 2.0
+                src_tile = image_size
+                resolution = native_res
+            ship_resolution = resolution  # type: ignore[assignment]
 
-                # Handle geographic CRS (degree units)
-                if src.crs and src.crs.is_geographic:
-                    center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
-                    native_res = native_res * 111320.0 * math.cos(math.radians(center_lat))
+        for _ in range(max_crop_attempts):
+            if src.width <= src_tile or src.height <= src_tile:
+                return None
+            col = rng.randint(0, src.width - src_tile)
+            row = rng.randint(0, src.height - src_tile)
 
-                if resolution is not None:
-                    src_tile = max(1, round(image_size * resolution / native_res))
-                else:
-                    src_tile = image_size
-                    resolution = native_res
-                ship_resolution = resolution  # type: ignore[assignment]
+            try:
+                tile = _read_tile(src, col, row, src_tile)
+            except rasterio.errors.RasterioIOError:
+                logger.debug(
+                    "Tile read error in %s at col=%d row=%d — retrying",
+                    tif_path.name, col, row,
+                )
+                continue
 
-            for _ in range(max_crop_attempts):
-                if src.width <= src_tile or src.height <= src_tile:
-                    return None
-                col = rng.randint(0, src.width - src_tile)
-                row = rng.randint(0, src.height - src_tile)
+            # Resize if we read a different size from the output
+            if src_tile != image_size:
+                img = Image.fromarray(tile)
+                img = img.resize((image_size, image_size), Image.BILINEAR)
+                tile = np.array(img)
 
-                try:
-                    tile = _read_tile(src, col, row, src_tile)
-                except rasterio.errors.RasterioIOError:
-                    logger.debug(
-                        "Tile read error in %s at col=%d row=%d — retrying",
-                        tif_path.name, col, row,
-                    )
-                    continue
+            # Skip satellite blackout strips (帯状の真っ黒領域)
+            if is_dark_tile(tile):
+                logger.debug(
+                    "Dark tile in %s at col=%d row=%d (mean=%.1f) — retrying",
+                    tif_path.name, col, row, float(tile.mean()),
+                )
+                continue
 
-                # Resize if we read a different size from the output
+            # Water mask
+            scl_file = _scl_path_for(tif_path)
+            scl = _read_scl_tile(scl_file, col, row, src_tile, image_size)
+            if scl is not None:
+                water_mask = make_water_mask_from_scl(scl)
+            else:
+                water_mask = make_water_mask_from_rgb(tile)
+
+            # Exclude no-data (pure black, #000000) pixels — artificially masked
+            # or unimaged regions must not be used for ship placement.
+            water_mask &= ~make_nodata_mask(tile)
+
+            # Coastline-based mask (precise land/water boundary from OSM)
+            if coastline_index is not None:
+                window = Window(col, row, src_tile, src_tile)
+                tile_transform = src.window_transform(window)
                 if src_tile != image_size:
-                    img = Image.fromarray(tile)
-                    img = img.resize((image_size, image_size), Image.BILINEAR)
-                    tile = np.array(img)
-
-                # Skip satellite blackout strips (帯状の真っ黒領域)
-                if is_dark_tile(tile):
-                    logger.debug(
-                        "Dark tile in %s at col=%d row=%d (mean=%.1f) — retrying",
-                        tif_path.name, col, row, float(tile.mean()),
+                    bounds = rasterio.transform.array_bounds(
+                        src_tile, src_tile, tile_transform,
                     )
-                    continue
-
-                # Water mask
-                scl_file = _scl_path_for(tif_path)
-                scl = _read_scl_tile(scl_file, col, row, src_tile, image_size)
-                if scl is not None:
-                    water_mask = make_water_mask_from_scl(scl)
-                else:
-                    water_mask = make_water_mask_from_rgb(tile)
-
-                # Exclude no-data (pure black, #000000) pixels — artificially masked
-                # or unimaged regions must not be used for ship placement.
-                water_mask &= ~make_nodata_mask(tile)
-
-                # Coastline-based mask (precise land/water boundary from OSM)
-                if coastline_index is not None:
-                    window = Window(col, row, src_tile, src_tile)
-                    tile_transform = src.window_transform(window)
-                    if src_tile != image_size:
-                        bounds = rasterio.transform.array_bounds(
-                            src_tile, src_tile, tile_transform,
-                        )
-                        tile_transform = rasterio.transform.from_bounds(
-                            *bounds, image_size, image_size,
-                        )
-                    tile_bounds = rasterio.transform.array_bounds(
-                        image_size, image_size, tile_transform,
+                    tile_transform = rasterio.transform.from_bounds(
+                        *bounds, image_size, image_size,
                     )
-                    coastline_geoms = coastline_index.query(tile_bounds)
-                    coastline_mask = make_water_mask_from_coastline(
-                        coastline_geoms, tile, tile_transform,
-                        image_size, image_size,
-                    )
-                    water_mask &= coastline_mask
+                tile_bounds = rasterio.transform.array_bounds(
+                    image_size, image_size, tile_transform,
+                )
+                coastline_geoms = coastline_index.query(tile_bounds)
+                coastline_mask = make_water_mask_from_coastline(
+                    coastline_geoms, tile, tile_transform,
+                    image_size, image_size,
+                )
+                water_mask &= coastline_mask
 
-                water_mask = erode_mask(water_mask, erode_coast)
+            water_mask = erode_mask(water_mask, erode_coast)
 
-                water_ratio = water_mask.sum() / water_mask.size
-                if water_ratio >= min_water_ratio:
-                    break
-            else:
-                # Land-only tile — output as negative example (no ships)
-                try:
-                    return tile, [], 0  # type: ignore[possibly-undefined]
-                except NameError:
-                    return None
+            water_ratio = water_mask.sum() / water_mask.size
+            if water_ratio >= min_water_ratio:
+                break
+        else:
+            # Land-only tile — output as negative example (no ships)
+            try:
+                return tile, [], 0  # type: ignore[possibly-undefined]
+            except NameError:
+                return None
 
-    # Colour augmentation — applied AFTER water-mask computation to avoid
-    # shifting pixel values that the mask heuristic expects, but BEFORE
-    # ship compositing so ships are blended onto the augmented background.
-    # Skip augmentation for solid-color debug backgrounds.
-    if debug_bg_color is None:
-        tile = augment_tile(tile, rng)
+    # Colour augmentation is applied after water-mask computation so the mask
+    # heuristic sees the original background, but before ship compositing.
+    tile = augment_tile(tile, rng)
 
     # Place ships
     # ships_per_image は「配置イベント数」= 単独船1隻またはクラスタ1グループ を何回行うか。
@@ -2280,8 +2175,6 @@ def _compose_one(
                 class_id, image_size, tile, ship_length_range,
                 length_exponent, size_threshold,
                 mixed_prob=cluster_mixed_prob,
-                force_tight=force_tight_clusters,
-                disable_water_tint=disable_water_tint,
             )
             labels.extend(new_labels)
             if new_labels:
@@ -2294,7 +2187,7 @@ def _compose_one(
             rotated, cls_name, bw, lh, lb = _render_ship(
                 svg_text, ship_resolution, rng, ship_blur_sigma, ship_length_range,
                 angle_deg=angle_deg, length_exponent=length_exponent,
-                supersample=1 if disable_water_tint else 4,
+                supersample=4,
             )
 
             available = water_mask & ~occupancy
@@ -2302,7 +2195,7 @@ def _compose_one(
             if pos is not None:
                 cx, cy = pos
                 alpha = rng.uniform(*ship_alpha)
-                water_tint = None if disable_water_tint else _sample_water_tint(tile, cx, cy)
+                water_tint = _sample_water_tint(tile, cx, cy)
                 ship_state = pick_motion_state(rng)
                 _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
                 corners = compute_obb_corners(
@@ -2315,7 +2208,8 @@ def _compose_one(
                 )
 
     # Pass 2: render wakes for all single ships before any hull is blended.
-    # This guarantees every hull appears on top of every wake (incl. its own).
+    # Clustered ships currently skip wake rendering, so the wake controls apply
+    # only in this pass.
     for cx, cy, rotated, bw, lh, angle_rad, alpha, water_tint, ship_state, cid, corners in single_ships:
         render_wake(
             tile, water_mask,
