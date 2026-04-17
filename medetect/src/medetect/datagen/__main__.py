@@ -14,7 +14,7 @@ logging.getLogger("rasterio").setLevel(logging.WARNING)
 logging.getLogger("rasterio._env").setLevel(logging.ERROR)
 
 
-from medetect.datagen.compose import generate_dataset
+from medetect.datagen import generate_dataset
 
 
 def _parse_range(s: str) -> tuple[int, int]:

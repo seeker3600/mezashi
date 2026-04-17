@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+import random
+
+import numpy as np
+
+from medetect.datagen.scene import _blend_rgba_layer, _composite_rgba, _render_ship, blend_ship
+
+
+class TestBlendShip:
+    def test_modifies_background(self) -> None:
+        """船をブレンドすると背景が変わる。"""
+        bg = np.zeros((100, 100, 3), dtype=np.uint8)
+        ship = np.full((10, 5, 4), 200, dtype=np.uint8)
+        blend_ship(bg, ship, cx=50, cy=50, alpha_factor=1.0)
+        assert bg[50, 50].sum() > 0
+
+    def test_transparent_ship_no_change(self) -> None:
+        """完全透明の船は背景を変えない。"""
+        bg = np.full((100, 100, 3), 50, dtype=np.uint8)
+        ship = np.zeros((10, 5, 4), dtype=np.uint8)
+        original = bg.copy()
+        blend_ship(bg, ship, cx=50, cy=50, alpha_factor=1.0)
+        np.testing.assert_array_equal(bg, original)
+
+    def test_clipping_at_boundary(self) -> None:
+        """画像端でクリッピングされてもエラーにならない。"""
+        bg = np.zeros((100, 100, 3), dtype=np.uint8)
+        ship = np.full((20, 10, 4), 200, dtype=np.uint8)
+        blend_ship(bg, ship, cx=2, cy=2, alpha_factor=0.8)
+
+
+class TestCompositeRgba:
+    """_composite_rgba のテスト。"""
+
+    def test_opaque_over_transparent(self) -> None:
+        """透明背景に不透明船を重ねると船の色がそのまま出る。"""
+        dst = np.zeros((20, 20, 4), dtype=np.uint8)
+        src = np.full((10, 10, 4), 200, dtype=np.uint8)
+        src[:, :, 3] = 255
+        _composite_rgba(dst, src, 5, 5)
+        assert dst[10, 10, 0] == 200
+        assert dst[10, 10, 3] == 255
+
+    def test_transparent_src_no_change(self) -> None:
+        """透明な src を重ねても dst は変わらない。"""
+        dst = np.full((20, 20, 4), 100, dtype=np.uint8)
+        src = np.zeros((10, 10, 4), dtype=np.uint8)
+        _composite_rgba(dst, src, 5, 5)
+        assert dst[10, 10, 0] == 100
+
+    def test_two_ships_gap_shows_through(self) -> None:
+        """並んだ船の間の透明部分が残る。"""
+        buf = np.zeros((50, 50, 4), dtype=np.uint8)
+        ship_a = np.zeros((40, 10, 4), dtype=np.uint8)
+        ship_a[:, :, :3] = 180
+        ship_a[:, :, 3] = 255
+        ship_b = np.zeros((40, 10, 4), dtype=np.uint8)
+        ship_b[:, :, :3] = 160
+        ship_b[:, :, 3] = 255
+
+        _composite_rgba(buf, ship_a, 5, 5)
+        _composite_rgba(buf, ship_b, 16, 5)
+        assert buf[20, 15, 3] == 0
+
+
+class TestBlendRgbaLayer:
+    """_blend_rgba_layer のテスト。"""
+
+    def test_blends_with_alpha_factor(self) -> None:
+        """アルファファクターが混合結果に影響する。"""
+        bg = np.full((10, 10, 3), 100, dtype=np.uint8)
+        layer = np.zeros((10, 10, 4), dtype=np.uint8)
+        layer[3:7, 3:7, :3] = 200
+        layer[3:7, 3:7, 3] = 255
+        water_tint = np.array([40.0, 50.0, 60.0], dtype=np.float32)
+
+        _blend_rgba_layer(bg, layer, 1.0, water_tint)
+        assert bg[5, 5, 0] != 100
+        assert bg[0, 0, 0] == 100
+
+    def test_blends_without_water_tint(self) -> None:
+        """water_tint が None の場合、船の色をそのまま使う。"""
+        bg = np.full((10, 10, 3), 100, dtype=np.uint8)
+        layer = np.zeros((10, 10, 4), dtype=np.uint8)
+        layer[3:7, 3:7, :3] = 200
+        layer[3:7, 3:7, 3] = 255
+
+        _blend_rgba_layer(bg, layer, 1.0, None)
+        assert bg[5, 5, 0] != 100
+        assert bg[0, 0, 0] == 100
+
+
+class TestAntiAliasedEdges:
+    """スーパーサンプリング + PSF ブラーの確認。"""
+
+    def test_alpha_edges_are_soft(self) -> None:
+        """生成された船のアルファ端部に中間値が存在する。"""
+        rng = random.Random(7)
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 5"'
+            ' data-ship-class="destroyer" data-lb-ratio="5.0">'
+            '<polygon points="0.5,0 0,5 1,5" fill="#888"/></svg>'
+        )
+        rgba, *_ = _render_ship(svg, 5.0, rng, 0.8, length_range=(80.0, 100.0))
+        alpha = rgba[:, :, 3]
+        partial = (alpha > 0) & (alpha < 255)
+        assert partial.sum() > 0
+
+    def test_interior_remains_opaque(self) -> None:
+        """内部ピクセルが半透明にならない。"""
+        rng = random.Random(7)
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 5"'
+            ' data-ship-class="destroyer" data-lb-ratio="5.0">'
+            '<polygon points="0.5,0 0,5 1,5" fill="#888"/></svg>'
+        )
+        rgba, *_ = _render_ship(svg, 2.0, rng, 0.5, length_range=(80.0, 100.0))
+        height, width = rgba.shape[:2]
+        interior = rgba[height // 3 : 2 * height // 3, width // 3 : 2 * width // 3, 3]
+        if interior.size > 0:
+            assert interior.min() > 200

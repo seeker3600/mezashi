@@ -4,7 +4,7 @@ from typing import Any
 
 
 def generate_dataset(*args: Any, **kwargs: Any):
-	from medetect.datagen.compose import generate_dataset as _generate_dataset
+	from medetect.datagen.pipeline import generate_dataset as _generate_dataset
 
 	return _generate_dataset(*args, **kwargs)
 
