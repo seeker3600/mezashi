@@ -11,155 +11,20 @@ from PIL import Image, ImageDraw
 import medetect.datagen.compose as compose_mod
 
 from medetect.datagen.compose import (
-    _SvgMeta,
     _blend_rgba_layer,
     _compose_one,
     _composite_rgba,
     _false_source_grid,
     _geometry_projection_extents,
-    _load_svg_metas,
-    _natural_lb_ratio,
     _place_cluster,
-    _ship_class_id,
     _stamp_occupancy,
-    _svg_lb_weight,
     _write_dataset_yaml,
     blend_ship,
-    compute_obb_corners,
-    compute_ship_pixel_size,
     find_water_position,
-    format_obb_label,
     generate_false_negatives,
     is_dark_tile,
     make_nodata_mask,
 )
-
-
-class TestComputeShipPixelSize:
-    def test_destroyer_at_10m(self) -> None:
-        """10 m/px 解像度での駆逐艦のピクセルサイズ。"""
-        rng = random.Random(42)
-        beam_px, length_px = compute_ship_pixel_size(
-            "destroyer", lb_ratio=8.0, resolution_m=10.0, rng=rng,
-        )
-        # Destroyer ~150-190m → 15-19 px at 10m
-        assert 10 <= length_px <= 25
-        assert beam_px >= 2
-
-    def test_fishing_trawler_at_2m(self) -> None:
-        """2 m/px 解像度での漁船のピクセルサイズ。"""
-        rng = random.Random(42)
-        beam_px, length_px = compute_ship_pixel_size(
-            "fishing_trawler", lb_ratio=5.0, resolution_m=2.0, rng=rng,
-        )
-        # Trawler ~15-40m → 7-20 px at 2m
-        assert 5 <= length_px <= 30
-        assert beam_px >= 2
-
-    def test_minimum_pixel_size(self) -> None:
-        """最小ピクセルサイズが保証される。"""
-        rng = random.Random(42)
-        beam_px, length_px = compute_ship_pixel_size(
-            "fishing_trawler", lb_ratio=5.0, resolution_m=100.0, rng=rng,
-        )
-        assert beam_px >= 2
-        assert length_px >= 3
-
-    def test_unknown_class_uses_default(self) -> None:
-        """未知のクラスでもデフォルトサイズで動作する。"""
-        rng = random.Random(42)
-        beam_px, length_px = compute_ship_pixel_size(
-            "unknown_vessel", lb_ratio=6.0, resolution_m=5.0, rng=rng,
-        )
-        assert beam_px >= 2
-        assert length_px >= 3
-
-    def test_length_range_clamps_upper(self) -> None:
-        """length_range の上限が適用される。"""
-        rng = random.Random(0)
-        results = [
-            compute_ship_pixel_size(
-                "destroyer", lb_ratio=8.0, resolution_m=1.0,
-                rng=rng, length_range=(10.0, 50.0),
-            )
-            for _ in range(20)
-        ]
-        for _beam, length in results:
-            assert length <= 52  # 50 m / 1 m/px + rounding tolerance
-
-    def test_length_range_clamps_lower(self) -> None:
-        """length_range の下限が適用される。"""
-        rng = random.Random(0)
-        results = [
-            compute_ship_pixel_size(
-                "fishing_trawler", lb_ratio=5.0, resolution_m=1.0,
-                rng=rng, length_range=(80.0, 200.0),
-            )
-            for _ in range(20)
-        ]
-        for _beam, length in results:
-            assert length >= 78  # 80 m / 1 m/px - rounding
-
-    def test_length_range_none_uses_class_range(self) -> None:
-        """length_range=None のとき制約なし（既存の動作を維持）。"""
-        rng = random.Random(42)
-        beam_px, length_px = compute_ship_pixel_size(
-            "destroyer", lb_ratio=8.0, resolution_m=10.0, rng=rng, length_range=None,
-        )
-        assert length_px >= 3
-
-
-class TestComputeObbCorners:
-    def test_axis_aligned(self) -> None:
-        """回転なしのOBBは軸揃いになる。"""
-        corners = compute_obb_corners(50.0, 50.0, 10.0, 20.0, 0.0)
-        assert len(corners) == 4
-        xs = [c[0] for c in corners]
-        ys = [c[1] for c in corners]
-        assert min(xs) == pytest.approx(45.0)
-        assert max(xs) == pytest.approx(55.0)
-        assert min(ys) == pytest.approx(40.0)
-        assert max(ys) == pytest.approx(60.0)
-
-    def test_rotated_90(self) -> None:
-        """90度回転でOBBの幅と高さが入れ替わる。"""
-        corners = compute_obb_corners(50.0, 50.0, 10.0, 20.0, math.pi / 2)
-        xs = [c[0] for c in corners]
-        ys = [c[1] for c in corners]
-        assert min(xs) == pytest.approx(40.0, abs=0.1)
-        assert max(xs) == pytest.approx(60.0, abs=0.1)
-        assert min(ys) == pytest.approx(45.0, abs=0.1)
-        assert max(ys) == pytest.approx(55.0, abs=0.1)
-
-    def test_corners_form_rectangle(self) -> None:
-        """4点が長方形を構成する（対角線の長さが等しい）。"""
-        corners = compute_obb_corners(100.0, 100.0, 20.0, 40.0, 0.7)
-        # Diagonals should be equal
-        d1 = math.hypot(corners[2][0] - corners[0][0], corners[2][1] - corners[0][1])
-        d2 = math.hypot(corners[3][0] - corners[1][0], corners[3][1] - corners[1][1])
-        assert d1 == pytest.approx(d2, abs=0.01)
-
-
-class TestFormatObbLabel:
-    def test_format(self) -> None:
-        """YOLO OBBラベル文字列のフォーマット。"""
-        corners = [(10.0, 20.0), (30.0, 20.0), (30.0, 60.0), (10.0, 60.0)]
-        label = format_obb_label(0, corners, img_w=100, img_h=100)
-        parts = label.split()
-        assert parts[0] == "0"
-        assert len(parts) == 9  # class + 4 x,y pairs
-        # Check normalization
-        assert float(parts[1]) == pytest.approx(0.1)
-        assert float(parts[2]) == pytest.approx(0.2)
-
-    def test_coordinates_normalized(self) -> None:
-        """座標が画像サイズで正規化される。"""
-        corners = [(100.0, 200.0), (300.0, 200.0), (300.0, 400.0), (100.0, 400.0)]
-        label = format_obb_label(1, corners, img_w=640, img_h=640)
-        parts = label.split()
-        for i in range(1, 9):
-            val = float(parts[i])
-            assert 0.0 <= val <= 1.0
 
 
 class TestFindWaterPosition:
@@ -362,36 +227,6 @@ class TestGeoScale:
         assert tile.shape == (64, 64, 3)
 
 
-class TestShipSizeDistribution:
-    """compute_ship_pixel_size の長さ分布が対数一様になっているか。"""
-
-    def test_log_uniform_more_small_ships(self) -> None:
-        """10-150m 範囲で生成すると中央値が (10+150)/2=80 より小さくなる。"""
-        rng = random.Random(42)
-        lengths = []
-        for _ in range(2000):
-            _bw, lh = compute_ship_pixel_size(
-                "patrol", 5.0, 1.0, rng, length_range=(10.0, 150.0),
-            )
-            lengths.append(lh)  # at 1 m/px, length_px ≈ length_m
-        median = sorted(lengths)[len(lengths) // 2]
-        # Log-uniform median of [10, 150] = sqrt(10*150) ≈ 38.7
-        # Linear uniform median would be ~80.
-        assert median < 55, f"Median {median} too high — distribution not log-uniform"
-
-    def test_log_uniform_still_produces_large(self) -> None:
-        """大きな船もゼロではない。"""
-        rng = random.Random(0)
-        lengths = []
-        for _ in range(500):
-            _bw, lh = compute_ship_pixel_size(
-                "carrier", 5.0, 1.0, rng, length_range=(10.0, 300.0),
-            )
-            lengths.append(lh)
-        # carrier range (260-300) ∩ length_range (10-300) → 260-300m
-        assert max(lengths) > 250, "No large ships generated"
-
-
 class TestCompositeRgba:
     """_composite_rgba (Porter-Duff source-over) のテスト。"""
 
@@ -499,72 +334,6 @@ class TestAntiAliasedEdges:
             )
 
 
-class TestLengthExponent:
-    """length_exponent パラメータによるサイズ分布制御のテスト。"""
-
-    def test_exponent_1_is_log_uniform(self) -> None:
-        """exponent=1.0 は従来の対数一様分布と同等。"""
-        rng = random.Random(42)
-        lengths = [
-            compute_ship_pixel_size(
-                "patrol", 5.0, 1.0, rng,
-                length_range=(10.0, 150.0), length_exponent=1.0,
-            )[1]
-            for _ in range(2000)
-        ]
-        median = sorted(lengths)[len(lengths) // 2]
-        # Log-uniform median of [10, 150] ≈ sqrt(10*150) ≈ 38.7
-        assert median < 55, f"Median {median} too high for log-uniform"
-
-    def test_exponent_gt1_more_small(self) -> None:
-        """exponent>1 にすると中央値が下がる（小さい船が増える）。"""
-        rng1 = random.Random(99)
-        rng2 = random.Random(99)
-        lengths_1 = [
-            compute_ship_pixel_size(
-                "patrol", 5.0, 1.0, rng1,
-                length_range=(10.0, 150.0), length_exponent=1.0,
-            )[1]
-            for _ in range(2000)
-        ]
-        lengths_3 = [
-            compute_ship_pixel_size(
-                "patrol", 5.0, 1.0, rng2,
-                length_range=(10.0, 150.0), length_exponent=3.0,
-            )[1]
-            for _ in range(2000)
-        ]
-        median_1 = sorted(lengths_1)[len(lengths_1) // 2]
-        median_3 = sorted(lengths_3)[len(lengths_3) // 2]
-        assert median_3 < median_1, (
-            f"exponent=3 median ({median_3}) should be < exponent=1 ({median_1})"
-        )
-
-    def test_exponent_lt1_more_large(self) -> None:
-        """exponent<1 にすると中央値が上がる（大きい船が増える）。"""
-        rng1 = random.Random(7)
-        rng2 = random.Random(7)
-        lengths_1 = [
-            compute_ship_pixel_size(
-                "patrol", 5.0, 1.0, rng1,
-                length_range=(10.0, 150.0), length_exponent=1.0,
-            )[1]
-            for _ in range(2000)
-        ]
-        lengths_05 = [
-            compute_ship_pixel_size(
-                "patrol", 5.0, 1.0, rng2,
-                length_range=(10.0, 150.0), length_exponent=0.3,
-            )[1]
-            for _ in range(2000)
-        ]
-        median_1 = sorted(lengths_1)[len(lengths_1) // 2]
-        median_05 = sorted(lengths_05)[len(lengths_05) // 2]
-        assert median_05 > median_1, (
-            f"exponent=0.3 median ({median_05}) should be > exponent=1 ({median_1})"
-        )
-
-
 class TestLandOnlyNegativeExample:
     """陸地のみのタイルがネガティブサンプル（船なし）として出力されるテスト。"""
 
@@ -654,69 +423,6 @@ class TestOverlapPrevention:
             )
 
 
-class TestNaturalLbRatio:
-    """_natural_lb_ratio の小型船・大型船の物理的妥当性検証。"""
-
-    def test_small_ship_low_lb(self) -> None:
-        """5mディンギー等、小型船は低いlb_ratio。"""
-        assert _natural_lb_ratio(5.0) < 4.0
-
-    def test_large_ship_higher_lb(self) -> None:
-        """200m驱逐艦等、大型船は高いlb_ratio。"""
-        assert _natural_lb_ratio(200.0) > _natural_lb_ratio(20.0)
-
-    def test_capped_at_10(self) -> None:
-        """10が上限。"""
-        assert _natural_lb_ratio(10000.0) == 10.0
-
-
-class TestSvgLbWeight:
-    """_svg_lb_weight の重み計算の検証。"""
-
-    def test_natural_lb_gets_full_weight(self) -> None:
-        """自然なlb_ratioの船は重み1.0。"""
-        lb = _natural_lb_ratio(15.0)  # natural lb at 15 m
-        assert _svg_lb_weight(lb, 15.0) == 1.0
-
-    def test_excess_lb_gets_lower_weight(self) -> None:
-        """lb_ratioが自然値の1.5倍を超えると重みが下がる。"""
-        w_bad = _svg_lb_weight(12.0, 10.0)   # very high lb for a 10 m target
-        w_good = _svg_lb_weight(3.5, 10.0)   # low lb, appropriate for 10 m
-        assert w_bad < w_good
-
-    def test_hard_reject_above_twice_natural(self) -> None:
-        """natural の 2.0 倍を超える lb_ratio は hard-reject (weight=0.0)。"""
-        # 5m 船: natural≈3.15, 2×natural≈6.30 → lb=15.0 は超過
-        assert _svg_lb_weight(15.0, 5.0) == 0.0
-
-    def test_within_twice_natural_has_positive_weight(self) -> None:
-        """natural の 2.0 倍以内の lb_ratio は正の重みを返す。"""
-        # 5m 船: natural≈3.15, 2×natural≈6.30 → lb=6.0 は OK
-        assert _svg_lb_weight(6.0, 5.0) > 0.0
-
-
-class TestLoadSvgMetas:
-    """_load_svg_metas のメタデータ読み込みまとめの検証。"""
-
-    def test_reads_lb_ratio(self, tmp_path: "pathlib.Path") -> None:
-        """SVGファイルからlb_ratioを正しく読み取る。"""
-        import pathlib
-
-        svg_content = (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4.5"'
-            ' data-ship-class="fishing_trawler" data-lb-ratio="4.5">'
-            '<polygon points="0.5,0 0,4.5 1,4.5" fill="#666"/></svg>'
-        )
-        svg_path = tmp_path / "test_ship.svg"
-        svg_path.write_text(svg_content, encoding="utf-8")
-
-        metas = _load_svg_metas([svg_path])
-        assert len(metas) == 1
-        assert isinstance(metas[0], _SvgMeta)
-        assert metas[0].path == svg_path
-        assert metas[0].lb_ratio == 4.5
-
-
 class TestIsDarkTile:
     """衛星画像の帯状真っ黒領域 (blackout tile) 検出のテスト。"""
 
@@ -795,133 +501,6 @@ class TestMakeNodataMask:
         assert not water_clean[:4, :].any()
         # 下半分は引き続き水として検出される
         assert water_clean[4:, :].any()
-
-
-class TestNaturalLbRatio:
-    """_natural_lb_ratio の物理的妥当性検証。"""
-
-    def test_small_ship_low_lb(self) -> None:
-        """5m ディンギー等、小型船は低い lb_ratio。"""
-        assert _natural_lb_ratio(5.0) < 4.0
-
-    def test_large_ship_higher_lb(self) -> None:
-        """200m 駆逐艦等、大型船は高い lb_ratio。"""
-        assert _natural_lb_ratio(200.0) > _natural_lb_ratio(20.0)
-
-    def test_capped_at_10(self) -> None:
-        """10 が上限。"""
-        assert _natural_lb_ratio(10000.0) == 10.0
-
-    def test_monotone_increasing(self) -> None:
-        """lb_ratio は船の長さに対して単調増加する。"""
-        lengths = [5.0, 20.0, 50.0, 100.0, 200.0, 300.0]
-        values = [_natural_lb_ratio(l) for l in lengths]
-        for a, b in zip(values, values[1:]):
-            assert a <= b
-
-
-class TestSvgLbWeight:
-    """_svg_lb_weight の重み計算の検証。"""
-
-    def test_natural_lb_gets_full_weight(self) -> None:
-        """自然な lb_ratio の船は重み 1.0。"""
-        lb = _natural_lb_ratio(15.0)
-        assert _svg_lb_weight(lb, 15.0) == 1.0
-
-    def test_excess_lb_gets_lower_weight(self) -> None:
-        """lb_ratio が自然値の 1.5 倍を超えると重みが下がる。"""
-        w_bad = _svg_lb_weight(12.0, 10.0)   # 10m 目標に対し過大な lb
-        w_good = _svg_lb_weight(3.5, 10.0)   # 10m 目標に適した lb
-        assert w_bad < w_good
-
-    def test_hard_reject_above_twice_natural(self) -> None:
-        """natural の 2.0 倍を超える lb_ratio は hard-reject (weight=0.0)。"""
-        # 5m 船: natural≈3.15, 2×natural≈6.30 → lb=15.0 は超過
-        assert _svg_lb_weight(15.0, 5.0) == 0.0
-
-    def test_within_twice_natural_has_positive_weight(self) -> None:
-        """natural の 2.0 倍以内の lb_ratio は正の重みを返す。"""
-        # 5m 船: natural≈3.15, 2×natural≈6.30 → lb=6.0 は OK
-        assert _svg_lb_weight(6.0, 5.0) > 0.0
-
-    def test_hard_reject_boundary_small_ship(self) -> None:
-        """小型船 (15m) で、駆逐艦相当の高 lb は 0.0 になる。"""
-        # 15m 船: natural=3.45, 2×natural=6.90
-        # patrol SVG の lb=5.5〜10.0 → 上端 (10.0) はリジェクト
-        assert _svg_lb_weight(10.0, 15.0) == 0.0
-        # lb=6.0 は 2×natural=6.90 以内 → OK
-        assert _svg_lb_weight(6.0, 15.0) > 0.0
-
-    def test_small_target_prefers_low_lb(self) -> None:
-        """小型船ターゲットでは、低 lb_ratio の SVG が高く評価される。"""
-        w_stubby = _svg_lb_weight(4.0, 10.0)   # trawler-like lb
-        w_slender = _svg_lb_weight(9.0, 10.0)  # destroyer-like lb
-        assert w_stubby > w_slender
-
-
-class TestLoadSvgMetas:
-    """_load_svg_metas のメタデータ読み込みまとめの検証。"""
-
-    def test_reads_lb_ratio(self, tmp_path) -> None:
-        """SVG ファイルから lb_ratio を正しく読み取る。"""
-        svg_content = (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4.5"'
-            ' data-ship-class="fishing_trawler" data-lb-ratio="4.5">'
-            '<polygon points="0.5,0 0,4.5 1,4.5" fill="#666"/></svg>'
-        )
-        svg_path = tmp_path / "test_ship.svg"
-        svg_path.write_text(svg_content, encoding="utf-8")
-
-        metas = _load_svg_metas([svg_path])
-        assert len(metas) == 1
-        assert isinstance(metas[0], _SvgMeta)
-        assert metas[0].path == svg_path
-        assert metas[0].lb_ratio == 4.5
-
-    def test_multiple_files(self, tmp_path) -> None:
-        """複数ファイルのメタが順番通り返る。"""
-        lb_values = [3.8, 6.5, 9.0]
-        paths = []
-        for i, lb in enumerate(lb_values):
-            content = (
-                f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 {lb}"'
-                f' data-ship-class="patrol" data-lb-ratio="{lb}">'
-                f'<polygon points="0.5,0 0,{lb} 1,{lb}" fill="#888"/></svg>'
-            )
-            p = tmp_path / f"ship_{i}.svg"
-            p.write_text(content, encoding="utf-8")
-            paths.append(p)
-
-        metas = _load_svg_metas(paths)
-        assert [m.lb_ratio for m in metas] == lb_values
-
-
-class TestShipClassId:
-    """_ship_class_id による大小クラス判定の検証。"""
-
-    def test_no_threshold_returns_base_id(self) -> None:
-        """しきい値なしのとき、常に base class_id を返す。"""
-        assert _ship_class_id(100, 10.0, 0, None) == 0
-
-    def test_below_threshold_returns_small(self) -> None:
-        """長さがしきい値未満なら small (class_id) を返す。"""
-        # 5 px * 10 m/px = 50 m < 100 m threshold
-        assert _ship_class_id(5, 10.0, 0, 100.0) == 0
-
-    def test_at_threshold_returns_large(self) -> None:
-        """長さがしきい値ちょうどなら large (class_id + 1) を返す。"""
-        # 10 px * 10 m/px = 100 m == 100 m threshold
-        assert _ship_class_id(10, 10.0, 0, 100.0) == 1
-
-    def test_above_threshold_returns_large(self) -> None:
-        """長さがしきい値超なら large (class_id + 1) を返す。"""
-        # 15 px * 10 m/px = 150 m > 100 m threshold
-        assert _ship_class_id(15, 10.0, 0, 100.0) == 1
-
-    def test_custom_base_class_id(self) -> None:
-        """base class_id が 0 以外でも正しく動作する。"""
-        assert _ship_class_id(5, 10.0, 2, 100.0) == 2   # small
-        assert _ship_class_id(15, 10.0, 2, 100.0) == 3   # large
 
 
 class TestWriteDatasetYaml:

@@ -15,6 +15,8 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image, ImageDraw
 
+from medetect.datagen.svg import parse_svg_metadata
+
 
 def parse_color(css: str) -> tuple[int, int, int, int]:
     """Parse ``rgb(r,g,b)`` or ``rgba(r,g,b,a)`` CSS colour string.
@@ -28,26 +30,6 @@ def parse_color(css: str) -> tuple[int, int, int, int]:
         a = round(float(m.group(4)) * 255) if m.group(4) is not None else 255
         return r, g, b, a
     return (128, 128, 128, 255)
-
-
-def parse_svg_metadata(svg_text: str) -> tuple[str, float]:
-    """Extract ship class and L/B ratio from SVG attributes.
-
-    Returns
-    -------
-    tuple[str, float]
-        ``(ship_class, lb_ratio)``.  Defaults to ``("unknown", vb_h)``
-        when attributes are absent.
-    """
-    root = ET.fromstring(svg_text)
-    ship_class = root.get("data-ship-class", "unknown")
-    lb_str = root.get("data-lb-ratio")
-    if lb_str is not None:
-        lb_ratio = float(lb_str)
-    else:
-        vb = root.get("viewBox", "0 0 1 1").split()
-        lb_ratio = float(vb[3])
-    return ship_class, lb_ratio
 
 
 def _strip_tag(tag: str) -> str:
