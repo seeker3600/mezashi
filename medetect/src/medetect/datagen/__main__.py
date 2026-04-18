@@ -251,9 +251,9 @@ def main() -> None:
     parser.add_argument(
         "--shadow_alpha_scale",
         type=float,
-        default=1.0,
+        default=5.0,
         help=(
-            "Shadow intensity multiplier for ship water shadows (default: 1.0). "
+            "Shadow intensity multiplier for ship water shadows (default: 5.0). "
             "Applied to both single ships and clustered ships. "
             "0.0 disables shadow rendering. Values above 1.0 make shadows darker."
         ),
@@ -261,10 +261,10 @@ def main() -> None:
     parser.add_argument(
         "--shadow_length",
         type=_parse_float_range,
-        default="0.0:3.75",
+        default="0.0:1.5",
         metavar="MIN:MAX",
         help=(
-            "Normalized cast-shadow length multiplier range (default: 0.0:3.75). "
+            "Normalized cast-shadow length multiplier range (default: 0.0:1.5). "
             "The sampled value is uniform across the range and is applied relative "
             "to the estimated ship height. 0.0 means no cast shadow."
         ),
@@ -303,6 +303,11 @@ def main() -> None:
             "boundaries to prevent ships from being placed on land."
         ),
     )
+    parser.add_argument(
+        "--override",
+        action="store_true",
+        help="Override the output directory if it already exists.",
+    )
     args = parser.parse_args()
 
     if args.false_ratio and args.false_dir is None:
@@ -340,6 +345,7 @@ def main() -> None:
         false_ratio=args.false_ratio,
         max_workers=args.workers,
         coastline=args.coastline,
+        override=args.override,
     )
 
     print(f"Done: {stats}")

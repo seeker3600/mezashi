@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import random
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -296,10 +297,19 @@ def generate_dataset(
     false_dir: Path | str | None = None,
     false_ratio: float = 0.0,
     coastline: Path | str | None = None,
+    override: bool = False,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format."""
     bg_dir = Path(bg_dir) if bg_dir is not None else None
     output_dir = Path(output_dir)
+
+    if output_dir.exists():
+        if not override:
+            msg = f"Output directory {output_dir} already exists. Use --override to overwrite."
+            raise FileExistsError(msg)
+        else:
+            shutil.rmtree(output_dir)
+            logger.info("Removed existing output directory %s", output_dir)
 
     img_out = output_dir / "images" / "train"
     lbl_out = output_dir / "labels" / "train"
