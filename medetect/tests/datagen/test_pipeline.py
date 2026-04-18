@@ -135,7 +135,7 @@ class TestGenerateDatasetParams:
         assert "debug_bg_color" not in params
         assert "disable_water_tint" not in params
         assert params["shadow_alpha_scale"] == 1.0
-        assert params["shadow_elevation_range"] == "15.0:88.0"
+        assert params["shadow_length_range"] == "0.0:3.75"
 
 
 class TestFalseSourceGrid:

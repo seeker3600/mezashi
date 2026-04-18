@@ -131,6 +131,7 @@ def _darken_rgba_layer(
     alpha = (layer[:, :, 3:4].astype(np.float32) / 255.0) * alpha_factor
     if clip_mask is not None:
         alpha *= clip_mask[:, :, None].astype(np.float32)
+    alpha = np.clip(alpha, 0.0, 0.98)
     darkened = background.astype(np.float32) * (1.0 - alpha)
     background[:] = darkened.clip(0, 255).astype(np.uint8)
 
@@ -170,18 +171,17 @@ def _shadow_offset_pixels(
     beam_px: int,
     length_px: int,
     azimuth_rad: float,
-    elevation_rad: float,
+    shadow_length: float,
     *,
     scene_scale: int = 1,
 ) -> tuple[int, int]:
     """Return a ship-size-aware cast-shadow offset in image-space pixels."""
-    clamped_elevation = max(math.radians(2.0), min(elevation_rad, math.radians(89.0)))
     effective_height_px = max(
         0.75 * scene_scale,
         (beam_px * 0.55 + length_px * 0.035) * scene_scale,
     )
-    cast_length_px = effective_height_px / math.tan(clamped_elevation)
-    max_cast_length = max(1.0, (length_px * 1.6 + beam_px * 1.5) * scene_scale)
+    cast_length_px = effective_height_px * max(0.0, shadow_length)
+    max_cast_length = max(1.0, (length_px * 2.5 + beam_px * 2.5) * scene_scale)
     cast_length_px = min(max_cast_length, cast_length_px)
     if cast_length_px < 0.5:
         return 0, 0
@@ -206,14 +206,9 @@ def _shadow_blur_sigma(
 def _shadow_alpha_for_ship(
     beam_px: int,
     length_px: int,
-    elevation_rad: float,
-    cast_length_px: float,
 ) -> float:
-    """Return a shadow strength derived from ship size and sun elevation."""
-    base_alpha = min(0.34, 0.08 + beam_px * 0.005 + length_px * 0.0012)
-    sun_factor = max(0.0, math.cos(elevation_rad)) ** 1.6
-    length_factor = 0.45 + 0.55 * min(1.0, cast_length_px / max(1.0, beam_px * 2.0))
-    return base_alpha * sun_factor * length_factor
+    """Return a base shadow strength derived from ship size only."""
+    return min(0.34, 0.12 + beam_px * 0.0045 + length_px * 0.0010)
 
 
 def _stamp_shadow_alpha(
@@ -271,7 +266,7 @@ def _make_shadow_rgba(
         source_alpha,
         pad_x,
         pad_y,
-        min(1.0, alpha_scale * 0.65 + 0.05),
+        alpha_scale * 0.72,
     )
 
     if offset_length >= 0.5:

@@ -354,7 +354,7 @@ class TestComposeShadows:
     ) -> None:
         """単船の影は wake の後、船体の前に描かれる。"""
         call_order: list[str] = []
-        shadow_elevations: list[float] = []
+        shadow_lengths: list[float] = []
         positions = [(24, 24), (48, 48)]
         ship_rgba = np.zeros((12, 6, 4), dtype=np.uint8)
         ship_rgba[:, :, :3] = 180
@@ -382,7 +382,7 @@ class TestComposeShadows:
         monkeypatch.setattr(
             compose_mod,
             "_shadow_offset_pixels",
-            lambda beam_px, length_px, azimuth_rad, elevation_rad, *, scene_scale=1: shadow_elevations.append(elevation_rad) or (3, 1),
+            lambda beam_px, length_px, azimuth_rad, shadow_length, *, scene_scale=1: shadow_lengths.append(shadow_length) or (3, 1),
         )
         monkeypatch.setattr(compose_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
         monkeypatch.setattr(compose_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 0.4)
@@ -418,12 +418,12 @@ class TestComposeShadows:
             ship_length_range=None,
             length_exponent=1.0,
             shadow_alpha_scale=1.0,
-            shadow_elevation_range=(35.0, 35.0),
+            shadow_length_range=(2.5, 2.5),
             rng=random.Random(7),
         )
 
         assert result is not None
         assert call_order == ["wake", "wake", "shadow", "shadow", "ship", "ship"]
-        assert len(shadow_elevations) == 2
-        assert len({round(value, 6) for value in shadow_elevations}) == 1
-        assert shadow_elevations[0] == pytest.approx(math.radians(35.0))
+        assert len(shadow_lengths) == 2
+        assert len({round(value, 6) for value in shadow_lengths}) == 1
+        assert shadow_lengths[0] == pytest.approx(2.5)

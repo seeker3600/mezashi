@@ -129,19 +129,19 @@ class TestShadowHelpers:
         assert bg[4, 2, 0] < 100
         assert bg[4, 6, 0] == 100
 
-    def test_shadow_parameters_vary_with_elevation(self) -> None:
-        """低い太陽ほど影が長く、強く、ぼけも広がる。"""
-        low_elevation = np.deg2rad(15.0)
-        high_elevation = np.deg2rad(86.0)
-
-        low_offset = _shadow_offset_pixels(beam_px=8, length_px=40, azimuth_rad=0.0, elevation_rad=low_elevation)
-        high_offset = _shadow_offset_pixels(beam_px=8, length_px=40, azimuth_rad=0.0, elevation_rad=high_elevation)
+    def test_shadow_parameters_vary_with_length(self) -> None:
+        """長い影設定ほど影が長く、ぼけも広がる。"""
+        low_offset = _shadow_offset_pixels(beam_px=8, length_px=40, azimuth_rad=0.0, shadow_length=0.25)
+        high_offset = _shadow_offset_pixels(beam_px=8, length_px=40, azimuth_rad=0.0, shadow_length=3.0)
         low_length = float(np.hypot(*low_offset))
         high_length = float(np.hypot(*high_offset))
 
-        assert low_length > high_length
-        assert _shadow_blur_sigma(8, 40, low_length) > _shadow_blur_sigma(8, 40, high_length)
-        assert _shadow_alpha_for_ship(8, 40, low_elevation, low_length) > _shadow_alpha_for_ship(8, 40, high_elevation, high_length)
+        assert high_length > low_length
+        assert _shadow_blur_sigma(8, 40, high_length) > _shadow_blur_sigma(8, 40, low_length)
+
+    def test_shadow_alpha_is_not_tied_to_shadow_length(self) -> None:
+        """影の濃さは影長パラメータと直接結び付かない。"""
+        assert _shadow_alpha_for_ship(8, 40) == _shadow_alpha_for_ship(8, 40)
 
     def test_make_shadow_rgba_stays_attached_to_ship_footprint(self) -> None:
         """生成された影マスクは船体位置から連続して伸びる。"""
@@ -176,6 +176,18 @@ class TestShadowHelpers:
         blend_shadow(bg, shadow, cx=10, cy=10, alpha_factor=0.0)
 
         np.testing.assert_array_equal(bg, original)
+
+    def test_blend_shadow_allows_alpha_factor_above_one(self) -> None:
+        """alpha_factor > 1 で影をより濃くできる。"""
+        bg_default = np.full((20, 20, 3), 90, dtype=np.uint8)
+        bg_boosted = bg_default.copy()
+        shadow = np.zeros((8, 8, 4), dtype=np.uint8)
+        shadow[:, :, 3] = 160
+
+        blend_shadow(bg_default, shadow, cx=10, cy=10, alpha_factor=1.0)
+        blend_shadow(bg_boosted, shadow, cx=10, cy=10, alpha_factor=1.6)
+
+        assert bg_boosted[10, 10, 0] < bg_default[10, 10, 0]
 
 
 class TestAntiAliasedEdges:

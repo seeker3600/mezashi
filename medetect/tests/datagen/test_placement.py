@@ -672,18 +672,18 @@ class TestPlaceCluster:
         ship_mask = np.any(background != scene["background"], axis=2)
         assert _count_connected_components(ship_mask, min_size=20) == 1
 
-    def test_tight_cluster_shares_shadow_elevation(
+    def test_tight_cluster_shares_shadow_length(
         self,
         scene,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """tight クラスター内では全船が同じ太陽高度を使う。"""
+        """tight クラスター内では全船が同じ影長パラメータを使う。"""
         mock_svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
             '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
             '</svg>'
         )
-        shadow_elevations: list[float] = []
+        shadow_lengths: list[float] = []
 
         monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
         monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
@@ -695,7 +695,7 @@ class TestPlaceCluster:
         monkeypatch.setattr(
             placement_mod,
             "_shadow_offset_pixels",
-            lambda beam_px, length_px, azimuth_rad, elevation_rad, *, scene_scale=1: shadow_elevations.append(elevation_rad) or (3, 1),
+            lambda beam_px, length_px, azimuth_rad, shadow_length, *, scene_scale=1: shadow_lengths.append(shadow_length) or (3, 1),
         )
         monkeypatch.setattr(placement_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
         monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 0.4)
@@ -727,27 +727,27 @@ class TestPlaceCluster:
             length_range=(20.0, 80.0),
             mixed_prob=1.0,
             shadow_azimuth_rad=math.pi / 6.0,
-            shadow_elevation_rad=math.radians(40.0),
+            shadow_length=2.0,
             shadow_alpha_scale=1.0,
         )
 
         assert len(labels) == 2
-        assert len(shadow_elevations) == 2
-        assert len({round(value, 6) for value in shadow_elevations}) == 1
-        assert shadow_elevations[0] == pytest.approx(math.radians(40.0))
+        assert len(shadow_lengths) == 2
+        assert len({round(value, 6) for value in shadow_lengths}) == 1
+        assert shadow_lengths[0] == pytest.approx(2.0)
 
-    def test_area_cluster_shares_shadow_elevation(
+    def test_area_cluster_shares_shadow_length(
         self,
         scene,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """散開クラスターでも全船が同じ太陽高度を使う。"""
+        """散開クラスターでも全船が同じ影長パラメータを使う。"""
         mock_svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
             '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
             '</svg>'
         )
-        shadow_elevations: list[float] = []
+        shadow_lengths: list[float] = []
 
         monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
         monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (100, 100))
@@ -759,7 +759,7 @@ class TestPlaceCluster:
         monkeypatch.setattr(
             placement_mod,
             "_shadow_offset_pixels",
-            lambda beam_px, length_px, azimuth_rad, elevation_rad, *, scene_scale=1: shadow_elevations.append(elevation_rad) or (3, 1),
+            lambda beam_px, length_px, azimuth_rad, shadow_length, *, scene_scale=1: shadow_lengths.append(shadow_length) or (3, 1),
         )
         monkeypatch.setattr(placement_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
         monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 0.4)
@@ -791,11 +791,11 @@ class TestPlaceCluster:
             length_range=(20.0, 80.0),
             mixed_prob=1.0,
             shadow_azimuth_rad=math.pi / 3.0,
-            shadow_elevation_rad=math.radians(25.0),
+            shadow_length=3.25,
             shadow_alpha_scale=1.0,
         )
 
         assert len(labels) >= 1
-        assert len(shadow_elevations) == len(labels)
-        assert len({round(value, 6) for value in shadow_elevations}) == 1
-        assert shadow_elevations[0] == pytest.approx(math.radians(25.0))
+        assert len(shadow_lengths) == len(labels)
+        assert len({round(value, 6) for value in shadow_lengths}) == 1
+        assert shadow_lengths[0] == pytest.approx(3.25)

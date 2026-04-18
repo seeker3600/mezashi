@@ -203,7 +203,7 @@ def _compose_one(
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
     shadow_alpha_scale: float = 1.0,
-    shadow_elevation_range: tuple[float, float] = (15.0, 88.0),
+    shadow_length_range: tuple[float, float] = (0.0, 3.75),
     shadow_azimuth_rad: float | None = None,
     coastline_index: CoastlineIndex | None = None,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
@@ -315,9 +315,9 @@ def _compose_one(
     n_clusters = 0
     single_ships: list[SingleShipPlacement] = []
     tile_shadow_azimuth = shadow_azimuth_rad if shadow_azimuth_rad is not None else rng.uniform(0.0, 2.0 * math.pi)
-    elevation_min_deg, elevation_max_deg = shadow_elevation_range
-    elevation_min_deg, elevation_max_deg = sorted((elevation_min_deg, elevation_max_deg))
-    tile_shadow_elevation = math.radians(rng.uniform(elevation_min_deg, elevation_max_deg))
+    shadow_length_min, shadow_length_max = shadow_length_range
+    shadow_length_min, shadow_length_max = sorted((shadow_length_min, shadow_length_max))
+    tile_shadow_length = rng.uniform(shadow_length_min, shadow_length_max)
 
     for _ in range(n_events):
         is_cluster = rng.random() < cluster_prob
@@ -340,7 +340,7 @@ def _compose_one(
                 size_threshold,
                 mixed_prob=cluster_mixed_prob,
                 shadow_azimuth_rad=tile_shadow_azimuth,
-                shadow_elevation_rad=tile_shadow_elevation,
+                shadow_length=tile_shadow_length,
                 shadow_alpha_scale=shadow_alpha_scale,
             )
             labels.extend(new_labels)
@@ -376,7 +376,7 @@ def _compose_one(
                     bw,
                     lh,
                     tile_shadow_azimuth,
-                    tile_shadow_elevation,
+                    tile_shadow_length,
                 )
                 cast_length = math.hypot(offset_x, offset_y)
                 shadow_rgba = _make_shadow_rgba(
@@ -384,12 +384,7 @@ def _compose_one(
                     offset_x=offset_x,
                     offset_y=offset_y,
                     blur_sigma=_shadow_blur_sigma(bw, lh, cast_length),
-                    alpha_scale=_shadow_alpha_for_ship(
-                        bw,
-                        lh,
-                        tile_shadow_elevation,
-                        cast_length,
-                    ) * shadow_alpha_scale,
+                    alpha_scale=_shadow_alpha_for_ship(bw, lh),
                 )
             _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
             corners = compute_obb_corners(
@@ -434,7 +429,14 @@ def _compose_one(
 
     for ship in single_ships:
         if ship.shadow_rgba is not None:
-            blend_shadow(tile, ship.shadow_rgba, ship.cx, ship.cy, clip_mask=water_mask)
+            blend_shadow(
+                tile,
+                ship.shadow_rgba,
+                ship.cx,
+                ship.cy,
+                alpha_factor=shadow_alpha_scale,
+                clip_mask=water_mask,
+            )
 
     for ship in single_ships:
         blend_ship(tile, ship.rotated, ship.cx, ship.cy, ship.alpha, ship.water_tint)

@@ -45,7 +45,7 @@ class _ComposeTaskConfig:
     wake_prob_scale: float
     wake_alpha_scale: float
     shadow_alpha_scale: float
-    shadow_elevation_range: tuple[float, float]
+    shadow_length_range: tuple[float, float]
 
 
 def _worker_init(
@@ -289,7 +289,8 @@ def generate_dataset(
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
     shadow_alpha_scale: float = 1.0,
-    shadow_elevation_range: tuple[float, float] = (15.0, 88.0),
+    shadow_length_range: tuple[float, float] = (0.0, 3.75),
+    shadow_elevation_range: tuple[float, float] | None = None,
     max_workers: int | None = None,
     false_dir: Path | str | None = None,
     false_ratio: float = 0.0,
@@ -347,6 +348,15 @@ def generate_dataset(
         max_workers = os.cpu_count() or 1
 
     stats = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+    if shadow_elevation_range is not None:
+        elev_min, elev_max = sorted(shadow_elevation_range)
+        elev_min = max(2.0, min(89.0, elev_min))
+        elev_max = max(2.0, min(89.0, elev_max))
+        shadow_length_range = (
+            1.0 / math.tan(math.radians(elev_max)),
+            1.0 / math.tan(math.radians(elev_min)),
+        )
+
     task_config = _ComposeTaskConfig(
         image_size=image_size,
         resolution=resolution,
@@ -366,7 +376,7 @@ def generate_dataset(
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
         shadow_alpha_scale=shadow_alpha_scale,
-        shadow_elevation_range=shadow_elevation_range,
+        shadow_length_range=shadow_length_range,
     )
 
     max_inflight = max_workers * 2
@@ -464,7 +474,7 @@ def generate_dataset(
         "wake_prob_scale": wake_prob_scale,
         "wake_alpha_scale": wake_alpha_scale,
         "shadow_alpha_scale": shadow_alpha_scale,
-        "shadow_elevation_range": f"{shadow_elevation_range[0]}:{shadow_elevation_range[1]}",
+        "shadow_length_range": f"{shadow_length_range[0]}:{shadow_length_range[1]}",
         "false_dir": str(false_dir) if false_dir is not None else None,
         "false_ratio": false_ratio,
         "coastline": str(coastline_path) if coastline_path is not None else None,
@@ -528,7 +538,7 @@ def _run_compose_task(
         wake_prob_scale=config.wake_prob_scale,
         wake_alpha_scale=config.wake_alpha_scale,
         shadow_alpha_scale=config.shadow_alpha_scale,
-        shadow_elevation_range=config.shadow_elevation_range,
+        shadow_length_range=config.shadow_length_range,
         coastline_index=_worker_coastline_index,
     )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 from pathlib import Path
 
 logging.basicConfig(
@@ -229,19 +230,26 @@ def main() -> None:
         help=(
             "Shadow intensity multiplier for ship water shadows (default: 1.0). "
             "Applied to both single ships and clustered ships. "
-            "0.0 disables shadow rendering."
+            "0.0 disables shadow rendering. Values above 1.0 make shadows darker."
+        ),
+    )
+    parser.add_argument(
+        "--shadow_length",
+        type=_parse_float_range,
+        default="0.0:3.75",
+        metavar="MIN:MAX",
+        help=(
+            "Normalized cast-shadow length multiplier range (default: 0.0:3.75). "
+            "The sampled value is uniform across the range and is applied relative "
+            "to the estimated ship height. 0.0 means no cast shadow."
         ),
     )
     parser.add_argument(
         "--shadow_elevation",
         type=_parse_float_range,
-        default="15:88",
+        default=None,
         metavar="MIN:MAX",
-        help=(
-            "Sun elevation range in degrees for ship shadows (default: 15:88). "
-            "Higher values produce shorter or nearly invisible shadows. "
-            "Lower values produce longer shadows."
-        ),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--false_dir",
@@ -284,6 +292,19 @@ def main() -> None:
     if args.false_dir and not (0.0 < args.false_ratio < 1.0):
         parser.error("--false_ratio must be in (0, 1) when --false_dir is set")
 
+    shadow_length_range = args.shadow_length
+    if args.shadow_elevation is not None:
+        logging.getLogger(__name__).warning(
+            "--shadow_elevation is deprecated; use --shadow_length instead.",
+        )
+        elev_min, elev_max = sorted(args.shadow_elevation)
+        elev_min = max(2.0, min(89.0, elev_min))
+        elev_max = max(2.0, min(89.0, elev_max))
+        shadow_length_range = (
+            1.0 / math.tan(math.radians(elev_max)),
+            1.0 / math.tan(math.radians(elev_min)),
+        )
+
     stats = generate_dataset(
         bg_dir=args.bg_dir,
         output_dir=args.output_dir,
@@ -308,6 +329,7 @@ def main() -> None:
         wake_prob_scale=args.wake_prob_scale,
         wake_alpha_scale=args.wake_alpha_scale,
         shadow_alpha_scale=args.shadow_alpha_scale,
+        shadow_length_range=shadow_length_range,
         shadow_elevation_range=args.shadow_elevation,
         false_dir=args.false_dir,
         false_ratio=args.false_ratio,

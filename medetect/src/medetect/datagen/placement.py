@@ -198,7 +198,7 @@ def _render_vector_raft_cluster(
     scene_scale: int,
     join_tolerance: float = 0.0,
     shadow_azimuth_rad: float | None = None,
-    shadow_elevation_rad: float | None = None,
+    shadow_length: float | None = None,
     shadow_alpha_scale: float = 1.0,
 ) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
     """Render a raft cluster from vector hulls plus per-ship detail layers."""
@@ -235,7 +235,7 @@ def _render_vector_raft_cluster(
     if (
         shadow_alpha_scale > 0.0
         and shadow_azimuth_rad is not None
-        and shadow_elevation_rad is not None
+        and shadow_length is not None
     ):
         for ship in ships:
             ship_rgba = _rasterize_ship_scene(
@@ -250,7 +250,7 @@ def _render_vector_raft_cluster(
                 ship.bw,
                 ship.lh,
                 shadow_azimuth_rad,
-                shadow_elevation_rad,
+                shadow_length,
                 scene_scale=scene_scale,
             )
             cast_length = math.hypot(offset_x, offset_y)
@@ -264,12 +264,7 @@ def _render_vector_raft_cluster(
                     cast_length,
                     scene_scale=scene_scale,
                 ),
-                alpha_scale=_shadow_alpha_for_ship(
-                    ship.bw,
-                    ship.lh,
-                    shadow_elevation_rad,
-                    cast_length,
-                ) * shadow_alpha_scale,
+                alpha_scale=_shadow_alpha_for_ship(ship.bw, ship.lh),
             )
             shadow_x0, shadow_y0 = _cluster_scene_origin(
                 ship.cx,
@@ -390,7 +385,7 @@ def _place_area_cluster(
     size_threshold: float | None,
     mixed: bool,
     shadow_azimuth_rad: float | None = None,
-    shadow_elevation_rad: float | None = None,
+    shadow_length: float | None = None,
     shadow_alpha_scale: float = 1.0,
 ) -> list[str]:
     """Place ships in a loose 2D area with fully random headings."""
@@ -499,13 +494,13 @@ def _place_area_cluster(
             if (
                 shadow_alpha_scale > 0.0
                 and shadow_azimuth_rad is not None
-                and shadow_elevation_rad is not None
+                and shadow_length is not None
             ):
                 offset_x, offset_y = _shadow_offset_pixels(
                     bw,
                     lh,
                     shadow_azimuth_rad,
-                    shadow_elevation_rad,
+                    shadow_length,
                     scene_scale=scene_scale,
                 )
                 cast_length = math.hypot(offset_x, offset_y)
@@ -519,12 +514,7 @@ def _place_area_cluster(
                         cast_length,
                         scene_scale=scene_scale,
                     ),
-                    alpha_scale=_shadow_alpha_for_ship(
-                        bw,
-                        lh,
-                        shadow_elevation_rad,
-                        cast_length,
-                    ) * shadow_alpha_scale,
+                    alpha_scale=_shadow_alpha_for_ship(bw, lh),
                 )
                 shadow_x0, shadow_y0 = _cluster_scene_origin(cx, cy, shadow_rgba, scene_scale)
                 _composite_rgba(shadow_buf, shadow_rgba, shadow_x0, shadow_y0)
@@ -537,7 +527,12 @@ def _place_area_cluster(
 
     if placed:
         shadow_layer = _downsample_cluster_layer(shadow_buf, image_size, scene_scale)
-        _darken_rgba_layer(background, shadow_layer, cluster_alpha, clip_mask=water_mask)
+        _darken_rgba_layer(
+            background,
+            shadow_layer,
+            cluster_alpha * shadow_alpha_scale,
+            clip_mask=water_mask,
+        )
         cluster_layer = _downsample_cluster_layer(cluster_buf, image_size, scene_scale)
         _blend_rgba_layer(background, cluster_layer, cluster_alpha, water_tint)
         for cx, cy, bw, lh, angle_rad, cid in placed:
@@ -566,7 +561,7 @@ def _place_cluster(
     size_threshold: float | None = None,
     mixed_prob: float = 0.5,
     shadow_azimuth_rad: float | None = None,
-    shadow_elevation_rad: float | None = None,
+    shadow_length: float | None = None,
     shadow_alpha_scale: float = 1.0,
 ) -> list[str]:
     """Place a cluster of ships and return label lines."""
@@ -597,7 +592,7 @@ def _place_cluster(
             size_threshold,
             mixed,
             shadow_azimuth_rad,
-            shadow_elevation_rad,
+            shadow_length,
             shadow_alpha_scale,
         )
 
@@ -878,7 +873,7 @@ def _place_cluster(
             scene_scale,
             join_tolerance=0.75 if tight else 0.0,
             shadow_azimuth_rad=shadow_azimuth_rad,
-            shadow_elevation_rad=shadow_elevation_rad,
+            shadow_length=shadow_length,
             shadow_alpha_scale=shadow_alpha_scale,
         )
         shadow_layer: NDArray[np.uint8]
