@@ -16,14 +16,18 @@ from shapely.geometry.base import BaseGeometry
 from medetect.datagen.obb import compute_obb_corners, format_obb_label
 from medetect.datagen.render import extract_hull_fill, extract_hull_polygon, rasterize_ship_svg
 from medetect.datagen.scene import (
+    RgbaLayerPatch,
     _blend_rgba_layer,
+    _blend_rgba_patch,
     _cluster_scene_origin,
     _composite_rgba,
     _darken_rgba_layer,
-    _downsample_cluster_layer,
+    _darken_rgba_patch,
+    _downsample_cluster_patch,
     _make_shadow_rgba,
     _rasterize_ship_scene,
     _sample_water_tint,
+    _scene_patch_bounds,
     _shadow_alpha_for_ship,
     _shadow_blur_sigma,
     _shadow_offset_pixels,
@@ -37,6 +41,39 @@ from medetect.datagen.ship import (
 from medetect.datagen.svg import parse_svg_metadata
 
 _CLUSTER_SCENE_SUPERSAMPLE: int = 4
+_CLUSTER_RESAMPLE_PAD_OUTPUT_PX: int = 3
+
+
+def _rgba_scene_rect(
+    layer: NDArray[np.uint8],
+    x0: int,
+    y0: int,
+) -> tuple[int, int, int, int]:
+    """Return an RGBA layer rectangle in scene coordinates."""
+    return x0, y0, x0 + layer.shape[1], y0 + layer.shape[0]
+
+
+def _composite_items_to_patch(
+    items: list[tuple[NDArray[np.uint8], int, int]],
+    scene_size: int,
+    scene_scale: int,
+    *,
+    padding: int = 0,
+) -> RgbaLayerPatch | None:
+    """Composite RGBA items into a local supersampled patch and downsample it."""
+    if not items:
+        return None
+
+    bounds = [_rgba_scene_rect(layer, x0, y0) for layer, x0, y0 in items]
+    patch_bounds = _scene_patch_bounds(bounds, scene_size, scene_scale, padding=padding)
+    if patch_bounds is None:
+        return None
+
+    patch_x0, patch_y0, patch_x1, patch_y1 = patch_bounds
+    patch = np.zeros((patch_y1 - patch_y0, patch_x1 - patch_x0, 4), dtype=np.uint8)
+    for layer, x0, y0 in items:
+        _composite_rgba(patch, layer, x0 - patch_x0, y0 - patch_y0)
+    return _downsample_cluster_patch(patch, patch_x0, patch_y0, scene_scale)
 
 
 @dataclass(frozen=True)
@@ -201,10 +238,17 @@ def _render_vector_raft_cluster(
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
     shadow_alpha_scale: float = 1.0,
-) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
+) -> tuple[RgbaLayerPatch | None, RgbaLayerPatch]:
     """Render a raft cluster from vector hulls plus per-ship detail layers."""
     scene_size = image_size * scene_scale
-    hull_img = Image.new("RGBA", (scene_size, scene_size), (0, 0, 0, 0))
+    resample_pad = scene_scale * _CLUSTER_RESAMPLE_PAD_OUTPUT_PX
+    blur_pad = 0
+    if blur_sigma > 0 and ships:
+        blur_pad = math.ceil(blur_sigma * scene_scale * 3.0) + 2
+
+    hull_entries: list[tuple[BaseGeometry, tuple[int, int, int, int]]] = []
+    layer_bounds: list[tuple[float, float, float, float]] = []
+
     if join_tolerance > 0.0 and ships:
         merged_hull: BaseGeometry | None = None
         for ship in ships:
@@ -221,7 +265,8 @@ def _render_vector_raft_cluster(
                 yfact=scene_scale,
                 origin=(0.0, 0.0),
             )
-            _draw_geometry_fill(hull_img, scaled_underlay, avg_fill)
+            hull_entries.append((scaled_underlay, avg_fill))
+            layer_bounds.append(tuple(map(float, scaled_underlay.bounds)))
     for ship in ships:
         scaled_hull = affinity.scale(
             ship.hull_geom,
@@ -229,10 +274,11 @@ def _render_vector_raft_cluster(
             yfact=scene_scale,
             origin=(0.0, 0.0),
         )
-        _draw_geometry_fill(hull_img, scaled_hull, ship.hull_fill)
+        hull_entries.append((scaled_hull, ship.hull_fill))
+        layer_bounds.append(tuple(map(float, scaled_hull.bounds)))
 
-    layer = np.array(hull_img, dtype=np.uint8)
-    shadow_layer = np.zeros((scene_size, scene_size, 4), dtype=np.uint8)
+    detail_items: list[tuple[NDArray[np.uint8], int, int]] = []
+    shadow_items: list[tuple[NDArray[np.uint8], int, int]] = []
     if (
         shadow_alpha > 0.0
         and shadow_alpha_scale > 0.0
@@ -274,7 +320,7 @@ def _render_vector_raft_cluster(
                 shadow_rgba,
                 scene_scale,
             )
-            _composite_rgba(shadow_layer, shadow_rgba, shadow_x0, shadow_y0)
+            shadow_items.append((shadow_rgba, shadow_x0, shadow_y0))
 
     for ship in ships:
         detail_rgba = rasterize_ship_svg(
@@ -291,7 +337,27 @@ def _render_vector_raft_cluster(
             detail_rgba,
             scene_scale,
         )
-        _composite_rgba(layer, detail_rgba, x0_scene, y0_scene)
+        detail_items.append((detail_rgba, x0_scene, y0_scene))
+        layer_bounds.append(_rgba_scene_rect(detail_rgba, x0_scene, y0_scene))
+
+    patch_bounds = _scene_patch_bounds(
+        layer_bounds,
+        scene_size,
+        scene_scale,
+        padding=blur_pad + resample_pad,
+    )
+    if patch_bounds is None:
+        return None, RgbaLayerPatch(0, 0, np.zeros((1, 1, 4), dtype=np.uint8))
+
+    patch_x0, patch_y0, patch_x1, patch_y1 = patch_bounds
+    hull_img = Image.new("RGBA", (patch_x1 - patch_x0, patch_y1 - patch_y0), (0, 0, 0, 0))
+    for geometry, fill in hull_entries:
+        translated = affinity.translate(geometry, xoff=-patch_x0, yoff=-patch_y0)
+        _draw_geometry_fill(hull_img, translated, fill)
+
+    layer = np.array(hull_img, dtype=np.uint8)
+    for detail_rgba, x0_scene, y0_scene in detail_items:
+        _composite_rgba(layer, detail_rgba, x0_scene - patch_x0, y0_scene - patch_y0)
 
     if blur_sigma > 0 and ships:
         img = Image.fromarray(layer)
@@ -299,8 +365,13 @@ def _render_vector_raft_cluster(
         layer = np.array(img)
 
     return (
-        _downsample_cluster_layer(shadow_layer, image_size, scene_scale),
-        _downsample_cluster_layer(layer, image_size, scene_scale),
+        _composite_items_to_patch(
+            shadow_items,
+            scene_size,
+            scene_scale,
+            padding=resample_pad,
+        ),
+        _downsample_cluster_patch(layer, patch_x0, patch_y0, scene_scale),
     )
 
 
@@ -416,8 +487,9 @@ def _place_area_cluster(
 
     scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
     scene_size = image_size * scene_scale
-    cluster_buf = np.zeros((scene_size, scene_size, 4), dtype=np.uint8)
-    shadow_buf = np.zeros((scene_size, scene_size, 4), dtype=np.uint8)
+    resample_pad = scene_scale * _CLUSTER_RESAMPLE_PAD_OUTPUT_PX
+    cluster_items: list[tuple[NDArray[np.uint8], int, int]] = []
+    shadow_items: list[tuple[NDArray[np.uint8], int, int]] = []
     placed: list[tuple[float, float, int, int, float, int]] = []
 
     for i in range(n_ships):
@@ -521,9 +593,9 @@ def _place_area_cluster(
                     alpha_scale=_shadow_alpha_for_ship(bw, lh),
                 )
                 shadow_x0, shadow_y0 = _cluster_scene_origin(cx, cy, shadow_rgba, scene_scale)
-                _composite_rgba(shadow_buf, shadow_rgba, shadow_x0, shadow_y0)
+                shadow_items.append((shadow_rgba, shadow_x0, shadow_y0))
 
-            _composite_rgba(cluster_buf, rotated, x0_scene, y0_scene)
+            cluster_items.append((rotated, x0_scene, y0_scene))
             cid = _ship_class_id(lh, resolution_m, class_id, size_threshold)
             placed.append((cx, cy, bw, lh, angle_rad, cid))
             _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
@@ -532,15 +604,27 @@ def _place_area_cluster(
     if placed:
         shadow_alpha_factor = shadow_alpha * shadow_alpha_scale
         if shadow_alpha_factor > 0.0:
-            shadow_layer = _downsample_cluster_layer(shadow_buf, image_size, scene_scale)
-            _darken_rgba_layer(
-                background,
-                shadow_layer,
-                shadow_alpha_factor,
-                clip_mask=water_mask,
+            shadow_patch = _composite_items_to_patch(
+                shadow_items,
+                scene_size,
+                scene_scale,
+                padding=resample_pad,
             )
-        cluster_layer = _downsample_cluster_layer(cluster_buf, image_size, scene_scale)
-        _blend_rgba_layer(background, cluster_layer, cluster_alpha, water_tint)
+            if shadow_patch is not None:
+                _darken_rgba_patch(
+                    background,
+                    shadow_patch,
+                    shadow_alpha_factor,
+                    clip_mask=water_mask,
+                )
+        cluster_patch = _composite_items_to_patch(
+            cluster_items,
+            scene_size,
+            scene_scale,
+            padding=resample_pad,
+        )
+        if cluster_patch is not None:
+            _blend_rgba_patch(background, cluster_patch, cluster_alpha, water_tint)
         for cx, cy, bw, lh, angle_rad, cid in placed:
             corners = compute_obb_corners(
                 float(cx), float(cy), float(bw), float(lh), angle_rad,
@@ -874,7 +958,7 @@ def _place_cluster(
         cursor_edge = row_offset + max_proj
 
     if placed:
-        cluster_layer = _render_vector_raft_cluster(
+        rendered_cluster = _render_vector_raft_cluster(
             placed,
             image_size,
             blur_sigma,
@@ -885,20 +969,37 @@ def _place_cluster(
             shadow_alpha=shadow_alpha,
             shadow_alpha_scale=shadow_alpha_scale,
         )
-        shadow_layer: NDArray[np.uint8]
-        if isinstance(cluster_layer, tuple):
-            shadow_layer, cluster_layer = cluster_layer
-        else:
-            shadow_layer = np.zeros((image_size, image_size, 4), dtype=np.uint8)
         shadow_alpha_factor = shadow_alpha * shadow_alpha_scale
-        if shadow_alpha_factor > 0.0:
-            _darken_rgba_layer(
-                background,
-                shadow_layer,
-                shadow_alpha_factor,
-                clip_mask=water_mask,
-            )
-        _blend_rgba_layer(background, cluster_layer, cluster_alpha, water_tint)
+        if (
+            isinstance(rendered_cluster, tuple)
+            and len(rendered_cluster) == 2
+            and isinstance(rendered_cluster[1], RgbaLayerPatch)
+        ):
+            shadow_patch, cluster_patch = rendered_cluster
+            if shadow_alpha_factor > 0.0 and shadow_patch is not None:
+                _darken_rgba_patch(
+                    background,
+                    shadow_patch,
+                    shadow_alpha_factor,
+                    clip_mask=water_mask,
+                )
+            _blend_rgba_patch(background, cluster_patch, cluster_alpha, water_tint)
+        else:
+            shadow_layer: NDArray[np.uint8]
+            cluster_layer: NDArray[np.uint8]
+            if isinstance(rendered_cluster, tuple):
+                shadow_layer, cluster_layer = rendered_cluster
+            else:
+                shadow_layer = np.zeros((image_size, image_size, 4), dtype=np.uint8)
+                cluster_layer = rendered_cluster
+            if shadow_alpha_factor > 0.0:
+                _darken_rgba_layer(
+                    background,
+                    shadow_layer,
+                    shadow_alpha_factor,
+                    clip_mask=water_mask,
+                )
+            _blend_rgba_layer(background, cluster_layer, cluster_alpha, water_tint)
         for ship in placed:
             corners = compute_obb_corners(
                 float(ship.cx),

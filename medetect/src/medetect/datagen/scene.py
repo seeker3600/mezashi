@@ -33,6 +33,15 @@ class SingleShipPlacement:
     corners: list[tuple[float, float]]
 
 
+@dataclass(frozen=True)
+class RgbaLayerPatch:
+    """Top-left anchored RGBA patch in image coordinates."""
+
+    x0: int
+    y0: int
+    layer: NDArray[np.uint8]
+
+
 _SHADOW_TILE_ALPHA_RANGE = (0.08, 0.11)
 _SHADOW_SIZE_ALPHA_BOOST_MAX = 0.12
 
@@ -130,6 +139,28 @@ def _blend_rgba_layer(
     background[:] = blended.clip(0, 255).astype(np.uint8)
 
 
+def _blend_rgba_patch(
+    background: NDArray[np.uint8],
+    patch: RgbaLayerPatch,
+    alpha_factor: float,
+    water_tint: NDArray[np.float32] | None,
+) -> None:
+    """Alpha-composite an RGBA patch onto an RGB background in place."""
+    ph, pw = patch.layer.shape[:2]
+    bh, bw = background.shape[:2]
+
+    sx0, sy0 = max(0, -patch.x0), max(0, -patch.y0)
+    dx0, dy0 = max(0, patch.x0), max(0, patch.y0)
+    cw = min(pw - sx0, bw - dx0)
+    ch = min(ph - sy0, bh - dy0)
+    if cw <= 0 or ch <= 0:
+        return
+
+    bg_crop = background[dy0 : dy0 + ch, dx0 : dx0 + cw]
+    layer_crop = patch.layer[sy0 : sy0 + ch, sx0 : sx0 + cw]
+    _blend_rgba_layer(bg_crop, layer_crop, alpha_factor, water_tint)
+
+
 def _darken_rgba_layer(
     background: NDArray[np.uint8],
     layer: NDArray[np.uint8],
@@ -143,6 +174,31 @@ def _darken_rgba_layer(
     alpha = np.clip(alpha, 0.0, 0.98)
     darkened = background.astype(np.float32) * (1.0 - alpha)
     background[:] = darkened.clip(0, 255).astype(np.uint8)
+
+
+def _darken_rgba_patch(
+    background: NDArray[np.uint8],
+    patch: RgbaLayerPatch,
+    alpha_factor: float,
+    clip_mask: NDArray[np.bool_] | None = None,
+) -> None:
+    """Darken a background image in-place using an RGBA patch alpha."""
+    ph, pw = patch.layer.shape[:2]
+    bh, bw = background.shape[:2]
+
+    sx0, sy0 = max(0, -patch.x0), max(0, -patch.y0)
+    dx0, dy0 = max(0, patch.x0), max(0, patch.y0)
+    cw = min(pw - sx0, bw - dx0)
+    ch = min(ph - sy0, bh - dy0)
+    if cw <= 0 or ch <= 0:
+        return
+
+    bg_crop = background[dy0 : dy0 + ch, dx0 : dx0 + cw]
+    layer_crop = patch.layer[sy0 : sy0 + ch, sx0 : sx0 + cw]
+    mask_crop = None
+    if clip_mask is not None:
+        mask_crop = clip_mask[dy0 : dy0 + ch, dx0 : dx0 + cw]
+    _darken_rgba_layer(bg_crop, layer_crop, alpha_factor, clip_mask=mask_crop)
 
 
 def blend_shadow(
@@ -371,6 +427,58 @@ def _cluster_scene_origin(
     cx_scene = round(cx * scene_scale)
     cy_scene = round(cy * scene_scale)
     return cx_scene - ship_rgba.shape[1] // 2, cy_scene - ship_rgba.shape[0] // 2
+
+
+def _scene_patch_bounds(
+    bounds: list[tuple[float, float, float, float]],
+    scene_size: int,
+    scene_scale: int,
+    *,
+    padding: int = 0,
+) -> tuple[int, int, int, int] | None:
+    """Return supersample-grid-aligned scene bounds for a local cluster patch."""
+    if not bounds:
+        return None
+
+    min_x = min(bound[0] for bound in bounds)
+    min_y = min(bound[1] for bound in bounds)
+    max_x = max(bound[2] for bound in bounds)
+    max_y = max(bound[3] for bound in bounds)
+
+    if max_x <= 0.0 or max_y <= 0.0 or min_x >= scene_size or min_y >= scene_size:
+        return None
+
+    x0 = max(0, int(math.floor((min_x - padding) / scene_scale)) * scene_scale)
+    y0 = max(0, int(math.floor((min_y - padding) / scene_scale)) * scene_scale)
+    x1 = min(scene_size, int(math.ceil((max_x + padding) / scene_scale)) * scene_scale)
+    y1 = min(scene_size, int(math.ceil((max_y + padding) / scene_scale)) * scene_scale)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def _downsample_cluster_patch(
+    layer: NDArray[np.uint8],
+    scene_x0: int,
+    scene_y0: int,
+    scene_scale: int,
+) -> RgbaLayerPatch:
+    """Downsample a local supersampled cluster patch to image coordinates."""
+    if scene_x0 % scene_scale != 0 or scene_y0 % scene_scale != 0:
+        msg = "scene patch origin must align with the supersample grid"
+        raise ValueError(msg)
+
+    if scene_scale == 1:
+        return RgbaLayerPatch(scene_x0, scene_y0, layer)
+
+    if layer.shape[0] % scene_scale != 0 or layer.shape[1] % scene_scale != 0:
+        msg = "scene patch dimensions must align with the supersample grid"
+        raise ValueError(msg)
+
+    out_w = max(1, layer.shape[1] // scene_scale)
+    out_h = max(1, layer.shape[0] // scene_scale)
+    downsampled = resize_rgba_premultiplied(layer, out_w, out_h)
+    return RgbaLayerPatch(scene_x0 // scene_scale, scene_y0 // scene_scale, downsampled)
 
 
 def _downsample_cluster_layer(

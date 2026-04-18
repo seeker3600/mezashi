@@ -714,17 +714,17 @@ class TestPlaceCluster:
             shadow_patch_biases.append(alpha_scale)
             return np.zeros((ship_rgba.shape[0], ship_rgba.shape[1], 4), dtype=np.uint8)
 
-        def _mock_darken_rgba_layer(
+        def _mock_darken_rgba_patch(
             background: np.ndarray,
-            layer: np.ndarray,
+            patch: object,
             alpha_factor: float,
             clip_mask: np.ndarray | None = None,
         ) -> None:
-            del background, layer, clip_mask
+            del background, patch, clip_mask
             darken_factors.append(alpha_factor)
 
         monkeypatch.setattr(placement_mod, "_make_shadow_rgba", _mock_make_shadow_rgba)
-        monkeypatch.setattr(placement_mod, "_darken_rgba_layer", _mock_darken_rgba_layer)
+        monkeypatch.setattr(placement_mod, "_darken_rgba_patch", _mock_darken_rgba_patch)
 
         labels = _place_cluster(
             scene["water_mask"],
@@ -752,6 +752,67 @@ class TestPlaceCluster:
         assert len({round(value, 6) for value in shadow_lengths}) == 1
         assert shadow_lengths[0] == pytest.approx(2.0)
         assert darken_factors == [pytest.approx(0.24)]
+
+    def test_tight_cluster_downsamples_only_local_patch(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """tight クラスターは全画面ではなく局所パッチだけを縮小する。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        recorded_shapes: list[tuple[int, int]] = []
+
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(6, 24), (6, 24)]),
+        )
+
+        def _mock_downsample_cluster_patch(
+            layer: np.ndarray,
+            scene_x0: int,
+            scene_y0: int,
+            scene_scale: int,
+        ):
+            recorded_shapes.append(layer.shape[:2])
+            return placement_mod.RgbaLayerPatch(
+                scene_x0 // scene_scale,
+                scene_y0 // scene_scale,
+                np.zeros(
+                    (layer.shape[0] // scene_scale, layer.shape[1] // scene_scale, 4),
+                    dtype=np.uint8,
+                ),
+            )
+
+        monkeypatch.setattr(placement_mod, "_downsample_cluster_patch", _mock_downsample_cluster_patch)
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0),
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+        )
+
+        assert len(labels) == 2
+        assert recorded_shapes
+        full_scene_size = self._IMAGE_SIZE * placement_mod._CLUSTER_SCENE_SUPERSAMPLE
+        assert all(height < full_scene_size for height, _width in recorded_shapes)
+        assert all(width < full_scene_size for _height, width in recorded_shapes)
 
     def test_area_cluster_shares_shadow_length(
         self,
@@ -795,17 +856,17 @@ class TestPlaceCluster:
             shadow_patch_biases.append(alpha_scale)
             return np.zeros((ship_rgba.shape[0], ship_rgba.shape[1], 4), dtype=np.uint8)
 
-        def _mock_darken_rgba_layer(
+        def _mock_darken_rgba_patch(
             background: np.ndarray,
-            layer: np.ndarray,
+            patch: object,
             alpha_factor: float,
             clip_mask: np.ndarray | None = None,
         ) -> None:
-            del background, layer, clip_mask
+            del background, patch, clip_mask
             darken_factors.append(alpha_factor)
 
         monkeypatch.setattr(placement_mod, "_make_shadow_rgba", _mock_make_shadow_rgba)
-        monkeypatch.setattr(placement_mod, "_darken_rgba_layer", _mock_darken_rgba_layer)
+        monkeypatch.setattr(placement_mod, "_darken_rgba_patch", _mock_darken_rgba_patch)
 
         labels = _place_cluster(
             scene["water_mask"],
@@ -834,3 +895,64 @@ class TestPlaceCluster:
         assert len({round(value, 6) for value in shadow_lengths}) == 1
         assert shadow_lengths[0] == pytest.approx(3.25)
         assert darken_factors == [pytest.approx(0.24)]
+
+    def test_area_cluster_downsamples_only_local_patch(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """散開クラスターも全画面ではなく局所パッチだけを縮小する。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        recorded_shapes: list[tuple[int, int]] = []
+
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (100, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(6, 24), (6, 24), (6, 24)]),
+        )
+
+        def _mock_downsample_cluster_patch(
+            layer: np.ndarray,
+            scene_x0: int,
+            scene_y0: int,
+            scene_scale: int,
+        ):
+            recorded_shapes.append(layer.shape[:2])
+            return placement_mod.RgbaLayerPatch(
+                scene_x0 // scene_scale,
+                scene_y0 // scene_scale,
+                np.zeros(
+                    (layer.shape[0] // scene_scale, layer.shape[1] // scene_scale, 4),
+                    dtype=np.uint8,
+                ),
+            )
+
+        monkeypatch.setattr(placement_mod, "_downsample_cluster_patch", _mock_downsample_cluster_patch)
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(11, "gapped", base_angle=0.0),
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+        )
+
+        assert len(labels) >= 1
+        assert recorded_shapes
+        full_scene_size = self._IMAGE_SIZE * placement_mod._CLUSTER_SCENE_SUPERSAMPLE
+        assert all(height < full_scene_size for height, _width in recorded_shapes)
+        assert all(width < full_scene_size for _height, width in recorded_shapes)
