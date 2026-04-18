@@ -84,12 +84,12 @@ class TestWriteDatasetYaml:
 class TestGenerateDatasetParams:
     """generate_dataset の記録パラメータ整合を検証する。"""
 
-    def test_removed_debug_params_are_not_written(
+    def test_debug_params_are_not_written(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: pathlib.Path,
     ) -> None:
-        """削除済みデバッグ系パラメータは dataset.yaml 用 params に含めない。"""
+        """デバッグ系パラメータは dataset.yaml 用 params に含めない。"""
         bg_dir = tmp_path / "bg"
         bg_dir.mkdir()
         (bg_dir / "scene_visual.tif").write_bytes(b"placeholder")
@@ -119,13 +119,18 @@ class TestGenerateDatasetParams:
         ) -> None:
             captured["params"] = dict(params or {})
 
-        monkeypatch.setattr(pipeline_mod.concurrent.futures, "ProcessPoolExecutor", _DummyExecutor)
+        monkeypatch.setattr(
+            pipeline_mod.concurrent.futures,
+            "ProcessPoolExecutor",
+            _DummyExecutor,
+        )
         monkeypatch.setattr(pipeline_mod, "_write_dataset_yaml", _capture_yaml)
 
         pipeline_mod.generate_dataset(
             bg_dir=bg_dir,
             output_dir=tmp_path / "out",
             count=0,
+            debug_bg_color=(0x12, 0x34, 0x56),
             max_workers=1,
         )
 
@@ -136,6 +141,68 @@ class TestGenerateDatasetParams:
         assert "disable_water_tint" not in params
         assert params["shadow_alpha_scale"] == 1.0
         assert params["shadow_length_range"] == "0.0:3.75"
+
+    def test_workers_zero_runs_without_process_pool(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """max_workers=0 のとき ProcessPoolExecutor を使わず逐次実行する。"""
+        bg_dir = tmp_path / "bg"
+        bg_dir.mkdir()
+        for index in range(2):
+            (bg_dir / f"scene_{index}_visual.tif").write_bytes(b"placeholder")
+
+        calls: list[tuple[int, pathlib.Path, tuple[int, int, int] | None]] = []
+        init_calls: list[tuple[pathlib.Path | None, pathlib.Path | None]] = []
+
+        def _fail_executor(*args, **kwargs):
+            msg = "workers=0 should not create ProcessPoolExecutor"
+            raise AssertionError(msg)
+
+        def _capture_worker_init(
+            svg_dir: pathlib.Path | None,
+            coastline_path: pathlib.Path | None = None,
+        ) -> None:
+            init_calls.append((svg_dir, coastline_path))
+
+        def _capture_compose_task(
+            *,
+            index: int,
+            task_seed: int,
+            tif_path: pathlib.Path | None,
+            img_out: pathlib.Path,
+            lbl_out: pathlib.Path,
+            config: object,
+        ) -> tuple[int, int]:
+            del task_seed, img_out, lbl_out
+            calls.append((index, tif_path, getattr(config, "debug_bg_color")))
+            return 1, 0
+
+        monkeypatch.setattr(
+            pipeline_mod.concurrent.futures,
+            "ProcessPoolExecutor",
+            _fail_executor,
+        )
+        monkeypatch.setattr(pipeline_mod, "_worker_init", _capture_worker_init)
+        monkeypatch.setattr(pipeline_mod, "_run_compose_task", _capture_compose_task)
+        monkeypatch.setattr(pipeline_mod, "_write_dataset_yaml", lambda *args, **kwargs: None)
+
+        stats = pipeline_mod.generate_dataset(
+            bg_dir=bg_dir,
+            output_dir=tmp_path / "out",
+            count=2,
+            debug_bg_color=(1, 2, 3),
+            max_workers=0,
+        )
+
+        assert len(init_calls) == 1
+        assert len(calls) == 2
+        assert {call[0] for call in calls} == {0, 1}
+        assert all(call[2] == (1, 2, 3) for call in calls)
+        assert stats["images"] == 2
+        assert stats["ships"] == 2
+        assert stats["clusters"] == 0
 
 
 class TestFalseSourceGrid:
@@ -410,12 +477,12 @@ class TestFalseRatioSplit:
 class TestDatagenCli:
     """datagen CLI の公開オプション整合を検証する。"""
 
-    def test_help_omits_removed_debug_options(
+    def test_help_reflects_current_debug_options(
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """--help から削除対象オプションが消え、説明文が現行仕様に一致する。"""
+        """--help に現行のデバッグ系オプションが反映される。"""
         import sys
 
         import medetect.datagen.__main__ as datagen_main
@@ -429,7 +496,47 @@ class TestDatagenCli:
         help_text = capsys.readouterr().out
 
         assert "--force_tight_clusters" not in help_text
-        assert "--debug_bg_color" not in help_text
+        assert "--debug_bg_color" in help_text
         assert "--disable-water-tint" not in help_text
+        assert "--shadow_elevation" not in help_text
         assert "placement events per image" in help_text
         assert "single ships only" in help_text
+
+    def test_debug_bg_color_is_forwarded(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """debug_bg_color は #RRGGBB から RGB タプルへ変換されて渡る。"""
+        import sys
+
+        import medetect.datagen.__main__ as datagen_main
+
+        captured: dict[str, object] = {}
+
+        def _capture_generate_dataset(**kwargs):
+            captured.update(kwargs)
+            return {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+
+        monkeypatch.setattr(datagen_main, "generate_dataset", _capture_generate_dataset)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "medetect.datagen",
+                "--bg_dir",
+                "bg",
+                "--output_dir",
+                "out",
+                "--count",
+                "1",
+                "--debug_bg_color",
+                "#123456",
+                "--workers",
+                "0",
+            ],
+        )
+
+        datagen_main.main()
+
+        assert captured["debug_bg_color"] == (0x12, 0x34, 0x56)
+        assert captured["max_workers"] == 0

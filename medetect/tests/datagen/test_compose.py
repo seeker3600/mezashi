@@ -343,6 +343,48 @@ class TestAugmentTile:
         blue_means = [mean[2] for mean in means]
         assert max(blue_means) - min(blue_means) > 5
 
+    def test_debug_bg_color_skips_augmentation(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """debug_bg_color 指定時は背景が単色化され augment_tile を通らない。"""
+
+        def _fail_augment(tile: np.ndarray, rng: random.Random) -> np.ndarray:
+            del tile, rng
+            msg = "augment_tile should not run when debug_bg_color is set"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(compose_mod, "augment_tile", _fail_augment)
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            ship_blur_sigma=0.5,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=random.Random(0),
+            debug_bg_color=(0x12, 0x34, 0x56),
+        )
+
+        assert result is not None
+        tile, labels, n_clusters = result
+        assert labels == []
+        assert n_clusters == 0
+        assert np.all(tile[:, :, 0] == 0x12)
+        assert np.all(tile[:, :, 1] == 0x34)
+        assert np.all(tile[:, :, 2] == 0x56)
+
 
 class TestComposeShadows:
     """_compose_one における影レイヤ順と方向のテスト。"""
@@ -427,3 +469,92 @@ class TestComposeShadows:
         assert len(shadow_lengths) == 2
         assert len({round(value, 6) for value in shadow_lengths}) == 1
         assert shadow_lengths[0] == pytest.approx(2.5)
+
+    def test_single_ship_shadows_share_tile_alpha_with_size_bias(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """単船の影は画像単位の基準濃さを共有しつつ大型船だけ少し濃い。"""
+        positions = [(24, 24), (48, 48)]
+        ship_rgba = np.zeros((12, 6, 4), dtype=np.uint8)
+        ship_rgba[:, :, :3] = 180
+        ship_rgba[:, :, 3] = 255
+        ship_specs = [
+            (ship_rgba.copy(), "small", 6, 12, 2.0),
+            (ship_rgba.copy(), "large", 12, 24, 2.0),
+        ]
+        shadow_patch_biases: list[float] = []
+        shadow_blend_factors: list[float] = []
+
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: "<svg/>")
+        monkeypatch.setattr(compose_mod, "_render_ship", lambda *args, **kwargs: ship_specs.pop(0))
+        monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: positions.pop(0))
+        monkeypatch.setattr(
+            compose_mod,
+            "_sample_water_tint",
+            lambda *args, **kwargs: np.array([40.0, 50.0, 60.0], dtype=np.float32),
+        )
+        monkeypatch.setattr(compose_mod, "render_wake", lambda *args, **kwargs: None)
+        monkeypatch.setattr(compose_mod, "_sample_shadow_alpha", lambda rng: 0.09)
+        monkeypatch.setattr(compose_mod, "_shadow_offset_pixels", lambda *args, **kwargs: (3, 1))
+        monkeypatch.setattr(compose_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
+        monkeypatch.setattr(
+            compose_mod,
+            "_shadow_alpha_for_ship",
+            lambda beam_px, length_px: 1.0 if beam_px == 6 else 1.08,
+        )
+
+        def _mock_make_shadow_rgba(
+            ship_rgba: np.ndarray,
+            *,
+            offset_x: int,
+            offset_y: int,
+            blur_sigma: float,
+            alpha_scale: float,
+        ) -> np.ndarray:
+            del offset_x, offset_y, blur_sigma
+            shadow_patch_biases.append(alpha_scale)
+            return np.zeros((ship_rgba.shape[0] + 4, ship_rgba.shape[1] + 4, 4), dtype=np.uint8)
+
+        def _mock_blend_shadow(
+            background: np.ndarray,
+            shadow_rgba: np.ndarray,
+            cx: int,
+            cy: int,
+            alpha_factor: float = 1.0,
+            clip_mask: np.ndarray | None = None,
+        ) -> None:
+            del background, shadow_rgba, cx, cy, clip_mask
+            shadow_blend_factors.append(alpha_factor)
+
+        monkeypatch.setattr(compose_mod, "_make_shadow_rgba", _mock_make_shadow_rgba)
+        monkeypatch.setattr(compose_mod, "blend_shadow", _mock_blend_shadow)
+        monkeypatch.setattr(compose_mod, "blend_ship", lambda *args, **kwargs: None)
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(2, 2),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            ship_blur_sigma=0.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            shadow_alpha_scale=2.0,
+            shadow_length_range=(2.5, 2.5),
+            rng=random.Random(9),
+        )
+
+        assert result is not None
+        assert shadow_patch_biases == [1.0, 1.08]
+        assert shadow_blend_factors == [pytest.approx(0.18), pytest.approx(0.18)]

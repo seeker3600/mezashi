@@ -34,6 +34,7 @@ from medetect.datagen.scene import (
     _downsample_cluster_layer,
     _rasterize_ship_scene,
     _render_ship,
+    _sample_shadow_alpha,
     _sample_water_tint,
     _shadow_alpha_for_ship,
     _shadow_blur_sigma,
@@ -202,6 +203,7 @@ def _compose_one(
     size_threshold: float | None = None,
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
+    debug_bg_color: tuple[int, int, int] | None = None,
     shadow_alpha_scale: float = 1.0,
     shadow_length_range: tuple[float, float] = (0.0, 3.75),
     shadow_azimuth_rad: float | None = None,
@@ -307,7 +309,11 @@ def _compose_one(
             except NameError:
                 return None
 
-    tile = augment_tile(tile, rng)
+    if debug_bg_color is None:
+        tile = augment_tile(tile, rng)
+    else:
+        tile = np.zeros_like(tile)
+        tile[:, :] = debug_bg_color
 
     n_events = rng.randint(*ships_per_image)
     occupancy = np.zeros((image_size, image_size), dtype=bool)
@@ -318,6 +324,7 @@ def _compose_one(
     shadow_length_min, shadow_length_max = shadow_length_range
     shadow_length_min, shadow_length_max = sorted((shadow_length_min, shadow_length_max))
     tile_shadow_length = rng.uniform(shadow_length_min, shadow_length_max)
+    tile_shadow_alpha = _sample_shadow_alpha(rng) if shadow_alpha_scale > 0.0 else 0.0
 
     for _ in range(n_events):
         is_cluster = rng.random() < cluster_prob
@@ -341,6 +348,7 @@ def _compose_one(
                 mixed_prob=cluster_mixed_prob,
                 shadow_azimuth_rad=tile_shadow_azimuth,
                 shadow_length=tile_shadow_length,
+                shadow_alpha=tile_shadow_alpha,
                 shadow_alpha_scale=shadow_alpha_scale,
             )
             labels.extend(new_labels)
@@ -371,7 +379,7 @@ def _compose_one(
             water_tint = _sample_water_tint(tile, cx, cy)
             ship_state = pick_motion_state(rng)
             shadow_rgba = None
-            if shadow_alpha_scale > 0.0:
+            if shadow_alpha_scale > 0.0 and tile_shadow_alpha > 0.0:
                 offset_x, offset_y = _shadow_offset_pixels(
                     bw,
                     lh,
@@ -434,7 +442,7 @@ def _compose_one(
                 ship.shadow_rgba,
                 ship.cx,
                 ship.cy,
-                alpha_factor=shadow_alpha_scale,
+                alpha_factor=tile_shadow_alpha * shadow_alpha_scale,
                 clip_mask=water_mask,
             )
 

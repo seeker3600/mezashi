@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import math
 from pathlib import Path
 
 logging.basicConfig(
@@ -34,6 +33,19 @@ def _parse_float_range(s: str) -> tuple[float, float]:
         msg = f"Expected MIN:MAX, got {s!r}"
         raise argparse.ArgumentTypeError(msg)
     return float(parts[0]), float(parts[1])
+
+
+def _parse_hex_color(s: str) -> tuple[int, int, int]:
+    """Parse ``#RRGGBB`` into an RGB tuple."""
+    if len(s) != 7 or not s.startswith("#"):
+        msg = f"Expected #RRGGBB, got {s!r}"
+        raise argparse.ArgumentTypeError(msg)
+
+    try:
+        return (int(s[1:3], 16), int(s[3:5], 16), int(s[5:7], 16))
+    except ValueError as exc:
+        msg = f"Expected #RRGGBB, got {s!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
 
 
 def main() -> None:
@@ -191,7 +203,10 @@ def main() -> None:
         "--workers",
         type=int,
         default=None,
-        help="Number of parallel worker threads (default: os.cpu_count()).",
+        help=(
+            "Number of parallel worker processes "
+            "(default: os.cpu_count(); 0 disables parallelism for profiling)."
+        ),
     )
     parser.add_argument(
         "--wake_prob_scale",
@@ -224,6 +239,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--debug_bg_color",
+        type=_parse_hex_color,
+        default=None,
+        metavar="#RRGGBB",
+        help=(
+            "Force synthetic backgrounds to a flat debug colour after tile selection "
+            "(debug only)."
+        ),
+    )
+    parser.add_argument(
         "--shadow_alpha_scale",
         type=float,
         default=1.0,
@@ -243,13 +268,6 @@ def main() -> None:
             "The sampled value is uniform across the range and is applied relative "
             "to the estimated ship height. 0.0 means no cast shadow."
         ),
-    )
-    parser.add_argument(
-        "--shadow_elevation",
-        type=_parse_float_range,
-        default=None,
-        metavar="MIN:MAX",
-        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--false_dir",
@@ -292,19 +310,6 @@ def main() -> None:
     if args.false_dir and not (0.0 < args.false_ratio < 1.0):
         parser.error("--false_ratio must be in (0, 1) when --false_dir is set")
 
-    shadow_length_range = args.shadow_length
-    if args.shadow_elevation is not None:
-        logging.getLogger(__name__).warning(
-            "--shadow_elevation is deprecated; use --shadow_length instead.",
-        )
-        elev_min, elev_max = sorted(args.shadow_elevation)
-        elev_min = max(2.0, min(89.0, elev_min))
-        elev_max = max(2.0, min(89.0, elev_max))
-        shadow_length_range = (
-            1.0 / math.tan(math.radians(elev_max)),
-            1.0 / math.tan(math.radians(elev_min)),
-        )
-
     stats = generate_dataset(
         bg_dir=args.bg_dir,
         output_dir=args.output_dir,
@@ -328,9 +333,9 @@ def main() -> None:
         size_threshold=args.size_threshold,
         wake_prob_scale=args.wake_prob_scale,
         wake_alpha_scale=args.wake_alpha_scale,
+        debug_bg_color=args.debug_bg_color,
         shadow_alpha_scale=args.shadow_alpha_scale,
-        shadow_length_range=shadow_length_range,
-        shadow_elevation_range=args.shadow_elevation,
+        shadow_length_range=args.shadow_length,
         false_dir=args.false_dir,
         false_ratio=args.false_ratio,
         max_workers=args.workers,

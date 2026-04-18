@@ -44,6 +44,7 @@ class _ComposeTaskConfig:
     size_threshold: float | None
     wake_prob_scale: float
     wake_alpha_scale: float
+    debug_bg_color: tuple[int, int, int] | None
     shadow_alpha_scale: float
     shadow_length_range: tuple[float, float]
 
@@ -288,9 +289,9 @@ def generate_dataset(
     size_threshold: float | None = None,
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
+    debug_bg_color: tuple[int, int, int] | None = None,
     shadow_alpha_scale: float = 1.0,
     shadow_length_range: tuple[float, float] = (0.0, 3.75),
-    shadow_elevation_range: tuple[float, float] | None = None,
     max_workers: int | None = None,
     false_dir: Path | str | None = None,
     false_ratio: float = 0.0,
@@ -346,16 +347,11 @@ def generate_dataset(
 
     if max_workers is None:
         max_workers = os.cpu_count() or 1
+    elif max_workers < 0:
+        msg = f"max_workers must be >= 0, got {max_workers}"
+        raise ValueError(msg)
 
     stats = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
-    if shadow_elevation_range is not None:
-        elev_min, elev_max = sorted(shadow_elevation_range)
-        elev_min = max(2.0, min(89.0, elev_min))
-        elev_max = max(2.0, min(89.0, elev_max))
-        shadow_length_range = (
-            1.0 / math.tan(math.radians(elev_max)),
-            1.0 / math.tan(math.radians(elev_min)),
-        )
 
     task_config = _ComposeTaskConfig(
         image_size=image_size,
@@ -375,79 +371,115 @@ def generate_dataset(
         size_threshold=size_threshold,
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
+        debug_bg_color=debug_bg_color,
         shadow_alpha_scale=shadow_alpha_scale,
         shadow_length_range=shadow_length_range,
     )
 
-    max_inflight = max_workers * 2
+    def _record_compose_result(n_ships: int, n_clusters: int) -> None:
+        if n_ships < 0:
+            stats["skipped"] += 1
+            return
+        stats["images"] += 1
+        stats["ships"] += n_ships
+        stats["clusters"] += n_clusters
 
-    task_iter = iter(range(synth_count))
-    pending: set[concurrent.futures.Future[tuple[int, int]]] = set()
-    future_info: dict[concurrent.futures.Future[tuple[int, int]], tuple[int, Path]] = {}
-
-    def _submit_next() -> bool:
-        try:
-            index = next(task_iter)
-        except StopIteration:
-            return False
-        future = executor.submit(
-            _run_compose_task,
-            index=index,
-            task_seed=task_seeds[index],
-            tif_path=task_tifs[index],
-            img_out=img_out,
-            lbl_out=lbl_out,
-            config=task_config,
-        )
-        pending.add(future)
-        future_info[future] = (index, task_tifs[index])
-        return True
-
-    def _collect_done(pbar: tqdm) -> None:  # type: ignore[type-arg]
-        done, _ = concurrent.futures.wait(
-            pending,
-            return_when=concurrent.futures.FIRST_COMPLETED,
-        )
-        for future in done:
-            pending.discard(future)
-            _index, tif_path = future_info.pop(future)
-            try:
-                n_ships, n_clusters = future.result()
-                if n_ships < 0:
-                    stats["skipped"] += 1
-                else:
-                    stats["images"] += 1
-                    stats["ships"] += n_ships
-                    stats["clusters"] += n_clusters
-            except Exception:
-                logger.warning(
-                    "Failed to compose %s — skipping",
-                    tif_path.name,
-                    exc_info=True,
-                )
-                stats["skipped"] += 1
-            finally:
-                pbar.update(1)
-
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=_worker_init,
-        initargs=(svg_dir, coastline_path),
-    ) as executor:
+    if max_workers == 0:
+        _worker_init(svg_dir, coastline_path)
         with tqdm(
             total=synth_count,
             desc="Generating dataset",
             unit="image",
             dynamic_ncols=True,
         ) as pbar:
-            for _ in range(min(max_inflight, synth_count)):
-                _submit_next()
+            for index, tif_path in enumerate(task_tifs):
+                try:
+                    n_ships, n_clusters = _run_compose_task(
+                        index=index,
+                        task_seed=task_seeds[index],
+                        tif_path=tif_path,
+                        img_out=img_out,
+                        lbl_out=lbl_out,
+                        config=task_config,
+                    )
+                    _record_compose_result(n_ships, n_clusters)
+                except Exception:
+                    logger.warning(
+                        "Failed to compose %s — skipping",
+                        tif_path.name,
+                        exc_info=True,
+                    )
+                    stats["skipped"] += 1
+                finally:
+                    pbar.update(1)
+    else:
+        max_inflight = max_workers * 2
 
-            while pending:
-                _collect_done(pbar)
-                while len(pending) < max_inflight:
-                    if not _submit_next():
-                        break
+        task_iter = iter(range(synth_count))
+        pending: set[concurrent.futures.Future[tuple[int, int]]] = set()
+        future_info: dict[
+            concurrent.futures.Future[tuple[int, int]],
+            tuple[int, Path],
+        ] = {}
+
+        def _submit_next() -> bool:
+            try:
+                index = next(task_iter)
+            except StopIteration:
+                return False
+            future = executor.submit(
+                _run_compose_task,
+                index=index,
+                task_seed=task_seeds[index],
+                tif_path=task_tifs[index],
+                img_out=img_out,
+                lbl_out=lbl_out,
+                config=task_config,
+            )
+            pending.add(future)
+            future_info[future] = (index, task_tifs[index])
+            return True
+
+        def _collect_done(pbar: tqdm) -> None:  # type: ignore[type-arg]
+            done, _ = concurrent.futures.wait(
+                pending,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done:
+                pending.discard(future)
+                _index, tif_path = future_info.pop(future)
+                try:
+                    n_ships, n_clusters = future.result()
+                    _record_compose_result(n_ships, n_clusters)
+                except Exception:
+                    logger.warning(
+                        "Failed to compose %s — skipping",
+                        tif_path.name,
+                        exc_info=True,
+                    )
+                    stats["skipped"] += 1
+                finally:
+                    pbar.update(1)
+
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_worker_init,
+            initargs=(svg_dir, coastline_path),
+        ) as executor:
+            with tqdm(
+                total=synth_count,
+                desc="Generating dataset",
+                unit="image",
+                dynamic_ncols=True,
+            ) as pbar:
+                for _ in range(min(max_inflight, synth_count)):
+                    _submit_next()
+
+                while pending:
+                    _collect_done(pbar)
+                    while len(pending) < max_inflight:
+                        if not _submit_next():
+                            break
 
     gen_params: dict[str, object] = {
         "count": count,
@@ -537,6 +569,7 @@ def _run_compose_task(
         size_threshold=config.size_threshold,
         wake_prob_scale=config.wake_prob_scale,
         wake_alpha_scale=config.wake_alpha_scale,
+        debug_bg_color=config.debug_bg_color,
         shadow_alpha_scale=config.shadow_alpha_scale,
         shadow_length_range=config.shadow_length_range,
         coastline_index=_worker_coastline_index,

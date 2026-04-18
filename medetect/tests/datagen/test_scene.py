@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 
 import numpy as np
+import pytest
 
 from medetect.datagen.scene import (
     _blend_rgba_layer,
@@ -10,6 +11,7 @@ from medetect.datagen.scene import (
     _darken_rgba_layer,
     _make_shadow_rgba,
     _render_ship,
+    _sample_shadow_alpha,
     _shadow_alpha_for_ship,
     _shadow_blur_sigma,
     _shadow_offset_pixels,
@@ -139,9 +141,24 @@ class TestShadowHelpers:
         assert high_length > low_length
         assert _shadow_blur_sigma(8, 40, high_length) > _shadow_blur_sigma(8, 40, low_length)
 
-    def test_shadow_alpha_is_not_tied_to_shadow_length(self) -> None:
-        """影の濃さは影長パラメータと直接結び付かない。"""
-        assert _shadow_alpha_for_ship(8, 40) == _shadow_alpha_for_ship(8, 40)
+    def test_sample_shadow_alpha_varies_between_tiles(self) -> None:
+        """影の基準濃さは画像ごとに少しだけ変わる。"""
+        rng = random.Random(123)
+
+        values = [_sample_shadow_alpha(rng) for _ in range(6)]
+
+        assert len({round(value, 6) for value in values}) > 1
+        assert min(values) >= 0.08
+        assert max(values) <= 0.11
+
+    def test_shadow_alpha_for_ship_is_subtle_size_bias(self) -> None:
+        """大型船ほど少し濃いが、差は大きくなり過ぎない。"""
+        small = _shadow_alpha_for_ship(8, 40)
+        medium = _shadow_alpha_for_ship(16, 88)
+        large = _shadow_alpha_for_ship(28, 160)
+
+        assert 1.0 <= small < medium < large <= 1.12
+        assert large - small < 0.1
 
     def test_make_shadow_rgba_stays_attached_to_ship_footprint(self) -> None:
         """生成された影マスクは船体位置から連続して伸びる。"""

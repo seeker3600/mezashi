@@ -684,6 +684,8 @@ class TestPlaceCluster:
             '</svg>'
         )
         shadow_lengths: list[float] = []
+        shadow_patch_biases: list[float] = []
+        darken_factors: list[float] = []
 
         monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
         monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
@@ -698,7 +700,7 @@ class TestPlaceCluster:
             lambda beam_px, length_px, azimuth_rad, shadow_length, *, scene_scale=1: shadow_lengths.append(shadow_length) or (3, 1),
         )
         monkeypatch.setattr(placement_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
-        monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 0.4)
+        monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 1.05)
 
         def _mock_make_shadow_rgba(
             ship_rgba: np.ndarray,
@@ -708,9 +710,21 @@ class TestPlaceCluster:
             blur_sigma: float,
             alpha_scale: float,
         ) -> np.ndarray:
+            del offset_x, offset_y, blur_sigma
+            shadow_patch_biases.append(alpha_scale)
             return np.zeros((ship_rgba.shape[0], ship_rgba.shape[1], 4), dtype=np.uint8)
 
+        def _mock_darken_rgba_layer(
+            background: np.ndarray,
+            layer: np.ndarray,
+            alpha_factor: float,
+            clip_mask: np.ndarray | None = None,
+        ) -> None:
+            del background, layer, clip_mask
+            darken_factors.append(alpha_factor)
+
         monkeypatch.setattr(placement_mod, "_make_shadow_rgba", _mock_make_shadow_rgba)
+        monkeypatch.setattr(placement_mod, "_darken_rgba_layer", _mock_darken_rgba_layer)
 
         labels = _place_cluster(
             scene["water_mask"],
@@ -728,13 +742,16 @@ class TestPlaceCluster:
             mixed_prob=1.0,
             shadow_azimuth_rad=math.pi / 6.0,
             shadow_length=2.0,
-            shadow_alpha_scale=1.0,
+            shadow_alpha=0.12,
+            shadow_alpha_scale=2.0,
         )
 
         assert len(labels) == 2
         assert len(shadow_lengths) == 2
+        assert shadow_patch_biases == [pytest.approx(1.05), pytest.approx(1.05)]
         assert len({round(value, 6) for value in shadow_lengths}) == 1
         assert shadow_lengths[0] == pytest.approx(2.0)
+        assert darken_factors == [pytest.approx(0.24)]
 
     def test_area_cluster_shares_shadow_length(
         self,
@@ -748,6 +765,8 @@ class TestPlaceCluster:
             '</svg>'
         )
         shadow_lengths: list[float] = []
+        shadow_patch_biases: list[float] = []
+        darken_factors: list[float] = []
 
         monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
         monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (100, 100))
@@ -762,7 +781,7 @@ class TestPlaceCluster:
             lambda beam_px, length_px, azimuth_rad, shadow_length, *, scene_scale=1: shadow_lengths.append(shadow_length) or (3, 1),
         )
         monkeypatch.setattr(placement_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
-        monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 0.4)
+        monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 1.05)
 
         def _mock_make_shadow_rgba(
             ship_rgba: np.ndarray,
@@ -772,9 +791,21 @@ class TestPlaceCluster:
             blur_sigma: float,
             alpha_scale: float,
         ) -> np.ndarray:
+            del offset_x, offset_y, blur_sigma
+            shadow_patch_biases.append(alpha_scale)
             return np.zeros((ship_rgba.shape[0], ship_rgba.shape[1], 4), dtype=np.uint8)
 
+        def _mock_darken_rgba_layer(
+            background: np.ndarray,
+            layer: np.ndarray,
+            alpha_factor: float,
+            clip_mask: np.ndarray | None = None,
+        ) -> None:
+            del background, layer, clip_mask
+            darken_factors.append(alpha_factor)
+
         monkeypatch.setattr(placement_mod, "_make_shadow_rgba", _mock_make_shadow_rgba)
+        monkeypatch.setattr(placement_mod, "_darken_rgba_layer", _mock_darken_rgba_layer)
 
         labels = _place_cluster(
             scene["water_mask"],
@@ -792,10 +823,14 @@ class TestPlaceCluster:
             mixed_prob=1.0,
             shadow_azimuth_rad=math.pi / 3.0,
             shadow_length=3.25,
-            shadow_alpha_scale=1.0,
+            shadow_alpha=0.12,
+            shadow_alpha_scale=2.0,
         )
 
         assert len(labels) >= 1
         assert len(shadow_lengths) == len(labels)
+        assert len(shadow_patch_biases) == len(labels)
+        assert all(value == pytest.approx(1.05) for value in shadow_patch_biases)
         assert len({round(value, 6) for value in shadow_lengths}) == 1
         assert shadow_lengths[0] == pytest.approx(3.25)
+        assert darken_factors == [pytest.approx(0.24)]

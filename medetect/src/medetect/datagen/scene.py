@@ -33,6 +33,15 @@ class SingleShipPlacement:
     corners: list[tuple[float, float]]
 
 
+_SHADOW_TILE_ALPHA_RANGE = (0.08, 0.11)
+_SHADOW_SIZE_ALPHA_BOOST_MAX = 0.12
+
+
+def _sample_shadow_alpha(rng: random.Random) -> float:
+    """Return an image-wide base darkness factor for ship shadows."""
+    return rng.uniform(*_SHADOW_TILE_ALPHA_RANGE)
+
+
 def blend_ship(
     background: NDArray[np.uint8],
     ship_rgba: NDArray[np.uint8],
@@ -207,8 +216,9 @@ def _shadow_alpha_for_ship(
     beam_px: int,
     length_px: int,
 ) -> float:
-    """Return a base shadow strength derived from ship size only."""
-    return min(0.34, 0.12 + beam_px * 0.0045 + length_px * 0.0010)
+    """Return a subtle size-based shadow boost for larger hulls."""
+    size_boost = beam_px * 0.0020 + length_px * 0.00045
+    return 1.0 + min(_SHADOW_SIZE_ALPHA_BOOST_MAX, size_boost)
 
 
 def _stamp_shadow_alpha(
