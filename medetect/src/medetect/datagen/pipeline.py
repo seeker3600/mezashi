@@ -44,6 +44,8 @@ class _ComposeTaskConfig:
     size_threshold: float | None
     wake_prob_scale: float
     wake_alpha_scale: float
+    shadow_alpha_scale: float
+    shadow_elevation_range: tuple[float, float]
 
 
 def _worker_init(
@@ -286,6 +288,8 @@ def generate_dataset(
     size_threshold: float | None = None,
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
+    shadow_alpha_scale: float = 1.0,
+    shadow_elevation_range: tuple[float, float] = (15.0, 88.0),
     max_workers: int | None = None,
     false_dir: Path | str | None = None,
     false_ratio: float = 0.0,
@@ -361,6 +365,8 @@ def generate_dataset(
         size_threshold=size_threshold,
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
+        shadow_alpha_scale=shadow_alpha_scale,
+        shadow_elevation_range=shadow_elevation_range,
     )
 
     max_inflight = max_workers * 2
@@ -457,6 +463,8 @@ def generate_dataset(
         "size_threshold": size_threshold,
         "wake_prob_scale": wake_prob_scale,
         "wake_alpha_scale": wake_alpha_scale,
+        "shadow_alpha_scale": shadow_alpha_scale,
+        "shadow_elevation_range": f"{shadow_elevation_range[0]}:{shadow_elevation_range[1]}",
         "false_dir": str(false_dir) if false_dir is not None else None,
         "false_ratio": false_ratio,
         "coastline": str(coastline_path) if coastline_path is not None else None,
@@ -519,6 +527,8 @@ def _run_compose_task(
         size_threshold=config.size_threshold,
         wake_prob_scale=config.wake_prob_scale,
         wake_alpha_scale=config.wake_alpha_scale,
+        shadow_alpha_scale=config.shadow_alpha_scale,
+        shadow_elevation_range=config.shadow_elevation_range,
         coastline_index=_worker_coastline_index,
     )
 

@@ -2,11 +2,43 @@ from __future__ import annotations
 
 import pathlib
 import random
+import math
 
 import numpy as np
 import pytest
 
+import medetect.datagen.compose as compose_mod
+
 from medetect.datagen.compose import _compose_one, augment_tile, is_dark_tile, make_nodata_mask
+
+
+@pytest.fixture()
+def water_tif(tmp_path: pathlib.Path) -> pathlib.Path:
+    """全面水域として扱える簡単な GeoTIFF を生成する。"""
+    import rasterio
+    from rasterio.crs import CRS
+    from rasterio.transform import from_bounds
+
+    tif_path = tmp_path / "water_visual.tif"
+    size = 128
+    transform = from_bounds(0, 0, 10 * size, 10 * size, size, size)
+    data = np.zeros((3, size, size), dtype=np.uint8)
+    data[0, :, :] = 20
+    data[1, :, :] = 60
+    data[2, :, :] = 90
+    with rasterio.open(
+        tif_path,
+        "w",
+        driver="GTiff",
+        height=size,
+        width=size,
+        count=3,
+        dtype="uint8",
+        crs=CRS.from_epsg(32654),
+        transform=transform,
+    ) as dst:
+        dst.write(data)
+    return tif_path
 
 
 class TestGeoScale:
@@ -310,3 +342,88 @@ class TestAugmentTile:
             means.append(tuple(result.mean(axis=(0, 1))))
         blue_means = [mean[2] for mean in means]
         assert max(blue_means) - min(blue_means) > 5
+
+
+class TestComposeShadows:
+    """_compose_one における影レイヤ順と方向のテスト。"""
+
+    def test_single_ship_shadows_render_between_wakes_and_hulls(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """単船の影は wake の後、船体の前に描かれる。"""
+        call_order: list[str] = []
+        shadow_elevations: list[float] = []
+        positions = [(24, 24), (48, 48)]
+        ship_rgba = np.zeros((12, 6, 4), dtype=np.uint8)
+        ship_rgba[:, :, :3] = 180
+        ship_rgba[:, :, 3] = 255
+
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: "<svg/>")
+        monkeypatch.setattr(
+            compose_mod,
+            "_render_ship",
+            lambda *args, **kwargs: (ship_rgba.copy(), "mock", 6, 12, 2.0),
+        )
+        monkeypatch.setattr(
+            compose_mod,
+            "find_water_position",
+            lambda *args, **kwargs: positions.pop(0),
+        )
+        monkeypatch.setattr(
+            compose_mod,
+            "_sample_water_tint",
+            lambda *args, **kwargs: np.array([40.0, 50.0, 60.0], dtype=np.float32),
+        )
+        monkeypatch.setattr(compose_mod, "render_wake", lambda *args, **kwargs: call_order.append("wake"))
+        monkeypatch.setattr(
+            compose_mod,
+            "_shadow_offset_pixels",
+            lambda beam_px, length_px, azimuth_rad, elevation_rad, *, scene_scale=1: shadow_elevations.append(elevation_rad) or (3, 1),
+        )
+        monkeypatch.setattr(compose_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
+        monkeypatch.setattr(compose_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 0.4)
+
+        def _mock_make_shadow_rgba(
+            ship_rgba: np.ndarray,
+            *,
+            offset_x: int,
+            offset_y: int,
+            blur_sigma: float,
+            alpha_scale: float,
+        ) -> np.ndarray:
+            return np.zeros((ship_rgba.shape[0] + 4, ship_rgba.shape[1] + 4, 4), dtype=np.uint8)
+
+        monkeypatch.setattr(compose_mod, "_make_shadow_rgba", _mock_make_shadow_rgba)
+        monkeypatch.setattr(compose_mod, "blend_shadow", lambda *args, **kwargs: call_order.append("shadow"))
+        monkeypatch.setattr(compose_mod, "blend_ship", lambda *args, **kwargs: call_order.append("ship"))
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(2, 2),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            ship_blur_sigma=0.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            shadow_alpha_scale=1.0,
+            shadow_elevation_range=(35.0, 35.0),
+            rng=random.Random(7),
+        )
+
+        assert result is not None
+        assert call_order == ["wake", "wake", "shadow", "shadow", "ship", "ship"]
+        assert len(shadow_elevations) == 2
+        assert len({round(value, 6) for value in shadow_elevations}) == 1
+        assert shadow_elevations[0] == pytest.approx(math.radians(35.0))

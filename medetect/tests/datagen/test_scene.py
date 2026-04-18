@@ -4,7 +4,18 @@ import random
 
 import numpy as np
 
-from medetect.datagen.scene import _blend_rgba_layer, _composite_rgba, _render_ship, blend_ship
+from medetect.datagen.scene import (
+    _blend_rgba_layer,
+    _composite_rgba,
+    _darken_rgba_layer,
+    _make_shadow_rgba,
+    _render_ship,
+    _shadow_alpha_for_ship,
+    _shadow_blur_sigma,
+    _shadow_offset_pixels,
+    blend_shadow,
+    blend_ship,
+)
 
 
 class TestBlendShip:
@@ -89,6 +100,82 @@ class TestBlendRgbaLayer:
         _blend_rgba_layer(bg, layer, 1.0, None)
         assert bg[5, 5, 0] != 100
         assert bg[0, 0, 0] == 100
+
+
+class TestShadowHelpers:
+    """影レンダリング補助のテスト。"""
+
+    def test_darken_rgba_layer_only_changes_alpha_region(self) -> None:
+        """アルファがある部分だけ背景が暗くなる。"""
+        bg = np.full((10, 10, 3), 120, dtype=np.uint8)
+        layer = np.zeros((10, 10, 4), dtype=np.uint8)
+        layer[3:7, 3:7, 3] = 255
+
+        _darken_rgba_layer(bg, layer, 0.5)
+
+        assert bg[5, 5, 0] < 120
+        assert bg[0, 0, 0] == 120
+
+    def test_darken_rgba_layer_respects_clip_mask(self) -> None:
+        """clip_mask=False の領域は暗くならない。"""
+        bg = np.full((8, 8, 3), 100, dtype=np.uint8)
+        layer = np.zeros((8, 8, 4), dtype=np.uint8)
+        layer[:, :, 3] = 255
+        clip_mask = np.zeros((8, 8), dtype=bool)
+        clip_mask[:, :4] = True
+
+        _darken_rgba_layer(bg, layer, 0.4, clip_mask=clip_mask)
+
+        assert bg[4, 2, 0] < 100
+        assert bg[4, 6, 0] == 100
+
+    def test_shadow_parameters_vary_with_elevation(self) -> None:
+        """低い太陽ほど影が長く、強く、ぼけも広がる。"""
+        low_elevation = np.deg2rad(15.0)
+        high_elevation = np.deg2rad(86.0)
+
+        low_offset = _shadow_offset_pixels(beam_px=8, length_px=40, azimuth_rad=0.0, elevation_rad=low_elevation)
+        high_offset = _shadow_offset_pixels(beam_px=8, length_px=40, azimuth_rad=0.0, elevation_rad=high_elevation)
+        low_length = float(np.hypot(*low_offset))
+        high_length = float(np.hypot(*high_offset))
+
+        assert low_length > high_length
+        assert _shadow_blur_sigma(8, 40, low_length) > _shadow_blur_sigma(8, 40, high_length)
+        assert _shadow_alpha_for_ship(8, 40, low_elevation, low_length) > _shadow_alpha_for_ship(8, 40, high_elevation, high_length)
+
+    def test_make_shadow_rgba_stays_attached_to_ship_footprint(self) -> None:
+        """生成された影マスクは船体位置から連続して伸びる。"""
+        ship = np.zeros((6, 4, 4), dtype=np.uint8)
+        ship[:, :, 3] = 255
+
+        shadow = _make_shadow_rgba(
+            ship,
+            offset_x=8,
+            offset_y=0,
+            blur_sigma=0.0,
+            alpha_scale=1.0,
+        )
+
+        center_row = shadow[shadow.shape[0] // 2, :, 3]
+        xx = np.where(center_row > 0)[0]
+        center_x = shadow.shape[1] // 2
+
+        assert shadow.shape[0] > ship.shape[0]
+        assert shadow.shape[1] > ship.shape[1]
+        assert xx[0] <= center_x <= xx[-1]
+        assert xx[-1] > center_x + 3
+        assert np.diff(xx).max() == 1
+
+    def test_blend_shadow_is_noop_when_alpha_scale_zero(self) -> None:
+        """alpha_factor=0 の影は背景を変えない。"""
+        bg = np.full((20, 20, 3), 90, dtype=np.uint8)
+        original = bg.copy()
+        shadow = np.zeros((8, 8, 4), dtype=np.uint8)
+        shadow[:, :, 3] = 255
+
+        blend_shadow(bg, shadow, cx=10, cy=10, alpha_factor=0.0)
+
+        np.testing.assert_array_equal(bg, original)
 
 
 class TestAntiAliasedEdges:

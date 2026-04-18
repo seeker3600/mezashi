@@ -671,3 +671,131 @@ class TestPlaceCluster:
         assert len(labels) == 2
         ship_mask = np.any(background != scene["background"], axis=2)
         assert _count_connected_components(ship_mask, min_size=20) == 1
+
+    def test_tight_cluster_shares_shadow_elevation(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """tight クラスター内では全船が同じ太陽高度を使う。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        shadow_elevations: list[float] = []
+
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(6, 24), (6, 24)]),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_shadow_offset_pixels",
+            lambda beam_px, length_px, azimuth_rad, elevation_rad, *, scene_scale=1: shadow_elevations.append(elevation_rad) or (3, 1),
+        )
+        monkeypatch.setattr(placement_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
+        monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 0.4)
+
+        def _mock_make_shadow_rgba(
+            ship_rgba: np.ndarray,
+            *,
+            offset_x: int,
+            offset_y: int,
+            blur_sigma: float,
+            alpha_scale: float,
+        ) -> np.ndarray:
+            return np.zeros((ship_rgba.shape[0], ship_rgba.shape[1], 4), dtype=np.uint8)
+
+        monkeypatch.setattr(placement_mod, "_make_shadow_rgba", _mock_make_shadow_rgba)
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0),
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+            shadow_azimuth_rad=math.pi / 6.0,
+            shadow_elevation_rad=math.radians(40.0),
+            shadow_alpha_scale=1.0,
+        )
+
+        assert len(labels) == 2
+        assert len(shadow_elevations) == 2
+        assert len({round(value, 6) for value in shadow_elevations}) == 1
+        assert shadow_elevations[0] == pytest.approx(math.radians(40.0))
+
+    def test_area_cluster_shares_shadow_elevation(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """散開クラスターでも全船が同じ太陽高度を使う。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        shadow_elevations: list[float] = []
+
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (100, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(6, 24), (6, 24), (6, 24)]),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_shadow_offset_pixels",
+            lambda beam_px, length_px, azimuth_rad, elevation_rad, *, scene_scale=1: shadow_elevations.append(elevation_rad) or (3, 1),
+        )
+        monkeypatch.setattr(placement_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
+        monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 0.4)
+
+        def _mock_make_shadow_rgba(
+            ship_rgba: np.ndarray,
+            *,
+            offset_x: int,
+            offset_y: int,
+            blur_sigma: float,
+            alpha_scale: float,
+        ) -> np.ndarray:
+            return np.zeros((ship_rgba.shape[0], ship_rgba.shape[1], 4), dtype=np.uint8)
+
+        monkeypatch.setattr(placement_mod, "_make_shadow_rgba", _mock_make_shadow_rgba)
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(11, "gapped", base_angle=0.0),
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+            shadow_azimuth_rad=math.pi / 3.0,
+            shadow_elevation_rad=math.radians(25.0),
+            shadow_alpha_scale=1.0,
+        )
+
+        assert len(labels) >= 1
+        assert len(shadow_elevations) == len(labels)
+        assert len({round(value, 6) for value in shadow_elevations}) == 1
+        assert shadow_elevations[0] == pytest.approx(math.radians(25.0))

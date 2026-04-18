@@ -223,6 +223,27 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--shadow_alpha_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Shadow intensity multiplier for ship water shadows (default: 1.0). "
+            "Applied to both single ships and clustered ships. "
+            "0.0 disables shadow rendering."
+        ),
+    )
+    parser.add_argument(
+        "--shadow_elevation",
+        type=_parse_float_range,
+        default="15:88",
+        metavar="MIN:MAX",
+        help=(
+            "Sun elevation range in degrees for ship shadows (default: 15:88). "
+            "Higher values produce shorter or nearly invisible shadows. "
+            "Lower values produce longer shadows."
+        ),
+    )
+    parser.add_argument(
         "--false_dir",
         type=Path,
         default=None,
@@ -286,6 +307,8 @@ def main() -> None:
         size_threshold=args.size_threshold,
         wake_prob_scale=args.wake_prob_scale,
         wake_alpha_scale=args.wake_alpha_scale,
+        shadow_alpha_scale=args.shadow_alpha_scale,
+        shadow_elevation_range=args.shadow_elevation,
         false_dir=args.false_dir,
         false_ratio=args.false_ratio,
         max_workers=args.workers,

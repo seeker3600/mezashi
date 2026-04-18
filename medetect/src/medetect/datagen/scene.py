@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 
@@ -26,6 +27,7 @@ class SingleShipPlacement:
     angle_rad: float
     alpha: float
     water_tint: NDArray[np.float32]
+    shadow_rgba: NDArray[np.uint8] | None
     ship_state: MotionState
     class_id: int
     corners: list[tuple[float, float]]
@@ -117,6 +119,182 @@ def _blend_rgba_layer(
         ship_rgb = ship_rgb * 0.82 + water_tint * 0.18
     blended = background.astype(np.float32) * (1.0 - alpha) + ship_rgb * alpha
     background[:] = blended.clip(0, 255).astype(np.uint8)
+
+
+def _darken_rgba_layer(
+    background: NDArray[np.uint8],
+    layer: NDArray[np.uint8],
+    alpha_factor: float,
+    clip_mask: NDArray[np.bool_] | None = None,
+) -> None:
+    """Darken *background* in-place using the alpha channel of *layer*."""
+    alpha = (layer[:, :, 3:4].astype(np.float32) / 255.0) * alpha_factor
+    if clip_mask is not None:
+        alpha *= clip_mask[:, :, None].astype(np.float32)
+    darkened = background.astype(np.float32) * (1.0 - alpha)
+    background[:] = darkened.clip(0, 255).astype(np.uint8)
+
+
+def blend_shadow(
+    background: NDArray[np.uint8],
+    shadow_rgba: NDArray[np.uint8],
+    cx: int,
+    cy: int,
+    alpha_factor: float = 1.0,
+    clip_mask: NDArray[np.bool_] | None = None,
+) -> None:
+    """Darken *background* using a centred shadow RGBA patch."""
+    sh, sw = shadow_rgba.shape[:2]
+    x0, y0 = cx - sw // 2, cy - sh // 2
+
+    src_x0 = max(0, -x0)
+    src_y0 = max(0, -y0)
+    dst_x0 = max(0, x0)
+    dst_y0 = max(0, y0)
+
+    bh, bw = background.shape[:2]
+    copy_w = min(sw - src_x0, bw - dst_x0)
+    copy_h = min(sh - src_y0, bh - dst_y0)
+    if copy_w <= 0 or copy_h <= 0:
+        return
+
+    shadow_crop = shadow_rgba[src_y0 : src_y0 + copy_h, src_x0 : src_x0 + copy_w]
+    bg_crop = background[dst_y0 : dst_y0 + copy_h, dst_x0 : dst_x0 + copy_w]
+    mask_crop = None
+    if clip_mask is not None:
+        mask_crop = clip_mask[dst_y0 : dst_y0 + copy_h, dst_x0 : dst_x0 + copy_w]
+    _darken_rgba_layer(bg_crop, shadow_crop, alpha_factor, clip_mask=mask_crop)
+
+
+def _shadow_offset_pixels(
+    beam_px: int,
+    length_px: int,
+    azimuth_rad: float,
+    elevation_rad: float,
+    *,
+    scene_scale: int = 1,
+) -> tuple[int, int]:
+    """Return a ship-size-aware cast-shadow offset in image-space pixels."""
+    clamped_elevation = max(math.radians(2.0), min(elevation_rad, math.radians(89.0)))
+    effective_height_px = max(
+        0.75 * scene_scale,
+        (beam_px * 0.55 + length_px * 0.035) * scene_scale,
+    )
+    cast_length_px = effective_height_px / math.tan(clamped_elevation)
+    max_cast_length = max(1.0, (length_px * 1.6 + beam_px * 1.5) * scene_scale)
+    cast_length_px = min(max_cast_length, cast_length_px)
+    if cast_length_px < 0.5:
+        return 0, 0
+    return (
+        round(math.cos(azimuth_rad) * cast_length_px),
+        round(math.sin(azimuth_rad) * cast_length_px),
+    )
+
+
+def _shadow_blur_sigma(
+    beam_px: int,
+    length_px: int,
+    cast_length_px: float,
+    *,
+    scene_scale: int = 1,
+) -> float:
+    """Return a soft-edge blur radius for a ship shadow."""
+    base_blur = max(0.45, beam_px * 0.05 + length_px * 0.012) * scene_scale
+    return base_blur + cast_length_px * 0.04
+
+
+def _shadow_alpha_for_ship(
+    beam_px: int,
+    length_px: int,
+    elevation_rad: float,
+    cast_length_px: float,
+) -> float:
+    """Return a shadow strength derived from ship size and sun elevation."""
+    base_alpha = min(0.34, 0.08 + beam_px * 0.005 + length_px * 0.0012)
+    sun_factor = max(0.0, math.cos(elevation_rad)) ** 1.6
+    length_factor = 0.45 + 0.55 * min(1.0, cast_length_px / max(1.0, beam_px * 2.0))
+    return base_alpha * sun_factor * length_factor
+
+
+def _stamp_shadow_alpha(
+    canvas_alpha: NDArray[np.uint8],
+    source_alpha: NDArray[np.float32],
+    x0: int,
+    y0: int,
+    strength: float,
+) -> None:
+    """Stamp alpha into a shadow canvas using max-composition."""
+    if strength <= 0.0:
+        return
+
+    sh, sw = source_alpha.shape
+    dh, dw = canvas_alpha.shape
+
+    sx0, sy0 = max(0, -x0), max(0, -y0)
+    dx0, dy0 = max(0, x0), max(0, y0)
+    cw = min(sw - sx0, dw - dx0)
+    ch = min(sh - sy0, dh - dy0)
+    if cw <= 0 or ch <= 0:
+        return
+
+    src_crop = source_alpha[sy0 : sy0 + ch, sx0 : sx0 + cw]
+    stamp = np.clip(src_crop * strength, 0.0, 255.0).astype(np.uint8)
+    dst_crop = canvas_alpha[dy0 : dy0 + ch, dx0 : dx0 + cw]
+    np.maximum(dst_crop, stamp, out=dst_crop)
+
+
+def _make_shadow_rgba(
+    ship_rgba: NDArray[np.uint8],
+    *,
+    offset_x: int,
+    offset_y: int,
+    blur_sigma: float,
+    alpha_scale: float,
+) -> NDArray[np.uint8]:
+    """Create an anchored, blurred alpha-only shadow patch from a ship RGBA image."""
+    height, width = ship_rgba.shape[:2]
+    if alpha_scale <= 0.0 or height == 0 or width == 0:
+        return np.zeros((height, width, 4), dtype=np.uint8)
+
+    source_alpha = ship_rgba[:, :, 3].astype(np.float32)
+    if float(source_alpha.max()) <= 0.0:
+        return np.zeros((height, width, 4), dtype=np.uint8)
+
+    offset_length = math.hypot(offset_x, offset_y)
+    pad_x = abs(offset_x) + math.ceil(blur_sigma * 2.5) + 3
+    pad_y = abs(offset_y) + math.ceil(blur_sigma * 2.5) + 3
+    shadow = np.zeros((height + pad_y * 2, width + pad_x * 2, 4), dtype=np.uint8)
+    shadow_alpha = shadow[:, :, 3]
+
+    _stamp_shadow_alpha(
+        shadow_alpha,
+        source_alpha,
+        pad_x,
+        pad_y,
+        min(1.0, alpha_scale * 0.65 + 0.05),
+    )
+
+    if offset_length >= 0.5:
+        steps = max(2, min(24, math.ceil(offset_length)))
+        for step in range(1, steps + 1):
+            progress = step / steps
+            step_x0 = pad_x + round(offset_x * progress)
+            step_y0 = pad_y + round(offset_y * progress)
+            step_strength = alpha_scale * (0.92 - 0.58 * progress)
+            _stamp_shadow_alpha(
+                shadow_alpha,
+                source_alpha,
+                step_x0,
+                step_y0,
+                step_strength,
+            )
+
+    if blur_sigma > 0.0:
+        img = Image.fromarray(shadow)
+        img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
+        shadow = np.array(img)
+
+    return shadow
 
 
 def _render_ship(

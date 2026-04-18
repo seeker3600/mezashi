@@ -19,9 +19,14 @@ from medetect.datagen.scene import (
     _blend_rgba_layer,
     _cluster_scene_origin,
     _composite_rgba,
+    _darken_rgba_layer,
     _downsample_cluster_layer,
+    _make_shadow_rgba,
     _rasterize_ship_scene,
     _sample_water_tint,
+    _shadow_alpha_for_ship,
+    _shadow_blur_sigma,
+    _shadow_offset_pixels,
 )
 from medetect.datagen.ship import (
     _SvgMeta,
@@ -192,7 +197,10 @@ def _render_vector_raft_cluster(
     blur_sigma: float,
     scene_scale: int,
     join_tolerance: float = 0.0,
-) -> NDArray[np.uint8]:
+    shadow_azimuth_rad: float | None = None,
+    shadow_elevation_rad: float | None = None,
+    shadow_alpha_scale: float = 1.0,
+) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
     """Render a raft cluster from vector hulls plus per-ship detail layers."""
     scene_size = image_size * scene_scale
     hull_img = Image.new("RGBA", (scene_size, scene_size), (0, 0, 0, 0))
@@ -223,6 +231,54 @@ def _render_vector_raft_cluster(
         _draw_geometry_fill(hull_img, scaled_hull, ship.hull_fill)
 
     layer = np.array(hull_img, dtype=np.uint8)
+    shadow_layer = np.zeros((scene_size, scene_size, 4), dtype=np.uint8)
+    if (
+        shadow_alpha_scale > 0.0
+        and shadow_azimuth_rad is not None
+        and shadow_elevation_rad is not None
+    ):
+        for ship in ships:
+            ship_rgba = _rasterize_ship_scene(
+                ship.svg_text,
+                ship.bw,
+                ship.lh,
+                angle_deg=ship.angle_deg,
+                blur_sigma=0.0,
+                scene_scale=scene_scale,
+            )
+            offset_x, offset_y = _shadow_offset_pixels(
+                ship.bw,
+                ship.lh,
+                shadow_azimuth_rad,
+                shadow_elevation_rad,
+                scene_scale=scene_scale,
+            )
+            cast_length = math.hypot(offset_x, offset_y)
+            shadow_rgba = _make_shadow_rgba(
+                ship_rgba,
+                offset_x=offset_x,
+                offset_y=offset_y,
+                blur_sigma=_shadow_blur_sigma(
+                    ship.bw,
+                    ship.lh,
+                    cast_length,
+                    scene_scale=scene_scale,
+                ),
+                alpha_scale=_shadow_alpha_for_ship(
+                    ship.bw,
+                    ship.lh,
+                    shadow_elevation_rad,
+                    cast_length,
+                ) * shadow_alpha_scale,
+            )
+            shadow_x0, shadow_y0 = _cluster_scene_origin(
+                ship.cx,
+                ship.cy,
+                shadow_rgba,
+                scene_scale,
+            )
+            _composite_rgba(shadow_layer, shadow_rgba, shadow_x0, shadow_y0)
+
     for ship in ships:
         detail_rgba = rasterize_ship_svg(
             ship.svg_text,
@@ -245,7 +301,10 @@ def _render_vector_raft_cluster(
         img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma * scene_scale))
         layer = np.array(img)
 
-    return _downsample_cluster_layer(layer, image_size, scene_scale)
+    return (
+        _downsample_cluster_layer(shadow_layer, image_size, scene_scale),
+        _downsample_cluster_layer(layer, image_size, scene_scale),
+    )
 
 
 def _obb_aabb_bounds(
@@ -330,6 +389,9 @@ def _place_area_cluster(
     length_exponent: float,
     size_threshold: float | None,
     mixed: bool,
+    shadow_azimuth_rad: float | None = None,
+    shadow_elevation_rad: float | None = None,
+    shadow_alpha_scale: float = 1.0,
 ) -> list[str]:
     """Place ships in a loose 2D area with fully random headings."""
     labels: list[str] = []
@@ -357,6 +419,7 @@ def _place_area_cluster(
     scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
     scene_size = image_size * scene_scale
     cluster_buf = np.zeros((scene_size, scene_size, 4), dtype=np.uint8)
+    shadow_buf = np.zeros((scene_size, scene_size, 4), dtype=np.uint8)
     placed: list[tuple[float, float, int, int, float, int]] = []
 
     for i in range(n_ships):
@@ -433,6 +496,39 @@ def _place_area_cluster(
             if occupancy[cy0:cy1, cx0:cx1].any():
                 continue
 
+            if (
+                shadow_alpha_scale > 0.0
+                and shadow_azimuth_rad is not None
+                and shadow_elevation_rad is not None
+            ):
+                offset_x, offset_y = _shadow_offset_pixels(
+                    bw,
+                    lh,
+                    shadow_azimuth_rad,
+                    shadow_elevation_rad,
+                    scene_scale=scene_scale,
+                )
+                cast_length = math.hypot(offset_x, offset_y)
+                shadow_rgba = _make_shadow_rgba(
+                    rotated,
+                    offset_x=offset_x,
+                    offset_y=offset_y,
+                    blur_sigma=_shadow_blur_sigma(
+                        bw,
+                        lh,
+                        cast_length,
+                        scene_scale=scene_scale,
+                    ),
+                    alpha_scale=_shadow_alpha_for_ship(
+                        bw,
+                        lh,
+                        shadow_elevation_rad,
+                        cast_length,
+                    ) * shadow_alpha_scale,
+                )
+                shadow_x0, shadow_y0 = _cluster_scene_origin(cx, cy, shadow_rgba, scene_scale)
+                _composite_rgba(shadow_buf, shadow_rgba, shadow_x0, shadow_y0)
+
             _composite_rgba(cluster_buf, rotated, x0_scene, y0_scene)
             cid = _ship_class_id(lh, resolution_m, class_id, size_threshold)
             placed.append((cx, cy, bw, lh, angle_rad, cid))
@@ -440,6 +536,8 @@ def _place_area_cluster(
             break
 
     if placed:
+        shadow_layer = _downsample_cluster_layer(shadow_buf, image_size, scene_scale)
+        _darken_rgba_layer(background, shadow_layer, cluster_alpha, clip_mask=water_mask)
         cluster_layer = _downsample_cluster_layer(cluster_buf, image_size, scene_scale)
         _blend_rgba_layer(background, cluster_layer, cluster_alpha, water_tint)
         for cx, cy, bw, lh, angle_rad, cid in placed:
@@ -467,6 +565,9 @@ def _place_cluster(
     length_exponent: float = 1.0,
     size_threshold: float | None = None,
     mixed_prob: float = 0.5,
+    shadow_azimuth_rad: float | None = None,
+    shadow_elevation_rad: float | None = None,
+    shadow_alpha_scale: float = 1.0,
 ) -> list[str]:
     """Place a cluster of ships and return label lines."""
     n_ships = rng.randint(*cluster_size_range)
@@ -495,6 +596,9 @@ def _place_cluster(
             length_exponent,
             size_threshold,
             mixed,
+            shadow_azimuth_rad,
+            shadow_elevation_rad,
+            shadow_alpha_scale,
         )
 
     tight = layout == "raft_tight"
@@ -773,7 +877,16 @@ def _place_cluster(
             blur_sigma,
             scene_scale,
             join_tolerance=0.75 if tight else 0.0,
+            shadow_azimuth_rad=shadow_azimuth_rad,
+            shadow_elevation_rad=shadow_elevation_rad,
+            shadow_alpha_scale=shadow_alpha_scale,
         )
+        shadow_layer: NDArray[np.uint8]
+        if isinstance(cluster_layer, tuple):
+            shadow_layer, cluster_layer = cluster_layer
+        else:
+            shadow_layer = np.zeros((image_size, image_size, 4), dtype=np.uint8)
+        _darken_rgba_layer(background, shadow_layer, cluster_alpha, clip_mask=water_mask)
         _blend_rgba_layer(background, cluster_layer, cluster_alpha, water_tint)
         for ship in placed:
             corners = compute_obb_corners(
