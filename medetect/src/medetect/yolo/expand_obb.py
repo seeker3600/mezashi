@@ -577,6 +577,9 @@ def expand_obb_dataset(
 
     if max_workers is None:
         max_workers = os.cpu_count() or 1
+    elif max_workers < 0:
+        msg = f"max_workers must be >= 0, got {max_workers}"
+        raise ValueError(msg)
 
     label_paths: list[Path] = []
     for split in split_names:
@@ -595,19 +598,29 @@ def expand_obb_dataset(
         all_widths: list[float] = []
         all_heights: list[float] = []
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_collect_one, lp, dataset_root): lp
-                for lp in label_paths
-            }
-            with tqdm(total=len(futures), desc="collecting dimensions", unit="file", dynamic_ncols=True) as pbar:
-                for f in concurrent.futures.as_completed(futures):
-                    lp, size, ws, hs = f.result()
+        if max_workers == 0:
+            with tqdm(total=len(label_paths), desc="collecting dimensions", unit="file", dynamic_ncols=True) as pbar:
+                for lp in label_paths:
+                    lp, size, ws, hs = _collect_one(lp, dataset_root)
                     if size is not None:
                         img_sizes[lp] = size
                         all_widths.extend(ws)
                         all_heights.extend(hs)
                     pbar.update(1)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_collect_one, lp, dataset_root): lp
+                    for lp in label_paths
+                }
+                with tqdm(total=len(futures), desc="collecting dimensions", unit="file", dynamic_ncols=True) as pbar:
+                    for f in concurrent.futures.as_completed(futures):
+                        lp, size, ws, hs = f.result()
+                        if size is not None:
+                            img_sizes[lp] = size
+                            all_widths.extend(ws)
+                            all_heights.extend(hs)
+                        pbar.update(1)
 
         median_width = float(np.median(all_widths)) if all_widths else 0.0
         median_height = float(np.median(all_heights)) if all_heights else 0.0
@@ -617,18 +630,26 @@ def expand_obb_dataset(
         )
     else:
         # Single pass — just gather image sizes.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_get_image_size, lp, dataset_root): lp
-                for lp in label_paths
-            }
-            with tqdm(total=len(futures), desc="reading image sizes", unit="file", dynamic_ncols=True) as pbar:
-                for f in concurrent.futures.as_completed(futures):
-                    lp = futures[f]
-                    size = f.result()
+        if max_workers == 0:
+            with tqdm(total=len(label_paths), desc="reading image sizes", unit="file", dynamic_ncols=True) as pbar:
+                for lp in label_paths:
+                    size = _get_image_size(lp, dataset_root)
                     if size is not None:
                         img_sizes[lp] = size
                     pbar.update(1)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_get_image_size, lp, dataset_root): lp
+                    for lp in label_paths
+                }
+                with tqdm(total=len(futures), desc="reading image sizes", unit="file", dynamic_ncols=True) as pbar:
+                    for f in concurrent.futures.as_completed(futures):
+                        lp = futures[f]
+                        size = f.result()
+                        if size is not None:
+                            img_sizes[lp] = size
+                        pbar.update(1)
 
     # Pass 2 (or only pass): expand OBBs.
     stats = {"files_processed": 0, "files_updated": 0, "labels_expanded": 0}
@@ -650,15 +671,24 @@ def expand_obb_dataset(
             avoid_overlap=avoid_overlap,
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_process, lp): lp for lp in label_paths}
-        with tqdm(total=len(futures), desc="expanding OBBs", unit="file", dynamic_ncols=True) as pbar:
-            for f in concurrent.futures.as_completed(futures):
-                result = f.result()
+    if max_workers == 0:
+        with tqdm(total=len(label_paths), desc="expanding OBBs", unit="file", dynamic_ncols=True) as pbar:
+            for lp in label_paths:
+                result = _process(lp)
                 stats["files_processed"] += 1
                 stats["files_updated"] += result["updated"]
                 stats["labels_expanded"] += result["labels_expanded"]
                 pbar.update(1)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_process, lp): lp for lp in label_paths}
+            with tqdm(total=len(futures), desc="expanding OBBs", unit="file", dynamic_ncols=True) as pbar:
+                for f in concurrent.futures.as_completed(futures):
+                    result = f.result()
+                    stats["files_processed"] += 1
+                    stats["files_updated"] += result["updated"]
+                    stats["labels_expanded"] += result["labels_expanded"]
+                    pbar.update(1)
 
     logger.info(
         "expand-obb complete: files=%d updated=%d labels=%d",

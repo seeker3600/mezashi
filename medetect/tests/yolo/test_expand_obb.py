@@ -712,3 +712,49 @@ class TestCliExpandObb:
             avoid_overlap=True,
             max_workers=None,
         )
+
+
+class TestExpandObbSerial:
+    @pytest.fixture()
+    def dataset(self, tmp_path):
+        """100x100 画像付きのミニデータセットを作る。"""
+        from PIL import Image
+
+        ds_root = tmp_path / "dataset"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, ds_root)
+
+        Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
+        (lbl_dir / "img1.txt").write_text(
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+        return config_path
+
+    def test_workers_zero_runs_without_thread_pool(self, dataset) -> None:
+        """max_workers=0 のとき ThreadPoolExecutor を使わず逐次実行する。"""
+        with patch("medetect.yolo.expand_obb.concurrent.futures.ThreadPoolExecutor") as mock_pool:
+            stats = expand_obb_dataset(dataset, expand_height=10, max_workers=0)
+
+        mock_pool.assert_not_called()
+        assert stats["files_processed"] == 1
+        assert stats["files_updated"] == 1
+        assert stats["labels_expanded"] == 1
+
+    def test_workers_zero_weighted_runs_without_thread_pool(self, dataset) -> None:
+        """max_workers=0 で加重モードでも ThreadPoolExecutor を使わない。"""
+        with patch("medetect.yolo.expand_obb.concurrent.futures.ThreadPoolExecutor") as mock_pool:
+            stats = expand_obb_dataset(dataset, expand_width_weighted=4.0, max_workers=0)
+
+        mock_pool.assert_not_called()
+        assert stats["files_processed"] == 1
+        assert stats["files_updated"] == 1
+
+    def test_workers_negative_raises(self, dataset) -> None:
+        """max_workers=-1 のとき ValueError を送出する。"""
+        with pytest.raises(ValueError, match="max_workers must be >= 0"):
+            expand_obb_dataset(dataset, expand_height=5, max_workers=-1)
