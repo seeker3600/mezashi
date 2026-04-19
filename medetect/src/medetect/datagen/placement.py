@@ -36,6 +36,7 @@ from medetect.datagen.ship import (
     _SvgMeta,
     _pick_svg,
     _resolve_ship_dimensions,
+    _scale_ship_pixel_size,
     _ship_class_id,
 )
 from medetect.datagen.svg import parse_svg_metadata
@@ -532,8 +533,7 @@ def _place_area_cluster(
         else:
             svg_text_u = _pick_svg(svg_metas, rng, length_range)
             scale = rng.uniform(0.9, 1.1)
-            jit_bw = max(2, round(bw0 * scale))
-            jit_lh = max(3, round(lh0 * scale))
+            jit_bw, jit_lh = _scale_ship_pixel_size(bw0, lh0, scale)
             rotated = _rasterize_ship_scene(
                 svg_text_u,
                 jit_bw,
@@ -868,8 +868,7 @@ def _place_cluster(
         else:
             svg_text_i = _pick_svg(svg_metas, rng, length_range)
             scale = rng.uniform(0.9, 1.1)
-            bw = max(2, round(bw0 * scale))
-            lh = max(3, round(lh0 * scale))
+            bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
 
         local_hull = _local_hull_geometry(svg_text_i, bw, lh, angle_deg)
         min_proj, max_proj = _geometry_projection_extents(local_hull, cos_base, sin_base)

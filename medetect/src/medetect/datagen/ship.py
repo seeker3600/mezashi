@@ -27,6 +27,9 @@ SHIP_LENGTHS_M: dict[str, tuple[float, float]] = {
 }
 
 _DEFAULT_LENGTH_M = (30.0, 100.0)
+MIN_SHIP_LENGTH_PX = 3
+MIN_SHIP_BEAM_PX = 3
+_MAX_REASONABLE_LB_RATIO_MULTIPLIER = 1.6
 
 
 def compute_ship_pixel_size(
@@ -63,10 +66,10 @@ def compute_ship_pixel_size(
     u = rng.random()
     t = u ** length_exponent
     length_m = lo * (hi / lo) ** t
-    beam_m = length_m / lb_ratio
+    beam_m = length_m / _effective_lb_ratio(lb_ratio, length_m)
 
-    length_px = max(3, round(length_m / resolution_m))
-    beam_px = max(2, round(beam_m / resolution_m))
+    length_px = max(MIN_SHIP_LENGTH_PX, round(length_m / resolution_m))
+    beam_px = max(MIN_SHIP_BEAM_PX, round(beam_m / resolution_m))
     return beam_px, length_px
 
 
@@ -98,6 +101,25 @@ def _natural_lb_ratio(length_m: float) -> float:
     Linear approximation: lb ≈ 3.0 + 0.03 × length_m, capped at 10.
     """
     return min(10.0, 3.0 + 0.03 * length_m)
+
+
+def _max_reasonable_lb_ratio(length_m: float) -> float:
+    """Return the slenderest acceptable L/B ratio for a sampled ship length."""
+    return _natural_lb_ratio(length_m) * _MAX_REASONABLE_LB_RATIO_MULTIPLIER
+
+
+def _effective_lb_ratio(lb_ratio: float, length_m: float) -> float:
+    """Clamp an SVG L/B ratio to the sane upper bound for the sampled length."""
+    sane_upper = _max_reasonable_lb_ratio(length_m)
+    return min(max(lb_ratio, 1e-6), sane_upper)
+
+
+def _scale_ship_pixel_size(beam_px: int, length_px: int, scale: float) -> tuple[int, int]:
+    """Scale ship raster dimensions while preserving shared module minima."""
+    return (
+        max(MIN_SHIP_BEAM_PX, round(beam_px * scale)),
+        max(MIN_SHIP_LENGTH_PX, round(length_px * scale)),
+    )
 
 
 def _svg_lb_weight(lb_ratio: float, target_length_m: float) -> float:

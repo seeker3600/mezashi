@@ -4,9 +4,11 @@ import pathlib
 import random
 
 from medetect.datagen.ship import (
+    MIN_SHIP_BEAM_PX,
     _SvgMeta,
     _load_svg_metas,
     _natural_lb_ratio,
+    _scale_ship_pixel_size,
     _ship_class_id,
     _svg_lb_weight,
     compute_ship_pixel_size,
@@ -21,7 +23,7 @@ class TestComputeShipPixelSize:
             "destroyer", lb_ratio=8.0, resolution_m=10.0, rng=rng,
         )
         assert 10 <= length_px <= 25
-        assert beam_px >= 2
+        assert beam_px >= MIN_SHIP_BEAM_PX
 
     def test_fishing_trawler_at_2m(self) -> None:
         """2 m/px 解像度での漁船のピクセルサイズ。"""
@@ -30,7 +32,7 @@ class TestComputeShipPixelSize:
             "fishing_trawler", lb_ratio=5.0, resolution_m=2.0, rng=rng,
         )
         assert 5 <= length_px <= 30
-        assert beam_px >= 2
+        assert beam_px >= MIN_SHIP_BEAM_PX
 
     def test_minimum_pixel_size(self) -> None:
         """最小ピクセルサイズが保証される。"""
@@ -38,7 +40,7 @@ class TestComputeShipPixelSize:
         beam_px, length_px = compute_ship_pixel_size(
             "fishing_trawler", lb_ratio=5.0, resolution_m=100.0, rng=rng,
         )
-        assert beam_px >= 2
+        assert beam_px >= MIN_SHIP_BEAM_PX
         assert length_px >= 3
 
     def test_unknown_class_uses_default(self) -> None:
@@ -47,8 +49,40 @@ class TestComputeShipPixelSize:
         beam_px, length_px = compute_ship_pixel_size(
             "unknown_vessel", lb_ratio=6.0, resolution_m=5.0, rng=rng,
         )
-        assert beam_px >= 2
+        assert beam_px >= MIN_SHIP_BEAM_PX
         assert length_px >= 3
+
+    def test_length_dependent_beam_floor_widens_slender_small_ship(self) -> None:
+        """15m 級の細すぎる船は長さ依存の下限で補正される。"""
+        rng = random.Random(0)
+        beam_px, length_px = compute_ship_pixel_size(
+            "fishing_trawler",
+            lb_ratio=12.0,
+            resolution_m=0.5,
+            rng=rng,
+            length_range=(15.0, 15.0),
+        )
+        assert beam_px == 5
+        assert length_px == 30
+
+    def test_natural_lb_ratio_keeps_original_beam(self) -> None:
+        """自然な L/B 比の船は不要に太らせない。"""
+        rng = random.Random(0)
+        beam_px, length_px = compute_ship_pixel_size(
+            "patrol",
+            lb_ratio=4.0,
+            resolution_m=0.5,
+            rng=rng,
+            length_range=(60.0, 60.0),
+        )
+        assert beam_px == 30
+        assert length_px == 120
+
+
+class TestScaleShipPixelSize:
+    def test_beam_floor_applies_after_scaling(self) -> None:
+        """クラスタ再スケール後も beam の共有下限を維持する。"""
+        assert _scale_ship_pixel_size(2, 18, 0.9) == (MIN_SHIP_BEAM_PX, 16)
 
     def test_length_range_clamps_upper(self) -> None:
         """length_range の上限が適用される。"""

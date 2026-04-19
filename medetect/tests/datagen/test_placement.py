@@ -8,6 +8,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 import medetect.datagen.placement as placement_mod
+from medetect.datagen.ship import MIN_SHIP_BEAM_PX
 
 from medetect.datagen.placement import (
     _geometry_projection_extents,
@@ -512,6 +513,103 @@ class TestPlaceCluster:
         gapped = sum(1 for gap in min_gaps if gap > 3.0)
         assert tight > 0
         assert gapped > 0
+
+    def test_uniform_tight_cluster_scaled_ship_respects_beam_floor(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """均一 tight クラスターの後続船も beam 下限を下回らない。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        captured = _capture_vector_cluster(monkeypatch)
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            lambda *args, **kwargs: ("mock_hull", 2, 18, 9.0),
+        )
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0),
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=0.0,
+        )
+
+        assert len(labels) == 2
+        assert len(captured) == 2
+        assert captured[0].bw == 2
+        assert captured[1].bw == MIN_SHIP_BEAM_PX
+
+    def test_uniform_area_cluster_scaled_ship_respects_beam_floor(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """均一散開クラスターの後続船も beam 下限を下回らない。"""
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        recorded_sizes: list[tuple[int, int]] = []
+
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (100, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            lambda *args, **kwargs: ("mock_hull", 2, 18, 9.0),
+        )
+
+        def _mock_rasterize_ship_scene(
+            svg_text: str,
+            beam_px: int,
+            length_px: int,
+            *,
+            angle_deg: float,
+            blur_sigma: float,
+            scene_scale: int,
+        ) -> np.ndarray:
+            del svg_text, angle_deg, blur_sigma
+            recorded_sizes.append((beam_px, length_px))
+            return np.zeros((length_px * scene_scale, beam_px * scene_scale, 4), dtype=np.uint8)
+
+        monkeypatch.setattr(placement_mod, "_rasterize_ship_scene", _mock_rasterize_ship_scene)
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(11, "gapped", base_angle=0.0),
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=0.0,
+        )
+
+        assert len(labels) == 2
+        assert recorded_sizes[0] == (2, 18)
+        assert recorded_sizes[1][0] == MIN_SHIP_BEAM_PX
 
     @pytest.mark.parametrize(
         ("sizes", "description"),
