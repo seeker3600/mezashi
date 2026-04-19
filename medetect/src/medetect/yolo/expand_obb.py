@@ -14,13 +14,15 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from shapely.geometry import Polygon
 from tqdm import tqdm
+
+from medetect.yolo.dataset_yaml import get_dataset_root, load_dataset_yaml
 
 logger = logging.getLogger(__name__)
 
 _IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
-_OVERLAP_AREA_EPSILON = 1e-9
+_POLYGON_AREA_EPSILON = 1e-6
+_PROJECTION_TOUCH_EPSILON = 1e-6
 
 
 @dataclass
@@ -29,6 +31,9 @@ class _ObbRecord:
     class_id: int
     corners: np.ndarray
     raw_line: str
+    aabb: tuple[float, float, float, float]
+    axes: tuple[np.ndarray, ...]
+    area: float
 
 
 def _obb_dimensions(corners: np.ndarray) -> tuple[float, float]:
@@ -98,6 +103,91 @@ def _clip_corners_to_image(corners: np.ndarray, img_w: int, img_h: int) -> np.nd
     return clipped
 
 
+def _aabb_from_corners(corners: np.ndarray) -> tuple[float, float, float, float]:
+    """Return ``(min_x, min_y, max_x, max_y)`` for one polygon."""
+    return (
+        float(np.min(corners[:, 0])),
+        float(np.min(corners[:, 1])),
+        float(np.max(corners[:, 0])),
+        float(np.max(corners[:, 1])),
+    )
+
+
+def _merge_aabbs(
+    aabb_a: tuple[float, float, float, float],
+    aabb_b: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Return the bounding box that covers both AABBs."""
+    return (
+        min(aabb_a[0], aabb_b[0]),
+        min(aabb_a[1], aabb_b[1]),
+        max(aabb_a[2], aabb_b[2]),
+        max(aabb_a[3], aabb_b[3]),
+    )
+
+
+def _aabb_intersects(
+    aabb_a: tuple[float, float, float, float],
+    aabb_b: tuple[float, float, float, float],
+) -> bool:
+    """Return True when two AABBs overlap by positive area."""
+    return not (
+        aabb_a[2] <= aabb_b[0] + _PROJECTION_TOUCH_EPSILON
+        or aabb_b[2] <= aabb_a[0] + _PROJECTION_TOUCH_EPSILON
+        or aabb_a[3] <= aabb_b[1] + _PROJECTION_TOUCH_EPSILON
+        or aabb_b[3] <= aabb_a[1] + _PROJECTION_TOUCH_EPSILON
+    )
+
+
+def _polygon_area(corners: np.ndarray) -> float:
+    """Return the absolute area of one polygon."""
+    x = corners[:, 0]
+    y = corners[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _polygon_axes(corners: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Return unit SAT axes derived from polygon edges."""
+    axes: list[np.ndarray] = []
+    point_count = len(corners)
+    for index in range(point_count):
+        edge = corners[(index + 1) % point_count] - corners[index]
+        edge_norm = float(np.linalg.norm(edge))
+        if edge_norm <= _PROJECTION_TOUCH_EPSILON:
+            continue
+        axis = np.array([-edge[1], edge[0]], dtype=float) / edge_norm
+        axes.append(axis)
+    return tuple(axes)
+
+
+def _project_polygon(corners: np.ndarray, axis: np.ndarray) -> tuple[float, float]:
+    """Project one polygon onto a SAT axis."""
+    values = corners @ axis
+    return float(np.min(values)), float(np.max(values))
+
+
+def _polygons_overlap(
+    corners_a: np.ndarray,
+    axes_a: tuple[np.ndarray, ...],
+    area_a: float,
+    corners_b: np.ndarray,
+    axes_b: tuple[np.ndarray, ...],
+    area_b: float,
+) -> bool:
+    """Return True when two convex polygons overlap by positive area."""
+    if area_a <= _POLYGON_AREA_EPSILON or area_b <= _POLYGON_AREA_EPSILON:
+        return False
+
+    for axis in (*axes_a, *axes_b):
+        min_a, max_a = _project_polygon(corners_a, axis)
+        min_b, max_b = _project_polygon(corners_b, axis)
+        if max_a <= min_b + _PROJECTION_TOUCH_EPSILON:
+            return False
+        if max_b <= min_a + _PROJECTION_TOUCH_EPSILON:
+            return False
+    return True
+
+
 def _format_obb_line(
     class_id: int,
     corners: np.ndarray,
@@ -134,15 +224,50 @@ def _compute_total_expansion(
     return total_w, total_h
 
 
-def _obb_polygon(corners: np.ndarray):
-    """Build a polygon for overlap checks."""
-    return Polygon(corners).buffer(0)
+def _build_obb_record(
+    *,
+    line_index: int,
+    class_id: int,
+    corners: np.ndarray,
+    raw_line: str,
+) -> _ObbRecord:
+    """Build one parsed OBB record with cached geometry for overlap checks."""
+    return _ObbRecord(
+        line_index=line_index,
+        class_id=class_id,
+        corners=corners,
+        raw_line=raw_line,
+        aabb=_aabb_from_corners(corners),
+        axes=_polygon_axes(corners),
+        area=_polygon_area(corners),
+    )
 
 
-def _has_overlap(candidate, obstacles: list) -> bool:
-    """Return True when a candidate polygon overlaps any obstacle polygon by area."""
+def _has_overlap_with_obstacles(
+    candidate_corners: np.ndarray,
+    obstacles: list[_ObbRecord],
+) -> bool:
+    """Return True when a candidate polygon overlaps any original OBB obstacle."""
+    candidate_area = _polygon_area(candidate_corners)
+    if candidate_area <= _POLYGON_AREA_EPSILON:
+        return False
+
+    candidate_aabb = _aabb_from_corners(candidate_corners)
+    candidate_axes = _polygon_axes(candidate_corners)
+    if not candidate_axes:
+        return False
+
     for obstacle in obstacles:
-        if float(candidate.intersection(obstacle).area) > _OVERLAP_AREA_EPSILON:
+        if not _aabb_intersects(candidate_aabb, obstacle.aabb):
+            continue
+        if _polygons_overlap(
+            candidate_corners,
+            candidate_axes,
+            candidate_area,
+            obstacle.corners,
+            obstacle.axes,
+            obstacle.area,
+        ):
             return True
     return False
 
@@ -173,7 +298,7 @@ def _parse_label_text(
         corners[:, 0] *= img_w
         corners[:, 1] *= img_h
         records.append(
-            _ObbRecord(
+            _build_obb_record(
                 line_index=line_index,
                 class_id=class_id,
                 corners=corners,
@@ -197,7 +322,7 @@ def _expand_without_overlap(
     median_width: float,
     median_height: float,
 ) -> tuple[list[np.ndarray], int]:
-    """Expand OBBs greedily while preserving non-overlap within one image."""
+    """Expand OBBs while preventing overlap with other original OBBs."""
     if not records:
         return [], 0
 
@@ -214,51 +339,38 @@ def _expand_without_overlap(
         for record in records
     ]
 
-    original_corners = [_clip_corners_to_image(record.corners, img_w, img_h) for record in records]
+    original_corners = [record.corners.copy() for record in records]
     final_corners = [corners.copy() for corners in original_corners]
-    final_polygons = [_obb_polygon(corners) for corners in original_corners]
-    initially_overlapping: set[int] = set()
+    labels_expanded = 0
 
-    for index, polygon in enumerate(final_polygons):
-        for other_index in range(index + 1, len(final_polygons)):
-            if float(polygon.intersection(final_polygons[other_index]).area) > _OVERLAP_AREA_EPSILON:
-                initially_overlapping.add(index)
-                initially_overlapping.add(other_index)
-
-    priorities: list[tuple[float, int, int]] = []
-    for index, (record, (total_w, total_h)) in enumerate(zip(records, target_expansions, strict=False)):
+    for index, record in enumerate(records):
+        total_w, total_h = target_expansions[index]
         if total_w == 0.0 and total_h == 0.0:
             continue
-        width, height = _obb_dimensions(record.corners)
-        additional_area = max((width + total_w) * (height + total_h) - width * height, 0.0)
-        priorities.append((-additional_area, record.line_index, index))
 
-    labels_expanded = 0
-    for _, _, index in sorted(priorities):
-        if index in initially_overlapping:
-            continue
-
-        total_w, total_h = target_expansions[index]
-        record = records[index]
-        obstacles = [
-            final_polygons[other_index]
-            for other_index in range(len(records))
-            if other_index != index
-        ]
-
-        best_corners = original_corners[index]
         full_corners = _clip_corners_to_image(
             _expand_obb(record.corners, expand_width=total_w, expand_height=total_h),
             img_w,
             img_h,
         )
-        full_polygon = _obb_polygon(full_corners)
-        if not _has_overlap(full_polygon, obstacles):
+        search_aabb = _merge_aabbs(record.aabb, _aabb_from_corners(full_corners))
+        obstacles = [
+            other
+            for other_index, other in enumerate(records)
+            if other_index != index and _aabb_intersects(search_aabb, other.aabb)
+        ]
+
+        best_corners = original_corners[index]
+        if obstacles and _has_overlap_with_obstacles(record.corners, obstacles):
+            final_corners[index] = best_corners
+            continue
+
+        if not obstacles or not _has_overlap_with_obstacles(full_corners, obstacles):
             best_corners = full_corners
         else:
             low = 0.0
             high = 1.0
-            for _ in range(24):
+            for _ in range(20):
                 mid = (low + high) / 2.0
                 candidate_corners = _clip_corners_to_image(
                     _expand_obb(
@@ -269,15 +381,13 @@ def _expand_without_overlap(
                     img_w,
                     img_h,
                 )
-                candidate_polygon = _obb_polygon(candidate_corners)
-                if _has_overlap(candidate_polygon, obstacles):
+                if _has_overlap_with_obstacles(candidate_corners, obstacles):
                     high = mid
                 else:
                     low = mid
                     best_corners = candidate_corners
 
         final_corners[index] = best_corners
-        final_polygons[index] = _obb_polygon(best_corners)
         if not np.allclose(best_corners, original_corners[index], atol=1e-6):
             labels_expanded += 1
 
@@ -439,7 +549,7 @@ def _restore_labels_from_backup(dataset_root: Path) -> None:
 # ------------------------------------------------------------------
 
 def expand_obb_dataset(
-    dataset_root: Path,
+    dataset: str | Path,
     *,
     expand_height: float = 0.0,
     expand_width: float = 0.0,
@@ -452,8 +562,8 @@ def expand_obb_dataset(
 
     Parameters
     ----------
-    dataset_root:
-        Root of the YOLO dataset (must contain ``labels/``).
+    dataset:
+        Dataset root directory or dataset YAML path.
     expand_height:
         Constant pixel expansion for the longer OBB dimension.
     expand_width:
@@ -465,11 +575,18 @@ def expand_obb_dataset(
         Base pixel expansion for width with inverse-proportional weighting.
         Actual expansion = *base* × (median_width / current_width).
     avoid_overlap:
-        If True, greedily scale expansions back within each image so OBBs do not
-        acquire new overlap area with one another.
+        If True, scale each OBB back until it no longer overlaps any other
+        original OBB in the same image.
     max_workers:
         Thread pool size.  Defaults to CPU count.
     """
+    dataset_path = Path(dataset).resolve()
+    if dataset_path.is_dir():
+        dataset_root = dataset_path
+    else:
+        config_path, config = load_dataset_yaml(dataset_path)
+        dataset_root = get_dataset_root(config, config_path)
+
     dataset_root = Path(dataset_root).resolve()
     labels_root = dataset_root / "labels"
 

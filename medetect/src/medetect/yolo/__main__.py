@@ -115,9 +115,10 @@ def main() -> None:
         help="Expand OBB width/height in a YOLO OBB dataset.",
     )
     expand_parser.add_argument(
-        "dir",
+        "--config",
         type=Path,
-        help="Dataset root directory (must contain images/ and labels/).",
+        required=True,
+        help="Dataset YAML path.",
     )
     expand_parser.add_argument(
         "--expand-height",
@@ -164,8 +165,8 @@ def main() -> None:
         "--avoid-overlap",
         action="store_true",
         help=(
-            "Greedily scale each requested expansion back within an image so OBBs "
-            "do not create new overlap area with one another."
+            "Scale each requested expansion back so the expanded OBB does not "
+            "overlap any other original OBB in the same image."
         ),
     )
 
@@ -195,7 +196,7 @@ def main() -> None:
         )
     elif args.command == "expand-obb":
         expand_obb_dataset(
-            args.dir,
+            args.config,
             expand_height=args.expand_height,
             expand_width=args.expand_width,
             expand_height_weighted=args.expand_height_weighted,

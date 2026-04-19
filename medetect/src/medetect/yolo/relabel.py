@@ -9,8 +9,9 @@ import os
 import random
 from pathlib import Path
 
-import yaml
 from tqdm import tqdm
+
+from medetect.yolo.dataset_yaml import load_dataset_yaml, resolve_dataset_root
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +53,8 @@ def _load_relabel_config(
     config_path: str | Path,
 ) -> tuple[Path, dict[int, int | dict[str, int | float]], float]:
     """relabel 用 YAML を読み込み、データセット root と merges と目標比率を返す。"""
-    config_file = Path(config_path).resolve()
-    with config_file.open("r", encoding="utf-8") as handle:
-        config = yaml.safe_load(handle) or {}
+    config_file, config = load_dataset_yaml(config_path)
 
-    if not isinstance(config, dict):
-        raise TypeError("Dataset YAML must contain a top-level mapping.")
     if "path" not in config:
         raise KeyError("Dataset YAML must define 'path'.")
 
@@ -69,28 +66,7 @@ def _load_relabel_config(
 
 def _resolve_dataset_root(path_value: object, config_path: Path) -> Path:
     """設定中の path を絶対パスへ解決する。"""
-    if not isinstance(path_value, (str, Path)):
-        raise TypeError("'path' must be a string or path-like value.")
-
-    dataset_path = Path(path_value)
-    if dataset_path.is_absolute():
-        return dataset_path.resolve()
-
-    config_relative = (config_path.parent / dataset_path).resolve()
-    if config_relative.exists():
-        return config_relative
-
-    try:
-        from ultralytics import settings
-    except ImportError:
-        return config_relative
-
-    datasets_root = Path(settings["datasets_dir"]).expanduser()
-    ultralytics_relative = (datasets_root / dataset_path).resolve()
-    if ultralytics_relative.exists():
-        return ultralytics_relative
-
-    return ultralytics_relative
+    return resolve_dataset_root(path_value, config_path)
 
 
 def _normalize_probability(value: object) -> float:

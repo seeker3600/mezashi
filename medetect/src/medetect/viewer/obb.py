@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Literal
 
 import fiftyone as fo
-import yaml
+
+from medetect.yolo.dataset_yaml import (
+    choose_splits,
+    get_dataset_root,
+    load_dataset_yaml,
+    resolve_split_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +51,8 @@ def load_yolo_obb_dataset(
     """
     yaml_path = Path(yaml_path).resolve()
 
-    with yaml_path.open("r", encoding="utf-8") as f:
-        cfg: dict = yaml.safe_load(f)
-
-    root = Path(cfg.get("path", yaml_path.parent)).resolve()
+    _, cfg = load_dataset_yaml(yaml_path)
+    root = get_dataset_root(cfg, yaml_path, default_to_parent=True)
     class_map = _build_class_map(cfg["names"])
 
     name = dataset_name or f"{yaml_path.stem}_obb"
@@ -57,11 +61,11 @@ def load_yolo_obb_dataset(
 
     dataset = fo.Dataset(name=name)
 
-    splits_to_load = _choose_splits(cfg, split)
+    splits_to_load = choose_splits(cfg, split)
     samples: list[fo.Sample] = []
 
     for sp in splits_to_load:
-        dirs = _resolve_split_dirs(cfg[sp], root)
+        dirs = resolve_split_dirs(cfg[sp], root)
         for img_path in _iter_images(dirs):
             label_path = _image_to_label_path(img_path)
             sample = fo.Sample(filepath=str(img_path))
@@ -85,25 +89,6 @@ def _build_class_map(names: list | dict) -> dict[int, str]:
     if isinstance(names, list):
         return {i: name for i, name in enumerate(names)}
     return {int(k): v for k, v in names.items()}
-
-
-def _choose_splits(cfg: dict, split: str | None) -> list[str]:
-    """Return the list of split keys that exist in *cfg* and should be loaded."""
-    candidates = [split] if split is not None else ["train", "val", "test"]
-    return [s for s in candidates if s in cfg]
-
-
-def _resolve_split_dirs(split_value: str | list[str], root: Path) -> list[Path]:
-    """Resolve one or more split path strings to absolute ``Path`` objects."""
-    if isinstance(split_value, str):
-        split_value = [split_value]
-    dirs: list[Path] = []
-    for p in split_value:
-        pp = Path(p)
-        if not pp.is_absolute():
-            pp = root / pp
-        dirs.append(pp.resolve())
-    return dirs
 
 
 def _iter_images(dirs: list[Path]):
@@ -182,14 +167,12 @@ def detect_task(yaml_path: Path, split: str = "val") -> Literal["obb", "detect"]
     Samples a few label files from *split* to check the column count.
     Returns ``"obb"`` if 9-column lines are found, else ``"detect"``.
     """
-    with yaml_path.open("r", encoding="utf-8") as f:
-        cfg: dict = yaml.safe_load(f)
-
-    root = Path(cfg.get("path", yaml_path.parent)).resolve()
-    splits_to_check = _choose_splits(cfg, split) or _choose_splits(cfg, None)
+    _, cfg = load_dataset_yaml(yaml_path)
+    root = get_dataset_root(cfg, yaml_path, default_to_parent=True)
+    splits_to_check = choose_splits(cfg, split) or choose_splits(cfg, None)
 
     for sp in splits_to_check:
-        dirs = _resolve_split_dirs(cfg[sp], root)
+        dirs = resolve_split_dirs(cfg[sp], root)
         for img_dir in dirs:
             label_dir = img_dir.parent.parent / "labels" / img_dir.name
             if not label_dir.is_dir():

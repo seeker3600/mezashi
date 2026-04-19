@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import sys
+import types
+from pathlib import Path
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 from shapely.geometry import Polygon
@@ -21,6 +26,28 @@ def _label_corners(label_line: str) -> np.ndarray:
 
 def _overlap_area(corners_a: np.ndarray, corners_b: np.ndarray) -> float:
     return float(Polygon(corners_a).intersection(Polygon(corners_b)).area)
+
+
+def _install_fake_ultralytics(monkeypatch: pytest.MonkeyPatch, datasets_dir: Path) -> None:
+    fake_module = types.ModuleType("ultralytics")
+    fake_module.settings = {"datasets_dir": str(datasets_dir)}
+    monkeypatch.setitem(sys.modules, "ultralytics", fake_module)
+
+
+def _write_dataset_yaml(
+    yaml_path: Path,
+    dataset_root: Path,
+    *,
+    path_value: str | Path | None = None,
+) -> None:
+    resolved_path = path_value if path_value is not None else dataset_root.as_posix()
+    yaml_path.write_text(
+        f"path: {resolved_path}\n"
+        "train: images/train\n"
+        "names:\n"
+        "  0: ship\n",
+        encoding="utf-8",
+    )
 
 
 class TestObbDimensions:
@@ -264,21 +291,21 @@ class TestProcessLabelFile:
         # All x-coordinates clamped to [0.0, 1.0]
         assert all(0.0 <= c <= 1.0 for c in coords)
 
-    def test_avoid_overlap_scales_later_box_back(self, dataset) -> None:
-        """衝突回避時は後続OBBを縮退させて重なりを防ぐ。"""
+    def test_avoid_overlap_allows_overlap_between_expanded_boxes(self, dataset) -> None:
+        """衝突判定は他の拡張前OBBに対してのみ行う。"""
         lbl_path = dataset / "labels" / "train" / "test.txt"
         lbl_path.write_text(
             "0 0.200000 0.300000 0.400000 0.300000 "
             "0.400000 0.700000 0.200000 0.700000\n"
-            "1 0.460000 0.300000 0.660000 0.300000 "
-            "0.660000 0.700000 0.460000 0.700000\n"
+            "1 0.600000 0.300000 0.800000 0.300000 "
+            "0.800000 0.700000 0.600000 0.700000\n"
         )
 
         result = _process_label_file(
             lbl_path,
             img_w=100,
             img_h=100,
-            expand_width=10,
+            expand_width=30,
             expand_height=0,
             expand_width_weighted=0,
             expand_height_weighted=0,
@@ -288,7 +315,7 @@ class TestProcessLabelFile:
         )
 
         assert result["updated"] == 1
-        assert result["labels_expanded"] >= 1
+        assert result["labels_expanded"] == 2
 
         lines = lbl_path.read_text().strip().splitlines()
         first = _label_corners(lines[0])
@@ -297,9 +324,53 @@ class TestProcessLabelFile:
         first_width = (first[:, 0].max() - first[:, 0].min()) * 100
         second_width = (second[:, 0].max() - second[:, 0].min()) * 100
 
-        assert first_width == pytest.approx(30.0, abs=1e-4)
-        assert 20.0 < second_width < 30.0
-        assert _overlap_area(first, second) == pytest.approx(0.0, abs=1e-8)
+        assert first_width == pytest.approx(50.0, abs=1e-4)
+        assert second_width == pytest.approx(50.0, abs=1e-4)
+        assert _overlap_area(first, second) > 0.0
+
+    def test_avoid_overlap_scales_back_against_original_obstacles(self, dataset) -> None:
+        """拡張後OBBは他の拡張前OBBに当たる直前まで縮退する。"""
+        lbl_path = dataset / "labels" / "train" / "test.txt"
+        original_text = (
+            "0 0.200000 0.300000 0.400000 0.300000 "
+            "0.400000 0.700000 0.200000 0.700000\n"
+            "1 0.450000 0.300000 0.650000 0.300000 "
+            "0.650000 0.700000 0.450000 0.700000\n"
+        )
+        lbl_path.write_text(original_text)
+
+        original_lines = original_text.strip().splitlines()
+        original_first = _label_corners(original_lines[0])
+        original_second = _label_corners(original_lines[1])
+
+        result = _process_label_file(
+            lbl_path,
+            img_w=100,
+            img_h=100,
+            expand_width=20,
+            expand_height=0,
+            expand_width_weighted=0,
+            expand_height_weighted=0,
+            median_width=0,
+            median_height=0,
+            avoid_overlap=True,
+        )
+
+        assert result["updated"] == 1
+        assert result["labels_expanded"] == 2
+
+        lines = lbl_path.read_text().strip().splitlines()
+        first = _label_corners(lines[0])
+        second = _label_corners(lines[1])
+
+        first_width = (first[:, 0].max() - first[:, 0].min()) * 100
+        second_width = (second[:, 0].max() - second[:, 0].min()) * 100
+
+        assert first_width == pytest.approx(30.0, abs=2e-3)
+        assert second_width == pytest.approx(30.0, abs=2e-3)
+        assert _overlap_area(first, original_second) == pytest.approx(0.0, abs=1e-8)
+        assert _overlap_area(second, original_first) == pytest.approx(0.0, abs=1e-8)
+        assert _overlap_area(first, second) > 0.0
 
     def test_avoid_overlap_skips_initially_overlapping_boxes(self, dataset) -> None:
         """初期状態で重なるOBBは衝突回避モードでは据え置く。"""
@@ -350,10 +421,14 @@ class TestProcessLabelFile:
             flat = " ".join(f"{value / 100.0:.6f}" for value in corners.flatten())
             return flat
 
-        lbl_path.write_text(
+        original_text = (
             f"0 {rotated_box(35, 50, 20, 40, 30)}\n"
             f"1 {rotated_box(63, 50, 20, 40, 30)}\n"
         )
+        lbl_path.write_text(original_text)
+        original_lines = original_text.strip().splitlines()
+        original_first = _label_corners(original_lines[0])
+        original_second = _label_corners(original_lines[1])
 
         result = _process_label_file(
             lbl_path,
@@ -375,7 +450,8 @@ class TestProcessLabelFile:
         first = _label_corners(lines[0])
         second = _label_corners(lines[1])
 
-        assert _overlap_area(first, second) == pytest.approx(0.0, abs=1e-8)
+        assert _overlap_area(first, original_second) == pytest.approx(0.0, abs=1e-8)
+        assert _overlap_area(second, original_first) == pytest.approx(0.0, abs=1e-8)
         np.testing.assert_allclose(first.mean(axis=0), [0.35, 0.5], atol=1e-5)
         np.testing.assert_allclose(second.mean(axis=0), [0.63, 0.5], atol=1e-5)
 
@@ -393,6 +469,8 @@ class TestExpandObbDataset:
 
         Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
         Image.new("RGB", (100, 100)).save(img_dir / "img2.png")
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, ds_root)
 
         (lbl_dir / "img1.txt").write_text(
             "0 0.400000 0.300000 0.600000 0.300000 "
@@ -404,7 +482,7 @@ class TestExpandObbDataset:
         )
 
         stats = expand_obb_dataset(
-            ds_root,
+            config_path,
             expand_height=10,
             expand_width=0,
             max_workers=1,
@@ -423,6 +501,8 @@ class TestExpandObbDataset:
         lbl_dir = ds_root / "labels" / "train"
         img_dir.mkdir(parents=True)
         lbl_dir.mkdir(parents=True)
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, ds_root)
 
         Image.new("RGB", (100, 100)).save(img_dir / "narrow.png")
         Image.new("RGB", (100, 100)).save(img_dir / "wide.png")
@@ -439,7 +519,7 @@ class TestExpandObbDataset:
         )
 
         stats = expand_obb_dataset(
-            ds_root,
+            config_path,
             expand_width_weighted=4,
             max_workers=1,
         )
@@ -470,14 +550,18 @@ class TestExpandObbDataset:
         """ラベルがない場合は空のstatsを返す。"""
         ds_root = tmp_path / "dataset"
         (ds_root / "labels").mkdir(parents=True)
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, ds_root)
 
-        stats = expand_obb_dataset(ds_root, expand_height=5)
+        stats = expand_obb_dataset(config_path, expand_height=5)
         assert stats["files_processed"] == 0
 
     def test_missing_labels_dir_raises(self, tmp_path) -> None:
         """labelsディレクトリが無い場合はFileNotFoundError。"""
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, tmp_path)
         with pytest.raises(FileNotFoundError):
-            expand_obb_dataset(tmp_path, expand_height=5)
+            expand_obb_dataset(config_path, expand_height=5)
 
     def test_first_run_creates_backup(self, tmp_path) -> None:
         """初回実行でlabels_before_expandにバックアップを作成する。"""
@@ -488,6 +572,8 @@ class TestExpandObbDataset:
         lbl_dir = ds_root / "labels" / "train"
         img_dir.mkdir(parents=True)
         lbl_dir.mkdir(parents=True)
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, ds_root)
 
         Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
         original = (
@@ -496,7 +582,7 @@ class TestExpandObbDataset:
         )
         (lbl_dir / "img1.txt").write_text(original)
 
-        expand_obb_dataset(ds_root, expand_height=10, max_workers=1)
+        expand_obb_dataset(config_path, expand_height=10, max_workers=1)
 
         backup_path = ds_root / "labels_before_expand" / "train" / "img1.txt"
         assert backup_path.exists()
@@ -511,6 +597,8 @@ class TestExpandObbDataset:
         lbl_dir = ds_root / "labels" / "train"
         img_dir.mkdir(parents=True)
         lbl_dir.mkdir(parents=True)
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, ds_root)
 
         Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
         original = (
@@ -520,12 +608,12 @@ class TestExpandObbDataset:
         (lbl_dir / "img1.txt").write_text(original)
 
         # First run: expand by 10
-        expand_obb_dataset(ds_root, expand_height=10, max_workers=1)
+        expand_obb_dataset(config_path, expand_height=10, max_workers=1)
         tokens1 = (lbl_dir / "img1.txt").read_text().strip().split()
         corners1 = np.array([float(t) for t in tokens1[1:]]).reshape(4, 2)
 
         # Second run: expand by 20 (should re-expand from original, not stack)
-        expand_obb_dataset(ds_root, expand_height=20, max_workers=1)
+        expand_obb_dataset(config_path, expand_height=20, max_workers=1)
         tokens2 = (lbl_dir / "img1.txt").read_text().strip().split()
         corners2 = np.array([float(t) for t in tokens2[1:]]).reshape(4, 2)
 
@@ -547,6 +635,8 @@ class TestExpandObbDataset:
         lbl_dir = ds_root / "labels" / "train"
         img_dir.mkdir(parents=True)
         lbl_dir.mkdir(parents=True)
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, ds_root)
 
         Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
         original = (
@@ -555,8 +645,67 @@ class TestExpandObbDataset:
         )
         (lbl_dir / "img1.txt").write_text(original)
 
-        expand_obb_dataset(ds_root, expand_height=10, max_workers=1)
-        expand_obb_dataset(ds_root, expand_height=20, max_workers=1)
+        expand_obb_dataset(config_path, expand_height=10, max_workers=1)
+        expand_obb_dataset(config_path, expand_height=20, max_workers=1)
 
         backup_path = ds_root / "labels_before_expand" / "train" / "img1.txt"
         assert backup_path.read_text() == original
+
+    def test_yaml_path_resolves_relative_dataset_root(self, tmp_path, monkeypatch) -> None:
+        """YAML の相対 path は ultralytics settings 経由でも解決できる。"""
+        from PIL import Image
+
+        datasets_dir = tmp_path / "datasets"
+        ds_root = datasets_dir / "toy"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+
+        Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
+        (lbl_dir / "img1.txt").write_text(
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+
+        config_path = tmp_path / "toy.yaml"
+        _write_dataset_yaml(config_path, ds_root, path_value="toy")
+        _install_fake_ultralytics(monkeypatch, datasets_dir)
+
+        stats = expand_obb_dataset(config_path, expand_height=10, max_workers=1)
+
+        assert stats["files_processed"] == 1
+        assert stats["files_updated"] == 1
+
+
+class TestCliExpandObb:
+    def test_cli_calls_expand_obb_dataset_with_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CLI の expand-obb は --config を使って処理関数を呼ぶ。"""
+        from medetect.yolo.__main__ import main
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog",
+                "expand-obb",
+                "--config",
+                "dataset.yaml",
+                "--expand-width",
+                "4",
+                "--avoid-overlap",
+            ],
+        )
+
+        with patch("medetect.yolo.__main__.expand_obb_dataset") as mock_fn:
+            main()
+
+        mock_fn.assert_called_once_with(
+            Path("dataset.yaml"),
+            expand_height=0.0,
+            expand_width=4.0,
+            expand_height_weighted=0.0,
+            expand_width_weighted=0.0,
+            avoid_overlap=True,
+            max_workers=None,
+        )
