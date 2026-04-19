@@ -6,6 +6,7 @@ height = longer dimension of OBB, width = shorter dimension.
 from __future__ import annotations
 
 import concurrent.futures
+from dataclasses import dataclass
 import logging
 import os
 import shutil
@@ -13,11 +14,21 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from shapely.geometry import Polygon
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
 _IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+_OVERLAP_AREA_EPSILON = 1e-9
+
+
+@dataclass
+class _ObbRecord:
+    line_index: int
+    class_id: int
+    corners: np.ndarray
+    raw_line: str
 
 
 def _obb_dimensions(corners: np.ndarray) -> tuple[float, float]:
@@ -79,6 +90,200 @@ def _expand_obb(
     ])
 
 
+def _clip_corners_to_image(corners: np.ndarray, img_w: int, img_h: int) -> np.ndarray:
+    """Clamp pixel-space corners to the image boundary."""
+    clipped = corners.copy()
+    clipped[:, 0] = np.clip(clipped[:, 0], 0.0, float(img_w))
+    clipped[:, 1] = np.clip(clipped[:, 1], 0.0, float(img_h))
+    return clipped
+
+
+def _format_obb_line(
+    class_id: int,
+    corners: np.ndarray,
+    img_w: int,
+    img_h: int,
+) -> str:
+    """Serialize pixel-space OBB corners as one YOLO OBB label line."""
+    corners_norm = corners.copy()
+    corners_norm[:, 0] = np.clip(corners_norm[:, 0] / img_w, 0.0, 1.0)
+    corners_norm[:, 1] = np.clip(corners_norm[:, 1] / img_h, 0.0, 1.0)
+    coord_str = " ".join(f"{value:.6f}" for value in corners_norm.flatten())
+    return f"{class_id} {coord_str}"
+
+
+def _compute_total_expansion(
+    corners: np.ndarray,
+    *,
+    expand_width: float,
+    expand_height: float,
+    expand_width_weighted: float,
+    expand_height_weighted: float,
+    median_width: float,
+    median_height: float,
+) -> tuple[float, float]:
+    """Return total width/height expansion for one OBB in pixel space."""
+    width, height = _obb_dimensions(corners)
+
+    total_w = expand_width
+    total_h = expand_height
+    if expand_width_weighted > 0 and width > 0 and median_width > 0:
+        total_w += expand_width_weighted * (median_width / width)
+    if expand_height_weighted > 0 and height > 0 and median_height > 0:
+        total_h += expand_height_weighted * (median_height / height)
+    return total_w, total_h
+
+
+def _obb_polygon(corners: np.ndarray):
+    """Build a polygon for overlap checks."""
+    return Polygon(corners).buffer(0)
+
+
+def _has_overlap(candidate, obstacles: list) -> bool:
+    """Return True when a candidate polygon overlaps any obstacle polygon by area."""
+    for obstacle in obstacles:
+        if float(candidate.intersection(obstacle).area) > _OVERLAP_AREA_EPSILON:
+            return True
+    return False
+
+
+def _parse_label_text(
+    text: str,
+    img_w: int,
+    img_h: int,
+) -> tuple[list[str | None], list[_ObbRecord]]:
+    """Split a label file into OBB records and preserved raw lines."""
+    output_lines: list[str | None] = []
+    records: list[_ObbRecord] = []
+
+    for line_index, line in enumerate(text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            output_lines.append("")
+            continue
+
+        tokens = stripped.split()
+        if len(tokens) != 9:
+            output_lines.append(stripped)
+            continue
+
+        class_id = int(tokens[0])
+        coords = [float(token) for token in tokens[1:]]
+        corners = np.array(coords, dtype=float).reshape(4, 2)
+        corners[:, 0] *= img_w
+        corners[:, 1] *= img_h
+        records.append(
+            _ObbRecord(
+                line_index=line_index,
+                class_id=class_id,
+                corners=corners,
+                raw_line=stripped,
+            )
+        )
+        output_lines.append(None)
+
+    return output_lines, records
+
+
+def _expand_without_overlap(
+    records: list[_ObbRecord],
+    img_w: int,
+    img_h: int,
+    *,
+    expand_width: float,
+    expand_height: float,
+    expand_width_weighted: float,
+    expand_height_weighted: float,
+    median_width: float,
+    median_height: float,
+) -> tuple[list[np.ndarray], int]:
+    """Expand OBBs greedily while preserving non-overlap within one image."""
+    if not records:
+        return [], 0
+
+    target_expansions = [
+        _compute_total_expansion(
+            record.corners,
+            expand_width=expand_width,
+            expand_height=expand_height,
+            expand_width_weighted=expand_width_weighted,
+            expand_height_weighted=expand_height_weighted,
+            median_width=median_width,
+            median_height=median_height,
+        )
+        for record in records
+    ]
+
+    original_corners = [_clip_corners_to_image(record.corners, img_w, img_h) for record in records]
+    final_corners = [corners.copy() for corners in original_corners]
+    final_polygons = [_obb_polygon(corners) for corners in original_corners]
+    initially_overlapping: set[int] = set()
+
+    for index, polygon in enumerate(final_polygons):
+        for other_index in range(index + 1, len(final_polygons)):
+            if float(polygon.intersection(final_polygons[other_index]).area) > _OVERLAP_AREA_EPSILON:
+                initially_overlapping.add(index)
+                initially_overlapping.add(other_index)
+
+    priorities: list[tuple[float, int, int]] = []
+    for index, (record, (total_w, total_h)) in enumerate(zip(records, target_expansions, strict=False)):
+        if total_w == 0.0 and total_h == 0.0:
+            continue
+        width, height = _obb_dimensions(record.corners)
+        additional_area = max((width + total_w) * (height + total_h) - width * height, 0.0)
+        priorities.append((-additional_area, record.line_index, index))
+
+    labels_expanded = 0
+    for _, _, index in sorted(priorities):
+        if index in initially_overlapping:
+            continue
+
+        total_w, total_h = target_expansions[index]
+        record = records[index]
+        obstacles = [
+            final_polygons[other_index]
+            for other_index in range(len(records))
+            if other_index != index
+        ]
+
+        best_corners = original_corners[index]
+        full_corners = _clip_corners_to_image(
+            _expand_obb(record.corners, expand_width=total_w, expand_height=total_h),
+            img_w,
+            img_h,
+        )
+        full_polygon = _obb_polygon(full_corners)
+        if not _has_overlap(full_polygon, obstacles):
+            best_corners = full_corners
+        else:
+            low = 0.0
+            high = 1.0
+            for _ in range(24):
+                mid = (low + high) / 2.0
+                candidate_corners = _clip_corners_to_image(
+                    _expand_obb(
+                        record.corners,
+                        expand_width=total_w * mid,
+                        expand_height=total_h * mid,
+                    ),
+                    img_w,
+                    img_h,
+                )
+                candidate_polygon = _obb_polygon(candidate_corners)
+                if _has_overlap(candidate_polygon, obstacles):
+                    high = mid
+                else:
+                    low = mid
+                    best_corners = candidate_corners
+
+        final_corners[index] = best_corners
+        final_polygons[index] = _obb_polygon(best_corners)
+        if not np.allclose(best_corners, original_corners[index], atol=1e-6):
+            labels_expanded += 1
+
+    return final_corners, labels_expanded
+
+
 def _get_image_size(
     label_path: Path,
     dataset_root: Path,
@@ -111,50 +316,65 @@ def _process_label_file(
     expand_height_weighted: float,
     median_width: float,
     median_height: float,
+    avoid_overlap: bool = False,
 ) -> dict[str, int]:
     """Expand OBBs in a single label file. Returns update stats."""
     text = label_path.read_text(encoding="utf-8")
-    new_lines: list[str] = []
-    labels_expanded = 0
+    output_lines, records = _parse_label_text(text, img_w, img_h)
 
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        tokens = stripped.split()
-        if len(tokens) != 9:
-            # Not an OBB line — preserve as-is.
-            new_lines.append(stripped)
-            continue
+    if avoid_overlap:
+        final_corners, labels_expanded = _expand_without_overlap(
+            records,
+            img_w,
+            img_h,
+            expand_width=expand_width,
+            expand_height=expand_height,
+            expand_width_weighted=expand_width_weighted,
+            expand_height_weighted=expand_height_weighted,
+            median_width=median_width,
+            median_height=median_height,
+        )
+        for record, corners in zip(records, final_corners, strict=False):
+            if np.allclose(corners, _clip_corners_to_image(record.corners, img_w, img_h), atol=1e-6):
+                output_lines[record.line_index] = record.raw_line
+            else:
+                output_lines[record.line_index] = _format_obb_line(
+                    record.class_id,
+                    corners,
+                    img_w,
+                    img_h,
+                )
+    else:
+        labels_expanded = 0
+        for record in records:
+            total_w, total_h = _compute_total_expansion(
+                record.corners,
+                expand_width=expand_width,
+                expand_height=expand_height,
+                expand_width_weighted=expand_width_weighted,
+                expand_height_weighted=expand_height_weighted,
+                median_width=median_width,
+                median_height=median_height,
+            )
 
-        class_id = int(tokens[0])
-        coords = [float(t) for t in tokens[1:]]
-        corners = np.array(coords).reshape(4, 2)
-        corners[:, 0] *= img_w
-        corners[:, 1] *= img_h
+            if total_w != 0 or total_h != 0:
+                corners = _clip_corners_to_image(
+                    _expand_obb(record.corners, expand_width=total_w, expand_height=total_h),
+                    img_w,
+                    img_h,
+                )
+                labels_expanded += 1
+                output_lines[record.line_index] = _format_obb_line(
+                    record.class_id,
+                    corners,
+                    img_w,
+                    img_h,
+                )
+            else:
+                output_lines[record.line_index] = record.raw_line
 
-        w, h = _obb_dimensions(corners)
-
-        total_w = expand_width
-        total_h = expand_height
-        if expand_width_weighted > 0 and w > 0 and median_width > 0:
-            total_w += expand_width_weighted * (median_width / w)
-        if expand_height_weighted > 0 and h > 0 and median_height > 0:
-            total_h += expand_height_weighted * (median_height / h)
-
-        if total_w != 0 or total_h != 0:
-            corners = _expand_obb(corners, expand_width=total_w, expand_height=total_h)
-            labels_expanded += 1
-            # Normalise back and clamp.
-            corners[:, 0] = np.clip(corners[:, 0] / img_w, 0.0, 1.0)
-            corners[:, 1] = np.clip(corners[:, 1] / img_h, 0.0, 1.0)
-            coord_str = " ".join(f"{v:.6f}" for v in corners.flatten())
-            new_lines.append(f"{class_id} {coord_str}")
-        else:
-            new_lines.append(stripped)
-
-    new_text = "\n".join(new_lines)
-    if new_lines:
+    new_text = "\n".join(line if line is not None else "" for line in output_lines)
+    if output_lines:
         new_text += "\n"
 
     updated = int(new_text != text)
@@ -225,6 +445,7 @@ def expand_obb_dataset(
     expand_width: float = 0.0,
     expand_height_weighted: float = 0.0,
     expand_width_weighted: float = 0.0,
+    avoid_overlap: bool = False,
     max_workers: int | None = None,
 ) -> dict[str, int]:
     """Expand OBB dimensions in a YOLO OBB dataset.
@@ -243,6 +464,9 @@ def expand_obb_dataset(
     expand_width_weighted:
         Base pixel expansion for width with inverse-proportional weighting.
         Actual expansion = *base* × (median_width / current_width).
+    avoid_overlap:
+        If True, greedily scale expansions back within each image so OBBs do not
+        acquire new overlap area with one another.
     max_workers:
         Thread pool size.  Defaults to CPU count.
     """
@@ -330,6 +554,7 @@ def expand_obb_dataset(
             expand_height_weighted=expand_height_weighted,
             median_width=median_width,
             median_height=median_height,
+            avoid_overlap=avoid_overlap,
         )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:

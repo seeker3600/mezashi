@@ -160,6 +160,14 @@ def main() -> None:
         metavar="N",
         help="Number of worker threads (default: CPU count).",
     )
+    expand_parser.add_argument(
+        "--avoid-overlap",
+        action="store_true",
+        help=(
+            "Greedily scale each requested expansion back within an image so OBBs "
+            "do not create new overlap area with one another."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -192,6 +200,7 @@ def main() -> None:
             expand_width=args.expand_width,
             expand_height_weighted=args.expand_height_weighted,
             expand_width_weighted=args.expand_width_weighted,
+            avoid_overlap=args.avoid_overlap,
             max_workers=args.workers,
         )
 
