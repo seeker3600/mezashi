@@ -9,13 +9,13 @@ import concurrent.futures
 from dataclasses import dataclass
 import logging
 import os
-import shutil
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
+from medetect.yolo.backup import ensure_split_backup, resolve_dataset_root_and_splits
 from medetect.yolo.dataset_yaml import get_dataset_root, load_dataset_yaml
 
 logger = logging.getLogger(__name__)
@@ -524,30 +524,6 @@ def _collect_one(
     return label_path, size, widths, heights
 
 
-_BACKUP_DIR_NAME = "labels_before_expand"
-
-
-def _backup_labels(dataset_root: Path) -> None:
-    """Copy ``labels/`` to ``labels_before_expand/`` (first run only)."""
-    backup = dataset_root / _BACKUP_DIR_NAME
-    labels = dataset_root / "labels"
-    shutil.copytree(labels, backup)
-    logger.info("Backed up labels to %s", backup)
-
-
-def _restore_labels_from_backup(dataset_root: Path) -> None:
-    """Overwrite ``labels/`` with contents from ``labels_before_expand/``."""
-    backup = dataset_root / _BACKUP_DIR_NAME
-    labels = dataset_root / "labels"
-    shutil.rmtree(labels)
-    shutil.copytree(backup, labels)
-    logger.info("Restored labels from %s", backup)
-
-
-# ------------------------------------------------------------------
-# Public API
-# ------------------------------------------------------------------
-
 def expand_obb_dataset(
     dataset: str | Path,
     *,
@@ -583,9 +559,11 @@ def expand_obb_dataset(
     dataset_path = Path(dataset).resolve()
     if dataset_path.is_dir():
         dataset_root = dataset_path
+        split_names = resolve_dataset_root_and_splits(dataset_root)[1]
     else:
         config_path, config = load_dataset_yaml(dataset_path)
         dataset_root = get_dataset_root(config, config_path)
+        split_names = resolve_dataset_root_and_splits(config_path)[1]
 
     dataset_root = Path(dataset_root).resolve()
     labels_root = dataset_root / "labels"
@@ -593,18 +571,16 @@ def expand_obb_dataset(
     if not labels_root.is_dir():
         raise FileNotFoundError(f"labels directory not found: {labels_root}")
 
-    backup_root = dataset_root / _BACKUP_DIR_NAME
-    if backup_root.exists() and any(backup_root.iterdir()):
-        # Subsequent run — restore original labels before re-expanding.
-        _restore_labels_from_backup(dataset_root)
-    else:
-        # First run — create backup of untouched labels.
-        _backup_labels(dataset_root)
+    split_names = [split for split in split_names if (labels_root / split).is_dir()]
+    for split in split_names:
+        ensure_split_backup(dataset_root, split)
 
     if max_workers is None:
         max_workers = os.cpu_count() or 1
 
-    label_paths = sorted(labels_root.rglob("*.txt"))
+    label_paths: list[Path] = []
+    for split in split_names:
+        label_paths.extend(sorted((labels_root / split).rglob("*.txt")))
     if not label_paths:
         logger.warning("No label files found in %s", labels_root)
         return {"files_processed": 0, "files_updated": 0, "labels_expanded": 0}

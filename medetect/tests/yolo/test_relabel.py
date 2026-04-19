@@ -4,10 +4,12 @@ import random
 import sys
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from medetect.yolo.__main__ import main
+from medetect.yolo.backup import restore_dataset_splits, split_backup_dir
 from medetect.yolo.relabel import (
     _normalize_merges,
     _relabel_line,
@@ -134,6 +136,13 @@ def test_relabel_yolo_detect_labels_accepts_mapping_from_python(tmp_path: Path) 
         "0 0.2 0.3 0.4 0.5\n"
     )
 
+    backup_path = split_backup_dir(dataset_root, "labels", "train") / "sample.txt"
+    assert backup_path.read_text(encoding="utf-8") == (
+        "1 0.1 0.2 0.3 0.4\n"
+        "2 0.2 0.3 0.4 0.5\n"
+        "3 0.3 0.4 0.5 0.6\n"
+    )
+
 
 def test_relabel_yolo_detect_labels_removes_empty_images_when_keep_prob_zero(tmp_path: Path) -> None:
     dataset_root = tmp_path / "drop-empty"
@@ -160,6 +169,27 @@ def test_relabel_yolo_detect_labels_removes_empty_images_when_keep_prob_zero(tmp
     }
     assert not (labels_dir / "empty.txt").exists()
     assert not (images_dir / "empty.jpg").exists()
+
+
+def test_relabel_restore_recovers_removed_image_and_label(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "restore-empty"
+    labels_dir = dataset_root / "labels" / "train"
+    images_dir = dataset_root / "images" / "train"
+    labels_dir.mkdir(parents=True)
+    images_dir.mkdir(parents=True)
+    (labels_dir / "empty.txt").write_text("5 0.1 0.2 0.3 0.4\n", encoding="utf-8")
+    (images_dir / "empty.jpg").write_text("image", encoding="utf-8")
+
+    relabel_yolo_detect_labels(
+        dataset_root=dataset_root,
+        merges={5: -1},
+        empty_image_ratio=0.0,
+    )
+
+    restore_dataset_splits(dataset_root, ["train"], with_images=True)
+
+    assert (labels_dir / "empty.txt").read_text(encoding="utf-8") == "5 0.1 0.2 0.3 0.4\n"
+    assert (images_dir / "empty.jpg").read_text(encoding="utf-8") == "image"
 
 
 def test_relabel_yolo_detect_labels_keeps_empty_images_when_keep_prob_one(tmp_path: Path) -> None:
@@ -307,6 +337,23 @@ def test_cli_main_invokes_relabel(
 
     main()
     assert (labels_dir / "one.txt").read_text(encoding="utf-8") == "1 0.1 0.2 0.3 0.4\n"
+
+
+def test_cli_main_invokes_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["python", "restore", "--config", "dataset.yaml", "--splits", "train", "val", "--with-images"],
+    )
+
+    with patch("medetect.yolo.__main__.restore_dataset_splits") as mock_fn:
+        main()
+
+    mock_fn.assert_called_once_with(
+        Path("dataset.yaml"),
+        splits=["train", "val"],
+        with_images=True,
+    )
 
 
 # ---------------------------------------------------------------------------

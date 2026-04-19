@@ -11,6 +11,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from medetect.yolo.backup import discover_split_names, ensure_split_backup
 from medetect.yolo.dataset_yaml import load_dataset_yaml, resolve_dataset_root
 
 logger = logging.getLogger(__name__)
@@ -276,6 +277,10 @@ def relabel_yolo_detect_labels(
     if not labels_root.is_dir():
         raise FileNotFoundError(f"labels directory not found: {labels_root}")
 
+    split_names = discover_split_names(dataset_root, kinds=("labels",))
+    for split in split_names:
+        ensure_split_backup(dataset_root, split, with_images=True)
+
     stats = {
         "files_processed": 0,
         "files_updated": 0,
@@ -286,7 +291,12 @@ def relabel_yolo_detect_labels(
     }
 
     empty_label_paths: list[Path] = []
-    label_paths = sorted(labels_root.rglob("*.txt"))
+    if split_names:
+        label_paths: list[Path] = []
+        for split in split_names:
+            label_paths.extend(sorted((labels_root / split).rglob("*.txt")))
+    else:
+        label_paths = sorted(labels_root.rglob("*.txt"))
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {

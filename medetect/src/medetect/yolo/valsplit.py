@@ -6,6 +6,7 @@ import logging
 import random
 from collections.abc import Sequence
 from pathlib import Path
+import shutil
 
 import re
 
@@ -18,6 +19,7 @@ from ultralytics.data.dataset import YOLODataset
 from ultralytics.data.utils import img2label_paths
 from ultralytics.utils.ops import xywhr2xyxyxyxy
 
+from medetect.yolo.backup import ensure_split_backup, split_backup_dir, sync_split_backup
 from medetect.yolo.train import train_kwargs
 
 logger = logging.getLogger(__name__)
@@ -127,6 +129,13 @@ def _save_yolo_labels(path: Path, cls: np.ndarray, bboxes: np.ndarray) -> None:
     path.write_text("\n".join(lines))
 
 
+def _reset_dir(path: Path) -> None:
+    """Recreate one directory so stale files do not survive regeneration."""
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def split_train_to_val(
     config: Path,
     fraction: float,
@@ -136,11 +145,12 @@ def split_train_to_val(
 ) -> None:
     """Extract a fraction of train images, augment them, and write to val.
 
-    On the first call the selected train images are moved to *val_before* as a
-    reversible backup, and augmented copies are written to *val*.  On
-    subsequent calls *val_before* is used as the source so the operation is
-    idempotent and reversible: original data is always preserved in
-    *val_before*.
+    On the first call the selected train images are moved to a source cache
+    under ``_backup`` and augmented copies are written to *val*. The active
+    *train* and *val* splits are mirrored to split-scoped backups under
+    ``_backup`` so later restore operations can copy them back directly.
+    Subsequent calls regenerate *val* from the cached original validation
+    source, without modifying *train* again.
 
     Uses ``YOLODataset.build_transforms(hyp)`` (which delegates to
     ``v8_transforms``) to apply the same augmentation pipeline configured
@@ -154,10 +164,12 @@ def split_train_to_val(
         data: dict = yaml.safe_load(f)
 
     dataset_path = Path(data["path"]).resolve()
-    val_before_images = dataset_path / "images" / "val_before"
-    val_before_labels = dataset_path / "labels" / "val_before"
+    val_before_images = split_backup_dir(dataset_path, "images", "val_source")
+    val_before_labels = split_backup_dir(dataset_path, "labels", "val_source")
     val_images_dir = dataset_path / "images" / "val"
     val_labels_dir = dataset_path / "labels" / "val"
+
+    ensure_split_backup(dataset_path, "train", with_images=True)
 
     first_run = not (
         val_before_images.exists() and any(val_before_images.iterdir())
@@ -198,10 +210,10 @@ def split_train_to_val(
             random.seed(seed)
         indices = sorted(random.sample(range(n), n_val))
 
-        val_before_images.mkdir(parents=True, exist_ok=True)
-        val_before_labels.mkdir(parents=True, exist_ok=True)
-        val_images_dir.mkdir(parents=True, exist_ok=True)
-        val_labels_dir.mkdir(parents=True, exist_ok=True)
+        _reset_dir(val_before_images)
+        _reset_dir(val_before_labels)
+        _reset_dir(val_images_dir)
+        _reset_dir(val_labels_dir)
 
         orig_im_files = [Path(dataset.labels[i]["im_file"]) for i in indices]
         orig_lbl_files = [
@@ -232,16 +244,19 @@ def split_train_to_val(
             cv2.imwrite(str(val_images_dir / f"{stem}.png"), img_bgr)
             _save_yolo_labels(val_labels_dir / f"{stem}.txt", cls_np, bboxes_np)
 
-            # Move originals to val_before (preserve for idempotent re-runs)
+            # Move originals to backup source cache for idempotent re-runs.
             orig_im.rename(val_before_images / orig_im.name)
             if orig_lbl.exists():
                 orig_lbl.rename(val_before_labels / orig_lbl.name)
 
         logger.info(
-            "Moved %d / %d train images to val_before (augmented to val)",
+            "Moved %d / %d train images to cached val source (augmented to val)",
             n_val,
             n,
         )
+
+        sync_split_backup(dataset_path, "train", with_images=True)
+        sync_split_backup(dataset_path, "val", with_images=True)
 
         # Update dataset.yaml to use plain directories (preserves comments)
         _update_yaml_paths(config, {"train": "images/train", "val": "images/val"})
@@ -253,7 +268,7 @@ def split_train_to_val(
             logger.info("Removed %s", txt.name)
 
     else:
-        # Subsequent run: val_before exists — regenerate val from it.
+        # Subsequent run: regenerate val from the cached original source.
         task = _detect_task(val_before_labels)
         is_obb = task == "obb"
 
@@ -269,8 +284,8 @@ def split_train_to_val(
         indices = list(range(len(dataset)))
         orig_im_files = [Path(dataset.labels[i]["im_file"]) for i in indices]
 
-        val_images_dir.mkdir(parents=True, exist_ok=True)
-        val_labels_dir.mkdir(parents=True, exist_ok=True)
+        _reset_dir(val_images_dir)
+        _reset_dir(val_labels_dir)
 
         for idx, orig_im in tqdm(
             zip(indices, orig_im_files),
@@ -295,4 +310,5 @@ def split_train_to_val(
             cv2.imwrite(str(val_images_dir / f"{stem}.png"), img_bgr)
             _save_yolo_labels(val_labels_dir / f"{stem}.txt", cls_np, bboxes_np)
 
-        logger.info("Regenerated %d val images from val_before", len(indices))
+        sync_split_backup(dataset_path, "val", with_images=True)
+        logger.info("Regenerated %d val images from cached val source", len(indices))

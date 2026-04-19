@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 import torch
 
+from medetect.yolo.backup import split_backup_dir
+
 
 # ---------------------------------------------------------------------------
 # _build_hyp
@@ -290,9 +292,11 @@ class TestSplitTrainToVal:
         assert len(remaining_imgs) == 8
         assert len(remaining_lbls) == 8
 
-        # val_before preserves the originals
-        assert len(sorted((tmp_path / "images" / "val_before").iterdir())) == 2
-        assert len(sorted((tmp_path / "labels" / "val_before").iterdir())) == 2
+        # split backups reflect current active train/val layout
+        assert len(sorted(split_backup_dir(tmp_path, "images", "train").iterdir())) == 8
+        assert len(sorted(split_backup_dir(tmp_path, "labels", "train").iterdir())) == 8
+        assert len(sorted(split_backup_dir(tmp_path, "images", "val").iterdir())) == 2
+        assert len(sorted(split_backup_dir(tmp_path, "labels", "val").iterdir())) == 2
 
     def test_label_content_matches_augmented_output(self, tmp_path: Path) -> None:
         """保存されたラベルが拡張後のbboxと一致する(detect形式)。"""
@@ -512,17 +516,11 @@ class TestSplitTrainToVal:
 
     def test_seed_reproducibility(self, tmp_path: Path) -> None:
         """同一seedで同じ画像が選択される。"""
-        config, images_dir, _ = self._make_dataset(tmp_path, 20)
-        mock = self._mock_dataset(images_dir, 20)
-
         selected: list[list[str]] = []
-        for _ in range(2):
-            # Re-create files for each run
-            for i in range(20):
-                (images_dir / f"img_{i:04d}.png").write_bytes(b"fake")
-                (images_dir.parent.parent / "labels" / "train" / f"img_{i:04d}.txt").write_text(
-                    "0 0.5 0.5 0.1 0.1"
-                )
+        for run_index in range(2):
+            run_root = tmp_path / f"run_{run_index}"
+            config, images_dir, _ = self._make_dataset(run_root, 20)
+            mock = self._mock_dataset(images_dir, 20)
 
             with (
                 patch("medetect.yolo.valsplit.YOLODataset", return_value=mock),
@@ -533,30 +531,14 @@ class TestSplitTrainToVal:
                 split_train_to_val(config, fraction=0.1, seed=123)
 
             moved = sorted(
-                f.stem for f in (tmp_path / "images" / "val").iterdir()
+                f.stem for f in (run_root / "images" / "val").iterdir()
             )
             selected.append(moved)
 
-            # Clean val for next run
-            for f in (tmp_path / "images" / "val").iterdir():
-                f.unlink()
-            for f in (tmp_path / "labels" / "val").iterdir():
-                f.unlink()
-
-            # val_beforeもクリアして次回も初回実行扱いにする
-            val_before_img = tmp_path / "images" / "val_before"
-            val_before_lbl = tmp_path / "labels" / "val_before"
-            if val_before_img.exists():
-                for f in val_before_img.iterdir():
-                    f.unlink()
-            if val_before_lbl.exists():
-                for f in val_before_lbl.iterdir():
-                    f.unlink()
-
         assert selected[0] == selected[1]
 
-    def test_val_before_created_on_first_run(self, tmp_path: Path) -> None:
-        """初回実行時にval_beforeスプリットが作成され、元ファイルが保存される。"""
+    def test_backup_splits_and_val_source_created_on_first_run(self, tmp_path: Path) -> None:
+        """初回実行時にsplitバックアップとval再生成用ソースが作られる。"""
         config, images_dir, labels_dir = self._make_dataset(tmp_path, 10)
         mock = self._mock_dataset(images_dir, 10)
 
@@ -568,25 +550,29 @@ class TestSplitTrainToVal:
 
             split_train_to_val(config, fraction=0.2, seed=42)
 
-        val_before_images = tmp_path / "images" / "val_before"
-        val_before_labels = tmp_path / "labels" / "val_before"
-        assert val_before_images.exists()
-        assert val_before_labels.exists()
-        assert len(list(val_before_images.iterdir())) == 2
-        assert len(list(val_before_labels.iterdir())) == 2
+        val_source_images = split_backup_dir(tmp_path, "images", "val_source")
+        val_source_labels = split_backup_dir(tmp_path, "labels", "val_source")
+        assert val_source_images.exists()
+        assert val_source_labels.exists()
+        assert len(list(val_source_images.iterdir())) == 2
+        assert len(list(val_source_labels.iterdir())) == 2
 
-        # val_beforeのファイル名はtrain由来のものと一致する
-        before_stems = {f.stem for f in val_before_images.iterdir()}
+        # val_sourceのファイル名はtrain由来のものと一致する
+        before_stems = {f.stem for f in val_source_images.iterdir()}
         val_stems = {f.stem for f in (tmp_path / "images" / "val").iterdir()}
         assert before_stems == val_stems
 
-    def test_subsequent_run_uses_val_before(self, tmp_path: Path) -> None:
-        """2回目以降はval_beforeをソースとしてvalを再生成し、trainを変更しない。"""
+        assert len(list(split_backup_dir(tmp_path, "images", "train").iterdir())) == 8
+        assert len(list(split_backup_dir(tmp_path, "labels", "train").iterdir())) == 8
+        assert len(list(split_backup_dir(tmp_path, "images", "val").iterdir())) == 2
+        assert len(list(split_backup_dir(tmp_path, "labels", "val").iterdir())) == 2
+
+    def test_subsequent_run_uses_backed_up_val_source(self, tmp_path: Path) -> None:
+        """2回目以降はbackup下のvalソースからvalを再生成し、trainを変更しない。"""
         config, images_dir, labels_dir = self._make_dataset(tmp_path, 10)
 
-        # val_beforeスプリットが既にある状態を用意(初回済み)
-        val_before_images = tmp_path / "images" / "val_before"
-        val_before_labels = tmp_path / "labels" / "val_before"
+        val_before_images = split_backup_dir(tmp_path, "images", "val_source")
+        val_before_labels = split_backup_dir(tmp_path, "labels", "val_source")
         val_before_images.mkdir(parents=True)
         val_before_labels.mkdir(parents=True)
         for i in range(3):
@@ -625,7 +611,7 @@ class TestSplitTrainToVal:
 
             split_train_to_val(config, fraction=0.2, seed=0)  # fraction is ignored
 
-        # val_beforeのパスでYOLODatasetが呼ばれること
+        # backup配下のval_sourceでYOLODatasetが呼ばれること
         assert captured_img_path[0] == str(val_before_images)
 
         # val には3ファイル生成される
@@ -635,7 +621,7 @@ class TestSplitTrainToVal:
         # train は変更されない
         assert len(list(images_dir.iterdir())) == train_count_before
 
-        # val_before は保持される
+        # val_source は保持される
         assert len(list(val_before_images.iterdir())) == 3
 
 

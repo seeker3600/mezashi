@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from shapely.geometry import Polygon
 
+from medetect.yolo.backup import restore_dataset_splits, split_backup_dir
 from medetect.yolo.expand_obb import (
     _expand_obb,
     _obb_dimensions,
@@ -564,7 +565,7 @@ class TestExpandObbDataset:
             expand_obb_dataset(config_path, expand_height=5)
 
     def test_first_run_creates_backup(self, tmp_path) -> None:
-        """初回実行でlabels_before_expandにバックアップを作成する。"""
+        """初回実行でsplit単位のバックアップを作成する。"""
         from PIL import Image
 
         ds_root = tmp_path / "dataset"
@@ -584,12 +585,12 @@ class TestExpandObbDataset:
 
         expand_obb_dataset(config_path, expand_height=10, max_workers=1)
 
-        backup_path = ds_root / "labels_before_expand" / "train" / "img1.txt"
+        backup_path = split_backup_dir(ds_root, "labels", "train") / "img1.txt"
         assert backup_path.exists()
         assert backup_path.read_text() == original
 
-    def test_second_run_restores_from_backup(self, tmp_path) -> None:
-        """2回目以降はバックアップから復元してから再拡張する。"""
+    def test_restore_then_reexpand_uses_split_backup(self, tmp_path) -> None:
+        """restore後の再実行はsplitバックアップを基準に再拡張する。"""
         from PIL import Image
 
         ds_root = tmp_path / "dataset"
@@ -612,7 +613,9 @@ class TestExpandObbDataset:
         tokens1 = (lbl_dir / "img1.txt").read_text().strip().split()
         corners1 = np.array([float(t) for t in tokens1[1:]]).reshape(4, 2)
 
-        # Second run: expand by 20 (should re-expand from original, not stack)
+        restore_dataset_splits(ds_root, ["train"])
+
+        # Second run: expand by 20 from restored baseline
         expand_obb_dataset(config_path, expand_height=20, max_workers=1)
         tokens2 = (lbl_dir / "img1.txt").read_text().strip().split()
         corners2 = np.array([float(t) for t in tokens2[1:]]).reshape(4, 2)
@@ -627,7 +630,7 @@ class TestExpandObbDataset:
         )
 
     def test_backup_not_overwritten_on_second_run(self, tmp_path) -> None:
-        """2回目の実行でバックアップは上書きされない（元のデータが保持される）。"""
+        """2回目の実行でもバックアップは上書きされない。"""
         from PIL import Image
 
         ds_root = tmp_path / "dataset"
@@ -648,7 +651,7 @@ class TestExpandObbDataset:
         expand_obb_dataset(config_path, expand_height=10, max_workers=1)
         expand_obb_dataset(config_path, expand_height=20, max_workers=1)
 
-        backup_path = ds_root / "labels_before_expand" / "train" / "img1.txt"
+        backup_path = split_backup_dir(ds_root, "labels", "train") / "img1.txt"
         assert backup_path.read_text() == original
 
     def test_yaml_path_resolves_relative_dataset_root(self, tmp_path, monkeypatch) -> None:

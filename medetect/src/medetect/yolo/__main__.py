@@ -10,6 +10,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+from medetect.yolo.backup import restore_dataset_splits
 from medetect.yolo.expand_obb import expand_obb_dataset
 from medetect.yolo.relabel import relabel_yolo_detect_dataset
 from medetect.yolo.tiff2png import convert_tiffs_to_png
@@ -108,6 +109,29 @@ def main() -> None:
         help="Augmentation keys to disable (e.g. degrees translate scale shear perspective).",
     )
 
+    restore_parser = subparsers.add_parser(
+        "restore",
+        help="Restore one or more dataset splits from _backup.",
+    )
+    restore_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Dataset YAML path.",
+    )
+    restore_parser.add_argument(
+        "--splits",
+        nargs="+",
+        default=None,
+        metavar="SPLIT",
+        help="Split names to restore (default: all splits defined in the dataset YAML).",
+    )
+    restore_parser.add_argument(
+        "--with-images",
+        action="store_true",
+        help="Restore images as well as labels.",
+    )
+
     train_parser = subparsers.add_parser("train", help="Train a YOLO model.")
 
     expand_parser = subparsers.add_parser(
@@ -193,6 +217,12 @@ def main() -> None:
             imgsz=args.imgsz,
             seed=args.seed,
             disable_augs=args.disable_augs,
+        )
+    elif args.command == "restore":
+        restore_dataset_splits(
+            args.config,
+            splits=args.splits,
+            with_images=args.with_images,
         )
     elif args.command == "expand-obb":
         expand_obb_dataset(
