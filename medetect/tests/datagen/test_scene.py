@@ -161,7 +161,7 @@ class TestShadowHelpers:
         assert large - small < 0.1
 
     def test_make_shadow_rgba_stays_attached_to_ship_footprint(self) -> None:
-        """生成された影マスクは船体位置から連続して伸びる。"""
+        """生成された影マスクは船体の影側から連続して伸びる。"""
         ship = np.zeros((6, 4, 4), dtype=np.uint8)
         ship[:, :, 3] = 255
 
@@ -175,12 +175,14 @@ class TestShadowHelpers:
 
         center_row = shadow[shadow.shape[0] // 2, :, 3]
         xx = np.where(center_row > 0)[0]
-        center_x = shadow.shape[1] // 2
 
         assert shadow.shape[0] > ship.shape[0]
         assert shadow.shape[1] > ship.shape[1]
-        assert xx[0] <= center_x <= xx[-1]
-        assert xx[-1] > center_x + 3
+        assert len(xx) > 0, "shadow must have non-zero pixels"
+        # Shadow extends rightward (offset_x > 0) beyond the hull.
+        hull_right = shadow.shape[1] // 2 + 2  # rough hull right edge
+        assert xx[-1] > hull_right
+        # Shadow pixels are contiguous (no gap).
         assert np.diff(xx).max() == 1
 
     def test_blend_shadow_is_noop_when_alpha_scale_zero(self) -> None:
@@ -205,6 +207,65 @@ class TestShadowHelpers:
         blend_shadow(bg_boosted, shadow, cx=10, cy=10, alpha_factor=1.6)
 
         assert bg_boosted[10, 10, 0] < bg_default[10, 10, 0]
+
+    def test_shadow_is_one_sided(self) -> None:
+        """影は太陽の反対側にのみ投影され、太陽側に暗化ピクセルがない。"""
+        ship = np.zeros((12, 8, 4), dtype=np.uint8)
+        ship[:, :, 3] = 255
+
+        # offset_x=10 → shadow extends rightward, sun is on the left
+        shadow = _make_shadow_rgba(
+            ship,
+            offset_x=10,
+            offset_y=0,
+            blur_sigma=0.0,
+            alpha_scale=1.0,
+        )
+
+        center_y = shadow.shape[0] // 2
+        center_x = shadow.shape[1] // 2
+        # Ship hull occupies roughly [center_x - 4, center_x + 4] in the padded canvas.
+        # Sun-facing side: columns far to the left of the hull should have zero alpha.
+        sun_side = shadow[center_y, : center_x - 6, 3]
+        shadow_side = shadow[center_y, center_x + 6 :, 3]
+
+        assert int(sun_side.max()) == 0, "sun-facing side must have no shadow"
+        assert int(shadow_side.max()) > 0, "shadow side must have non-zero alpha"
+
+    def test_shadow_zero_offset_returns_empty(self) -> None:
+        """offset=(0,0) で空の影配列を返す（太陽直上）。"""
+        ship = np.zeros((8, 6, 4), dtype=np.uint8)
+        ship[:, :, 3] = 255
+
+        shadow = _make_shadow_rgba(
+            ship,
+            offset_x=0,
+            offset_y=0,
+            blur_sigma=1.0,
+            alpha_scale=1.0,
+        )
+
+        assert shadow.shape[:2] == ship.shape[:2]
+        assert int(shadow[:, :, 3].max()) == 0
+
+    def test_shadow_hull_occlusion(self) -> None:
+        """不透明な船体の直下で影アルファが抑制される。"""
+        ship = np.zeros((12, 8, 4), dtype=np.uint8)
+        ship[:, :, 3] = 255  # fully opaque hull
+
+        shadow = _make_shadow_rgba(
+            ship,
+            offset_x=6,
+            offset_y=0,
+            blur_sigma=0.0,
+            alpha_scale=1.0,
+        )
+
+        # The hull footprint in the padded canvas
+        pad_x = abs(6) + 3  # blur_sigma=0 so ceil(0*2.5)=0
+        pad_y = 3
+        hull_alpha = shadow[pad_y : pad_y + 12, pad_x : pad_x + 8, 3]
+        assert int(hull_alpha.max()) == 0, "shadow under opaque hull must be zero"
 
 
 class TestAntiAliasedEdges:

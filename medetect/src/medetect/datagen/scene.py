@@ -312,7 +312,15 @@ def _make_shadow_rgba(
     blur_sigma: float,
     alpha_scale: float,
 ) -> NDArray[np.uint8]:
-    """Create an anchored, blurred alpha-only shadow patch from a ship RGBA image."""
+    """Create a physically-based shadow using shift-subtract.
+
+    The shadow is the set-difference between the hull silhouette shifted by
+    the cast offset and the original hull footprint.  This naturally produces
+    a crescent-shaped shadow on the side opposite the sun — no directional
+    mask is needed.
+
+    Pipeline: cast sweep → hull subtraction → Gaussian blur.
+    """
     height, width = ship_rgba.shape[:2]
     if alpha_scale <= 0.0 or height == 0 or width == 0:
         return np.zeros((height, width, 4), dtype=np.uint8)
@@ -322,34 +330,37 @@ def _make_shadow_rgba(
         return np.zeros((height, width, 4), dtype=np.uint8)
 
     offset_length = math.hypot(offset_x, offset_y)
+
+    # No visible shadow when offset is negligible (sun nearly overhead).
+    if offset_length < 0.5:
+        return np.zeros((height, width, 4), dtype=np.uint8)
+
     pad_x = abs(offset_x) + math.ceil(blur_sigma * 2.5) + 3
     pad_y = abs(offset_y) + math.ceil(blur_sigma * 2.5) + 3
     shadow = np.zeros((height + pad_y * 2, width + pad_x * 2, 4), dtype=np.uint8)
     shadow_alpha = shadow[:, :, 3]
 
-    _stamp_shadow_alpha(
-        shadow_alpha,
-        source_alpha,
-        pad_x,
-        pad_y,
-        alpha_scale * 0.72,
-    )
+    # --- Cast sweep: stamp shifted silhouettes (step 1..N) ---
+    steps = max(2, min(24, math.ceil(offset_length)))
+    for step in range(1, steps + 1):
+        progress = step / steps
+        step_x0 = pad_x + round(offset_x * progress)
+        step_y0 = pad_y + round(offset_y * progress)
+        step_strength = alpha_scale * (0.92 - 0.58 * progress)
+        _stamp_shadow_alpha(
+            shadow_alpha,
+            source_alpha,
+            step_x0,
+            step_y0,
+            step_strength,
+        )
 
-    if offset_length >= 0.5:
-        steps = max(2, min(24, math.ceil(offset_length)))
-        for step in range(1, steps + 1):
-            progress = step / steps
-            step_x0 = pad_x + round(offset_x * progress)
-            step_y0 = pad_y + round(offset_y * progress)
-            step_strength = alpha_scale * (0.92 - 0.58 * progress)
-            _stamp_shadow_alpha(
-                shadow_alpha,
-                source_alpha,
-                step_x0,
-                step_y0,
-                step_strength,
-            )
+    # --- Hull subtraction: erase shadow under the ship footprint ---
+    hull_mask = source_alpha > 0.0
+    hull_region = shadow_alpha[pad_y : pad_y + height, pad_x : pad_x + width]
+    hull_region[hull_mask] = 0
 
+    # --- Gaussian blur ---
     if blur_sigma > 0.0:
         img = Image.fromarray(shadow)
         img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
