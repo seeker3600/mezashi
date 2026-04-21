@@ -8,6 +8,7 @@ from medetect.debugging.ship_profile import (
     analyze_beam_profile,
     composite_rgba_on_background,
     sample_midship_beam_profile,
+    summarize_profile_values,
 )
 
 
@@ -76,3 +77,16 @@ class TestCompositeRgbaOnBackground:
 
         assert rgb.shape == (2, 2, 3)
         assert (rgb[:, :, 0] > 90).all()
+
+
+class TestSummarizeProfileValues:
+    def test_rgb_profile_detects_bright_outline(self) -> None:
+        """RGB プロファイルでも両縁の明縁を検出できる。"""
+        values = np.full((100, 3), 120, dtype=np.uint8)
+        values[:12] = (160, 160, 160)
+        values[-12:] = (162, 162, 162)
+
+        result = summarize_profile_values(values)
+
+        assert result.has_bright_outline
+        assert not result.has_dark_outline

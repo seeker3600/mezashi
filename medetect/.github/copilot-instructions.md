@@ -71,3 +71,5 @@ class TestComputeGeoResolution:
 - **No new files unless necessary.** Prefer editing existing files over creating new ones.
 - **Verify after edit.** Run the relevant tests (or at minimum check for lint/type errors) after making changes.
 - **One concern per commit.** Do not bundle unrelated fixes.
+- Keep repository-wide instructions high-level. Put detailed visual-QA and debugging workflows in project skills such as `.github/skills/debugging-qa/SKILL.md`.
+

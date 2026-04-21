@@ -223,6 +223,9 @@ datasets
 datasets/
 runs/
 
+debug_runs/*
+!debug_runs/.gitkeep
+
 samples/
 
 TODO.md

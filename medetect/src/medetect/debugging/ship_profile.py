@@ -28,6 +28,16 @@ class BeamProfileMetrics:
     row_count: int
 
 
+@dataclass(frozen=True)
+class OutlineCheck:
+    """Bilateral edge-outline classification for a single beam profile."""
+
+    left_edge_delta: float
+    right_edge_delta: float
+    has_dark_outline: bool
+    has_bright_outline: bool
+
+
 def composite_rgba_on_background(
     rgba: NDArray[np.uint8],
     bg_color: tuple[int, int, int] = (40, 60, 90),
@@ -121,6 +131,69 @@ def sample_midship_beam_profile(
     return positions, profile, x0_px, y_px, x1_px, len(selected)
 
 
+def profile_brightness(values: NDArray[np.float32] | NDArray[np.uint8]) -> NDArray[np.float32]:
+    """Convert grayscale or RGB profile values into 1-D brightness."""
+    if values.ndim == 1:
+        return values.astype(np.float32)
+    if values.shape[1] < 3:
+        return values.astype(np.float32).mean(axis=1)
+    return (
+        0.299 * values[:, 0].astype(np.float32)
+        + 0.587 * values[:, 1].astype(np.float32)
+        + 0.114 * values[:, 2].astype(np.float32)
+    )
+
+
+def summarize_profile_values(
+    values: NDArray[np.float32] | NDArray[np.uint8],
+    *,
+    edge_frac: float = 0.12,
+    inner_frac: float = 0.18,
+    threshold: float = 10.0,
+) -> OutlineCheck:
+    """Summarize bilateral edge emphasis from grayscale or RGB samples."""
+    brightness = profile_brightness(values)
+    n = len(brightness)
+    edge_n = max(2, int(round(n * edge_frac)))
+    inner_n = max(2, int(round(n * inner_frac)))
+
+    left_edge = float(brightness[:edge_n].mean())
+    left_inner = float(brightness[edge_n : edge_n + inner_n].mean())
+    right_edge = float(brightness[-edge_n:].mean())
+    right_inner = float(brightness[-edge_n - inner_n : -edge_n].mean())
+
+    left_delta = left_edge - left_inner
+    right_delta = right_edge - right_inner
+    return OutlineCheck(
+        left_edge_delta=left_delta,
+        right_edge_delta=right_delta,
+        has_dark_outline=left_delta < -threshold and right_delta < -threshold,
+        has_bright_outline=left_delta > threshold and right_delta > threshold,
+    )
+
+
+def summarize_rendered_ship_profile(
+    rgba: NDArray[np.uint8],
+    *,
+    bg_color: tuple[int, int, int] = (40, 60, 90),
+    sample_count: int = 128,
+) -> BeamProfileMetrics:
+    """Measure a rendered ship without regenerating it from SVG."""
+    positions, brightness, x0_px, y_px, x1_px, row_count = sample_midship_beam_profile(
+        rgba,
+        bg_color=bg_color,
+        sample_count=sample_count,
+    )
+    return analyze_beam_profile(
+        positions,
+        brightness,
+        x0_px=x0_px,
+        x1_px=x1_px,
+        y_px=y_px,
+        row_count=row_count,
+    )
+
+
 def analyze_beam_profile(
     positions: NDArray[np.float32],
     brightness: NDArray[np.float32],
@@ -134,27 +207,20 @@ def analyze_beam_profile(
     threshold: float = 10.0,
 ) -> BeamProfileMetrics:
     """Classify whether a profile exhibits a bilateral edge outline."""
-    n = len(brightness)
-    edge_n = max(2, int(round(n * edge_frac)))
-    inner_n = max(2, int(round(n * inner_frac)))
-
-    left_edge = float(brightness[:edge_n].mean())
-    left_inner = float(brightness[edge_n : edge_n + inner_n].mean())
-    right_edge = float(brightness[-edge_n:].mean())
-    right_inner = float(brightness[-edge_n - inner_n : -edge_n].mean())
-
-    left_delta = left_edge - left_inner
-    right_delta = right_edge - right_inner
-    has_dark_outline = left_delta < -threshold and right_delta < -threshold
-    has_bright_outline = left_delta > threshold and right_delta > threshold
+    summary = summarize_profile_values(
+        brightness,
+        edge_frac=edge_frac,
+        inner_frac=inner_frac,
+        threshold=threshold,
+    )
 
     return BeamProfileMetrics(
         positions=positions,
         brightness=brightness,
-        left_edge_delta=left_delta,
-        right_edge_delta=right_delta,
-        has_dark_outline=has_dark_outline,
-        has_bright_outline=has_bright_outline,
+        left_edge_delta=summary.left_edge_delta,
+        right_edge_delta=summary.right_edge_delta,
+        has_dark_outline=summary.has_dark_outline,
+        has_bright_outline=summary.has_bright_outline,
         x0_px=x0_px,
         x1_px=x1_px,
         y_px=y_px,
@@ -181,16 +247,9 @@ def render_ship_profile_metrics(
         deck_scatter_density=deck_scatter_density,
     )
     rgba = rasterize_ship_svg(svg, beam_px, length_px)
-    positions, brightness, x0_px, y_px, x1_px, row_count = sample_midship_beam_profile(
+    return summarize_rendered_ship_profile(
         rgba,
         bg_color=bg_color,
         sample_count=sample_count,
     )
-    return analyze_beam_profile(
-        positions,
-        brightness,
-        x0_px=x0_px,
-        x1_px=x1_px,
-        y_px=y_px,
-        row_count=row_count,
-    )
+
