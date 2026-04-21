@@ -19,6 +19,22 @@ from medetect.shipgen.ship_class import SHIP_CLASSES, ShipColors, sample_colors
 SVG_NS = "http://www.w3.org/2000/svg"
 
 
+def _parse_rgb(css: str) -> tuple[int, int, int]:
+    assert css.startswith("rgb(")
+    assert css.endswith(")")
+    parts = css[4:-1].split(",")
+    return tuple(int(part) for part in parts)
+
+
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    r, g, b = rgb
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _chroma(rgb: tuple[int, int, int]) -> int:
+    return max(rgb) - min(rgb)
+
+
 # ── Hull interpolation ───────────────────────────────────────────────────
 
 
@@ -126,6 +142,43 @@ class TestShipColors:
         assert isinstance(colors, ShipColors)
         for ch in colors.hull:
             assert 0 <= ch <= 255
+
+    @pytest.mark.parametrize(
+        ("family", "max_near_white", "max_mean_luminance"),
+        [
+            ("fishing_mixed", 18, 180.0),
+            ("work_mixed", 12, 170.0),
+            ("barge_dull", 10, 165.0),
+        ],
+    )
+    def test_non_navy_families_do_not_overproduce_white_structures(
+        self,
+        family: str,
+        max_near_white: int,
+        max_mean_luminance: float,
+    ) -> None:
+        """非 navy 系は艦橋が白一辺倒になりすぎない。"""
+        samples = [sample_colors(family, random.Random(seed)).struct_base for seed in range(64)]
+        near_white = sum(
+            _luminance(rgb) >= 200.0 and _chroma(rgb) <= 18
+            for rgb in samples
+        )
+        mean_luminance = float(np.mean([_luminance(rgb) for rgb in samples]))
+
+        assert near_white <= max_near_white
+        assert mean_luminance <= max_mean_luminance
+
+    def test_fishing_white_keeps_a_bright_superstructure_branch(self) -> None:
+        """白系漁船は明るい艦橋バリエーションを維持する。"""
+        samples = [sample_colors("fishing_white", random.Random(seed)).struct_base for seed in range(64)]
+        near_white = sum(
+            _luminance(rgb) >= 200.0 and _chroma(rgb) <= 18
+            for rgb in samples
+        )
+        mean_luminance = float(np.mean([_luminance(rgb) for rgb in samples]))
+
+        assert near_white >= 18
+        assert mean_luminance >= 190.0
 
 
 # ── SVG generation ───────────────────────────────────────────────────────
@@ -263,6 +316,22 @@ class TestGenerateShipSvg:
         # No shadow or struct rect should use pure-black rgba fill
         black_rgba_rects = [r for r in rects if r.get("fill", "").startswith("rgba(0,0,0")]
         assert len(black_rgba_rects) == 0, "shadows should not use pure-black rgba"
+
+    def test_struct_rects_are_tagged_for_visual_qc(self) -> None:
+        """艦橋の明部と影部を SVG 上で識別できる。"""
+        svg = generate_ship_svg("tug_harbor", rng=random.Random(42))
+        root = ET.fromstring(svg)
+        struct_rects = [
+            rect for rect in root.findall(f"{{{SVG_NS}}}rect")
+            if rect.get("data-role") == "struct"
+        ]
+        shadow_rects = [
+            rect for rect in root.findall(f"{{{SVG_NS}}}rect")
+            if rect.get("data-role") == "struct-shadow"
+        ]
+
+        assert struct_rects
+        assert shadow_rects
 
     def test_rendered_profiles_do_not_show_bilateral_outline(self) -> None:
         """描画後の船幅断面で両縁だけが同方向に強調されない。"""

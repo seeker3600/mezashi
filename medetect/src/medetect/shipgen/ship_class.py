@@ -163,6 +163,154 @@ def _clamp(v: int) -> int:
     return max(0, min(255, v))
 
 
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    r, g, b = rgb
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _mix_rgb(
+    left: tuple[int, int, int],
+    right: tuple[int, int, int],
+    amount: float,
+) -> tuple[int, int, int]:
+    amount = max(0.0, min(1.0, amount))
+    return tuple(
+        _clamp(int(round((1.0 - amount) * lc + amount * rc)))
+        for lc, rc in zip(left, right, strict=True)
+    )
+
+
+def _lift_rgb(rgb: tuple[int, int, int], amount: int) -> tuple[int, int, int]:
+    return tuple(_clamp(channel + amount) for channel in rgb)
+
+
+def _desaturate_toward_gray(
+    rgb: tuple[int, int, int],
+    amount: float,
+) -> tuple[int, int, int]:
+    gray = int(round(sum(rgb) / 3.0))
+    return _mix_rgb(rgb, (gray, gray, gray), amount)
+
+
+def _jitter_rgb(
+    rgb: tuple[int, int, int],
+    rng: random.Random,
+    amount: int,
+) -> tuple[int, int, int]:
+    return tuple(_clamp(channel + rng.randint(-amount, amount)) for channel in rgb)
+
+
+def _cap_luminance(
+    rgb: tuple[int, int, int],
+    max_luminance: float,
+) -> tuple[int, int, int]:
+    lum = _luminance(rgb)
+    if lum <= max_luminance:
+        return rgb
+    scale = max_luminance / max(lum, 1.0)
+    return tuple(_clamp(int(round(channel * scale))) for channel in rgb)
+
+
+_STRUCT_NEUTRALS: dict[str, list[tuple[int, int, int]]] = {
+    "fishing_mixed": [
+        (174, 176, 172),
+        (180, 182, 176),
+        (170, 176, 184),
+        (182, 178, 170),
+        (168, 174, 178),
+    ],
+    "fishing_white": [
+        (198, 200, 196),
+        (206, 206, 202),
+        (210, 208, 202),
+        (196, 200, 204),
+        (204, 206, 198),
+    ],
+    "work_mixed": [
+        (146, 146, 140),
+        (154, 150, 142),
+        (162, 156, 146),
+        (148, 154, 160),
+        (170, 162, 148),
+    ],
+    "barge_dull": [
+        (116, 118, 120),
+        (124, 122, 116),
+        (132, 128, 120),
+        (126, 130, 132),
+        (138, 132, 122),
+    ],
+}
+
+
+_STRUCT_BASE_LUMINANCE_CAPS: dict[str, float] = {
+    "fishing_mixed": 192.0,
+    "fishing_white": 214.0,
+    "work_mixed": 170.0,
+    "barge_dull": 160.0,
+}
+
+
+_STRUCT_FAMILY_ALIASES: dict[str, str] = {
+    "blue_variants": "fishing_mixed",
+    "red_orange": "work_mixed",
+    "brown_tan": "work_mixed",
+    "green_variants": "work_mixed",
+    "gray_variants": "barge_dull",
+}
+
+
+def _sample_civilian_struct_base(
+    family: str,
+    hull: tuple[int, int, int],
+    rng: random.Random,
+) -> tuple[int, int, int]:
+    family_key = _STRUCT_FAMILY_ALIASES.get(family, family)
+    tone = rng.choice(_STRUCT_NEUTRALS.get(family_key, _STRUCT_NEUTRALS["work_mixed"]))
+    hull_muted = _desaturate_toward_gray(hull, rng.uniform(0.25, 0.65))
+    roll = rng.random()
+
+    if family_key == "fishing_white":
+        if roll < 0.46:
+            struct_base = _jitter_rgb(tone, rng, 6)
+        elif roll < 0.78:
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.52), rng.randint(10, 22))
+        else:
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.55), rng.randint(16, 28))
+    elif family_key == "fishing_mixed":
+        if roll < 0.22:
+            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.12), rng, 6)
+        elif roll < 0.58:
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.28), rng.randint(8, 20))
+        elif roll < 0.84:
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.35), rng.randint(14, 28))
+        else:
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.18), rng.randint(6, 16))
+    elif family_key == "work_mixed":
+        if roll < 0.10:
+            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.10), rng, 6)
+        elif roll < 0.42:
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.34), rng.randint(6, 16))
+        elif roll < 0.76:
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.28), rng.randint(8, 18))
+        else:
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.22), rng.randint(4, 14))
+    else:
+        if roll < 0.08:
+            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.08), rng, 5)
+        elif roll < 0.50:
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.30), rng.randint(6, 16))
+        elif roll < 0.82:
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.40), rng.randint(6, 18))
+        else:
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.18), rng.randint(2, 12))
+
+    return _cap_luminance(
+        struct_base,
+        _STRUCT_BASE_LUMINANCE_CAPS.get(family_key, 188.0),
+    )
+
+
 @dataclass(frozen=True)
 class ShipColors:
     """Resolved colour set for one ship instance."""
@@ -250,58 +398,25 @@ def sample_colors(family: str, rng: random.Random) -> ShipColors:
         _clamp(base[2] + rng.randint(-12, 12)),
     )
 
-    # Superstructure / wheelhouse colour strategy:
-    #
-    # Military:   same gray family, just brighter (uniform hull/struct colouring).
-    # Light hull: slight brightness boost — e.g. white hull → pale white struct.
-    # Dark / saturated hull: superstructure is almost always white or off-white.
-    #   Wheelhouses and accommodation blocks are painted white on virtually all
-    #   commercial and fishing vessels regardless of hull colour, both for
-    #   reflectivity and as a visibility convention.
-    hull_lum = 0.299 * hull[0] + 0.587 * hull[1] + 0.114 * hull[2]
-
     struct_base: tuple[int, int, int]
-    if family in ("navy_gray", "navy_dark"):
-        # All-gray military finish.
-        boost = rng.randint(18, 38)
+    if family == "navy_gray":
+        boost = rng.randint(18, 34)
         struct_base = (
             _clamp(hull[0] + boost),
             _clamp(hull[1] + boost),
             _clamp(hull[2] + boost),
         )
-    elif hull_lum < 130:
-        # Dark or strongly saturated hull — white / off-white struct (80 %).
-        if rng.random() < 0.80:
-            sb = _clamp(195 + rng.randint(-12, 22))
-            struct_base = (
-                sb,
-                sb + rng.randint(-4, 4),
-                sb + rng.randint(-4, 6),
-            )
-        else:
-            # Minority case: same hue, strongly boosted.
-            boost = rng.randint(30, 58)
-            struct_base = (
-                _clamp(hull[0] + boost),
-                _clamp(hull[1] + boost),
-                _clamp(hull[2] + boost),
-            )
+    elif family == "navy_dark":
+        boost = rng.randint(14, 26)
+        struct_base = (
+            _clamp(hull[0] + boost),
+            _clamp(hull[1] + boost),
+            _clamp(hull[2] + boost),
+        )
     else:
-        # Light hull — subtle brightness variation.
-        if rng.random() < 0.50:
-            sb = _clamp(185 + rng.randint(-10, 18))
-            struct_base = (
-                sb,
-                sb + rng.randint(-3, 3),
-                sb + rng.randint(-3, 5),
-            )
-        else:
-            boost = rng.randint(10, 28)
-            struct_base = (
-                _clamp(hull[0] + boost),
-                _clamp(hull[1] + boost),
-                _clamp(hull[2] + boost),
-            )
+        # Civilian ships keep family-specific wheelhouse palettes instead of
+        # defaulting most dark hulls to the same bright white block.
+        struct_base = _sample_civilian_struct_base(family, hull, rng)
     return ShipColors(hull=hull, struct_base=struct_base)
 
 

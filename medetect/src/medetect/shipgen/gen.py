@@ -88,7 +88,8 @@ def _write_struct_svg(
     out.write(
         f'  <rect x="{_f(el)}" y="{_f(y0)}" '
         f'width="{_f(er - el)}" height="{_f(y1 - y0)}" '
-        f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sw)}"/>\n'
+        f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sw)}" '
+        f'data-role="struct"/>\n'
     )
 
     # Self-shadow: darken one face of the structure toward the sun direction.
@@ -102,14 +103,14 @@ def _write_struct_svg(
         out.write(
             f'  <rect x="{_f(el)}" y="{_f(y0)}" '
             f'width="{_f(shadow_w)}" height="{_f(y1 - y0)}" '
-            f'fill="{shadow_fill}"/>\n'
+            f'fill="{shadow_fill}" data-role="struct-shadow"/>\n'
         )
     else:
         # Sun from left → shadow on right side
         out.write(
             f'  <rect x="{_f(er - shadow_w)}" y="{_f(y0)}" '
             f'width="{_f(shadow_w)}" height="{_f(y1 - y0)}" '
-            f'fill="{shadow_fill}"/>\n'
+            f'fill="{shadow_fill}" data-role="struct-shadow"/>\n'
         )
 
 
