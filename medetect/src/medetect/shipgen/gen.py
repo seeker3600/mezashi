@@ -408,107 +408,125 @@ def _write_detail_svg(
         )
 
 
-def _write_hull_edge_darken(
-    out: StringIO,
-    hull_pts: list[tuple[float, float]],
-    lb_ratio: float,
-    half_widths: NDArray,
-    rng: random.Random,
-    opacity_range: tuple[float, float] = (0.25, 0.42),
-    edge_frac_range: tuple[float, float] = (0.12, 0.22),
-) -> None:
-    """Draw semi-transparent dark strips along port & starboard edges.
-
-    Simulates the shadowed freeboard that is visible in real satellite
-    imagery — the hull side is darker than the deck surface.
-
-    Parameters
-    ----------
-    opacity_range
-        (min, max) opacity for the dark strip.  Use a higher range for
-        ``rim_dark`` style, lower for ``vignette``.
-    edge_frac_range
-        (min, max) fraction of hull half-width covered by the strip.
-    """
-    n = len(half_widths)
-    opacity = rng.uniform(*opacity_range)
-    edge_frac = rng.uniform(*edge_frac_range)  # fraction of hull half-width
-
-    # Port edge strip (left side)
-    port_pts: list[tuple[float, float]] = []
-    for i in range(n):
-        t = i / (n - 1)
-        y = t * lb_ratio
-        hw = float(half_widths[i])
-        port_pts.append((0.5 - hw, y))
-    for i in range(n - 1, -1, -1):
-        t = i / (n - 1)
-        y = t * lb_ratio
-        hw = float(half_widths[i])
-        inner = max(0.5 - hw + hw * edge_frac, 0.5 - hw + 0.01)
-        port_pts.append((inner, y))
-    out.write(
-        f'  <polygon points="{_polygon_attr(port_pts)}" '
-        f'fill="rgba(0,0,0,{opacity:.2f})"/>\n'
-    )
-
-    # Starboard edge strip (right side)
-    stbd_pts: list[tuple[float, float]] = []
-    for i in range(n):
-        t = i / (n - 1)
-        y = t * lb_ratio
-        hw = float(half_widths[i])
-        inner = min(0.5 + hw - hw * edge_frac, 0.5 + hw - 0.01)
-        stbd_pts.append((inner, y))
-    for i in range(n - 1, -1, -1):
-        t = i / (n - 1)
-        y = t * lb_ratio
-        hw = float(half_widths[i])
-        stbd_pts.append((0.5 + hw, y))
-    out.write(
-        f'  <polygon points="{_polygon_attr(stbd_pts)}" '
-        f'fill="rgba(0,0,0,{opacity:.2f})"/>\n'
-    )
-
-
-def _write_deck_highlight(
+def _write_hull_tone_band(
     out: StringIO,
     lb_ratio: float,
     half_widths: NDArray,
-    colors: ShipColors,
-    rng: random.Random,
-    x_offset: float = 0.0,
+    left_frac: float,
+    right_frac: float,
+    fill: str,
+    *,
+    t_start: float = 0.0,
+    t_end: float = 1.0,
 ) -> None:
-    """Subtle centreline brightness gradient to simulate deck curvature.
+    """Draw a clipped tone band inside the hull using beam-relative fractions."""
+    if left_frac >= right_frac:
+        return
 
-    Parameters
-    ----------
-    x_offset
-        Lateral offset of the highlight strip centre, as a fraction of
-        hull half-width (positive = starboard).  Use with ``sun_lit``
-        shading style to create an asymmetric sun-lit highlight.
-    """
     n = len(half_widths)
-    opacity = rng.uniform(0.16, 0.32)
-    width_frac = rng.uniform(0.32, 0.52)
+    i_start = max(0, min(int(t_start * (n - 1)), n - 1))
+    i_end = max(i_start, min(int(t_end * (n - 1)), n - 1))
+    if i_end - i_start < 1:
+        return
 
+    left = max(-0.98, min(0.98, left_frac))
+    right = max(-0.98, min(0.98, right_frac))
     pts: list[tuple[float, float]] = []
-    # Forward pass — left edge of highlight strip
-    for i in range(n):
+    for i in range(i_start, i_end + 1):
         t = i / (n - 1)
         y = t * lb_ratio
         hw = float(half_widths[i])
-        pts.append((0.5 - hw * width_frac + hw * x_offset, y))
-    # Reverse pass — right edge
-    for i in range(n - 1, -1, -1):
+        pts.append((0.5 + hw * right, y))
+    for i in range(i_end, i_start - 1, -1):
         t = i / (n - 1)
         y = t * lb_ratio
         hw = float(half_widths[i])
-        pts.append((0.5 + hw * width_frac + hw * x_offset, y))
+        pts.append((0.5 + hw * left, y))
 
-    out.write(
-        f'  <polygon points="{_polygon_attr(pts)}" '
-        f'fill="rgba(255,255,255,{opacity:.2f})"/>\n'
+    if len(pts) >= 3:
+        out.write(
+            f'  <polygon points="{_polygon_attr(pts)}" fill="{fill}"/>\n'
+        )
+
+
+def _side_interval(side_sign: int, inner_frac: float, outer_frac: float) -> tuple[float, float]:
+    """Return a beam interval on the requested hull side."""
+    inner = max(0.0, min(inner_frac, 0.98))
+    outer = max(inner, min(outer_frac, 0.98))
+    if side_sign < 0:
+        return -outer, -inner
+    return inner, outer
+
+
+def _write_side_lighting(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    rng: random.Random,
+    *,
+    side_sign: int,
+    bright: bool,
+    opacity_range: tuple[float, float],
+    outer_frac_range: tuple[float, float] = (0.84, 0.95),
+    start_fracs: tuple[float, ...] = (0.12, 0.36, 0.60),
+) -> None:
+    """Approximate broadside lighting with several overlapping tone bands."""
+    base_opacity = rng.uniform(*opacity_range)
+    outer_frac = rng.uniform(*outer_frac_range)
+    rgb = "255,255,255" if bright else "0,0,0"
+    falloff = (0.52, 0.34, 0.22)
+
+    for idx, start_frac in enumerate(start_fracs):
+        if idx >= len(falloff):
+            break
+        inner_frac = min(start_frac + rng.uniform(-0.04, 0.04), outer_frac - 0.08)
+        if inner_frac >= outer_frac - 0.04:
+            continue
+        left_frac, right_frac = _side_interval(side_sign, max(0.04, inner_frac), outer_frac)
+        opacity = base_opacity * falloff[idx]
+        t_start = rng.uniform(0.02, 0.10 + idx * 0.03)
+        t_end = 1.0 - rng.uniform(0.02, 0.10 + idx * 0.03)
+        _write_hull_tone_band(
+            out,
+            lb_ratio,
+            half_widths,
+            left_frac,
+            right_frac,
+            f"rgba({rgb},{opacity:.2f})",
+            t_start=t_start,
+            t_end=t_end,
+        )
+
+
+def _write_center_tone(
+    out: StringIO,
+    lb_ratio: float,
+    half_widths: NDArray,
+    rng: random.Random,
+    *,
+    bright: bool,
+    preferred_side_sign: int | None = None,
+    opacity_range: tuple[float, float] = (0.03, 0.08),
+) -> None:
+    """Draw a soft off-centre tone patch to avoid bilateral rim effects."""
+    half_span = rng.uniform(0.24, 0.44)
+    offset_sign = preferred_side_sign if preferred_side_sign is not None else rng.choice([-1, 1])
+    offset = offset_sign * rng.uniform(0.12, 0.28)
+    left_frac = max(-0.78, -half_span + offset)
+    right_frac = min(0.78, half_span + offset)
+    if right_frac - left_frac < 0.18:
+        return
+    rgb = "255,255,255" if bright else "0,0,0"
+    opacity = rng.uniform(*opacity_range)
+    _write_hull_tone_band(
+        out,
+        lb_ratio,
+        half_widths,
+        left_frac,
+        right_frac,
+        f"rgba({rgb},{opacity:.2f})",
+        t_start=rng.uniform(0.05, 0.14),
+        t_end=1.0 - rng.uniform(0.05, 0.14),
     )
 
 
@@ -557,10 +575,10 @@ def _write_hull_mottling(
 
         # Randomly lighten or darken
         if rng.random() < 0.5:
-            opacity = rng.uniform(0.09, 0.20)
+            opacity = rng.uniform(0.06, 0.15)
             fill = f"rgba(0,0,0,{opacity:.2f})"
         else:
-            opacity = rng.uniform(0.08, 0.17)
+            opacity = rng.uniform(0.05, 0.13)
             fill = f"rgba(255,255,255,{opacity:.2f})"
 
         out.write(
@@ -592,7 +610,7 @@ def _write_hull_mottling(
             py = cy + r_y * jitter * math.sin(angle)
             pts.append((px, py))
 
-        opacity = rng.uniform(0.05, 0.10)
+        opacity = rng.uniform(0.03, 0.07)
         if rng.random() < 0.55:
             fill = f"rgba(0,0,0,{opacity:.2f})"
         else:
@@ -616,8 +634,8 @@ def _write_bow_stern_shading(
     n = len(half_widths)
     bow_len = rng.uniform(0.10, 0.18)  # fraction of total length
     stern_len = rng.uniform(0.10, 0.22)
-    bow_opacity = rng.uniform(0.20, 0.42)
-    stern_opacity = rng.uniform(0.16, 0.36)
+    bow_opacity = rng.uniform(0.08, 0.18)
+    stern_opacity = rng.uniform(0.06, 0.15)
 
     # Bow zone — multiple strips with decreasing opacity (gradient approx)
     n_strips = 4
@@ -665,58 +683,6 @@ def _write_bow_stern_shading(
             )
 
 
-def _write_sun_side_shadow(
-    out: StringIO,
-    lb_ratio: float,
-    half_widths: NDArray,
-    sun_dx: float,
-    rng: random.Random,
-) -> None:
-    """Darken the hull side opposite to the sun for self-shadow effect.
-
-    Creates a gentle brightness asymmetry across the beam, simulating
-    the way one side of a vessel appears slightly darker in satellite
-    imagery depending on the sun angle.
-    """
-    n = len(half_widths)
-    # Shadow falls on the side opposite to the sun
-    shadow_side = "port" if sun_dx > 0 else "starboard"
-    opacity = rng.uniform(0.14, 0.28)
-    width_frac = rng.uniform(0.35, 0.62)  # how far inward the shadow reaches
-
-    pts: list[tuple[float, float]] = []
-    if shadow_side == "port":
-        # Port side (left) — outer edge to inner boundary
-        for i in range(n):
-            t = i / (n - 1)
-            y = t * lb_ratio
-            hw = float(half_widths[i])
-            pts.append((0.5 - hw, y))
-        for i in range(n - 1, -1, -1):
-            t = i / (n - 1)
-            y = t * lb_ratio
-            hw = float(half_widths[i])
-            pts.append((0.5 - hw * (1.0 - width_frac), y))
-    else:
-        # Starboard side (right)
-        for i in range(n):
-            t = i / (n - 1)
-            y = t * lb_ratio
-            hw = float(half_widths[i])
-            pts.append((0.5 + hw * (1.0 - width_frac), y))
-        for i in range(n - 1, -1, -1):
-            t = i / (n - 1)
-            y = t * lb_ratio
-            hw = float(half_widths[i])
-            pts.append((0.5 + hw, y))
-
-    if len(pts) >= 3:
-        out.write(
-            f'  <polygon points="{_polygon_attr(pts)}" '
-            f'fill="rgba(0,0,0,{opacity:.2f})"/>\n'
-        )
-
-
 def _write_deck_panels(
     out: StringIO,
     lb_ratio: float,
@@ -737,7 +703,7 @@ def _write_deck_panels(
 
     # ── Centreline ───────────────────────────────────────────────────
     # Thin darker/lighter line running bow to stern along the midship axis
-    cl_opacity = rng.uniform(0.16, 0.30)
+    cl_opacity = rng.uniform(0.08, 0.16)
     cl_bright = rng.choice([True, False])
     cl_colour = f"rgba(255,255,255,{cl_opacity:.2f})" if cl_bright else f"rgba(0,0,0,{cl_opacity:.2f})"
     cl_hw = rng.uniform(0.016, 0.028)
@@ -758,7 +724,7 @@ def _write_deck_panels(
     # ── Transverse seam lines ────────────────────────────────────────
     # Horizontal lines across the deck at irregular intervals
     n_seams = rng.randint(3, max(4, int(lb_ratio * 1.2)))
-    seam_opacity = rng.uniform(0.14, 0.28)
+    seam_opacity = rng.uniform(0.07, 0.14)
     for _ in range(n_seams):
         t = rng.uniform(0.08, 0.92)
         # Skip if inside a structure zone
@@ -808,7 +774,7 @@ def _write_deck_panels(
             hw = float(half_widths[i])
             zone_pts.append((0.5 - hw * w_frac, y))
         if len(zone_pts) >= 3:
-            zone_opacity = rng.uniform(0.08, 0.18)
+            zone_opacity = rng.uniform(0.04, 0.10)
             if rng.random() < 0.5:
                 fill = f"rgba(0,0,0,{zone_opacity:.2f})"
             else:
@@ -849,7 +815,7 @@ def _write_deck_wear(
         # Elliptical or rectangular stain
         w = rng.uniform(0.04, 0.12)
         h = rng.uniform(0.03, 0.10) * lb_ratio
-        opacity = rng.uniform(0.10, 0.22)
+        opacity = rng.uniform(0.05, 0.14)
 
         if rng.random() < 0.6:
             # Dark stain (wear, oil, dirt)
@@ -1202,13 +1168,9 @@ def generate_ship_svg(
     )
 
     # 1) Hull polygon
-    hull_stroke = colors.detail_css(-25)
-    hull_sw = 0.5 / lb_ratio * 0.5
     out.write(
         f'  <polygon points="{_polygon_attr(hull_pts)}" '
-        f'fill="{colors.hull_css()}" '
-        f'stroke="{hull_stroke}" stroke-width="{_f(hull_sw)}" '
-        f'stroke-linejoin="round"/>\n'
+        f'fill="{colors.hull_css()}"/>\n'
     )
 
     # 2) Superstructures (with directional shadow)
@@ -1217,47 +1179,111 @@ def generate_ship_svg(
     sun_dy = rng.uniform(0.01, 0.04) * lb_ratio  # shadow falls roughly aft/side
 
     # ── Shading style selection ──────────────────────────────────────────
-    # Randomly choose how edge/highlight shading is applied so that ships
-    # don't all look "dark rim + bright centre". Four styles with distinct
-    # visual characters:
-    #
-    #   vignette  (30%) — soft edge darken + deck highlight (current look, but toned down)
-    #   flat      (20%) — no edge darken, no highlight (uniform flat deck)
-    #   rim_dark  (25%) — stronger edge darken, no highlight (high freeboard look)
-    #   sun_lit   (25%) — no edge darken, offset highlight (one side sunlit)
+    # Avoid a bilateral edge outline.  Ships can be flat, softly side-lit,
+    # or show a glancing highlight on one side, but should not systematically
+    # produce dark or bright rims on both edges.
     shading_style: str = rng.choices(
-        ["vignette", "flat", "rim_dark", "sun_lit"],
-        weights=[30, 20, 25, 25],
+        ["flat", "broadside_shadow", "broadside_light", "center_tone", "edge_glint"],
+        weights=[18, 30, 24, 16, 12],
     )[0]
+    sun_side_sign = 1 if sun_dx > 0 else -1
+    shadow_side_sign = -sun_side_sign
 
-    # 1b) Freeboard / waterline edge darkening
+    # 1b) Primary hull lighting
     out.write('  <g clip-path="url(#h)">\n')
-    if shading_style == "vignette":
-        _write_hull_edge_darken(
-            out, hull_pts, lb_ratio, half_widths, rng,
-            opacity_range=(0.20, 0.40), edge_frac_range=(0.11, 0.20),
+    if shading_style == "broadside_shadow":
+        _write_side_lighting(
+            out,
+            lb_ratio,
+            half_widths,
+            rng,
+            side_sign=shadow_side_sign,
+            bright=False,
+            opacity_range=(0.08, 0.16),
         )
-    elif shading_style == "rim_dark":
-        _write_hull_edge_darken(
-            out, hull_pts, lb_ratio, half_widths, rng,
-            opacity_range=(0.28, 0.50), edge_frac_range=(0.15, 0.26),
+    elif shading_style == "broadside_light":
+        _write_side_lighting(
+            out,
+            lb_ratio,
+            half_widths,
+            rng,
+            side_sign=sun_side_sign,
+            bright=True,
+            opacity_range=(0.06, 0.13),
         )
-    # flat / sun_lit: no edge darken
+    elif shading_style == "center_tone":
+        _write_center_tone(
+            out,
+            lb_ratio,
+            half_widths,
+            rng,
+            bright=rng.random() < 0.55,
+            preferred_side_sign=sun_side_sign,
+        )
+    elif shading_style == "edge_glint":
+        _write_side_lighting(
+            out,
+            lb_ratio,
+            half_widths,
+            rng,
+            side_sign=sun_side_sign,
+            bright=True,
+            opacity_range=(0.05, 0.10),
+            outer_frac_range=(0.90, 0.96),
+            start_fracs=(0.66, 0.78),
+        )
     out.write('  </g>\n')
 
-    # 1c) Deck centreline highlight
+    # 1c) Secondary lighting counterpart
     out.write('  <g clip-path="url(#h)">\n')
-    if shading_style == "vignette":
-        _write_deck_highlight(out, lb_ratio, half_widths, colors, rng)
-    elif shading_style == "sun_lit":
-        # Shift highlight toward the sun-lit side (opposite of shadow_side)
-        # sun_dx > 0 means sun is from starboard → highlight starboard side
-        offset_sign = 1.0 if sun_dx > 0 else -1.0
-        _write_deck_highlight(
-            out, lb_ratio, half_widths, colors, rng,
-            x_offset=offset_sign * rng.uniform(0.18, 0.38),
+    if shading_style == "broadside_shadow":
+        _write_side_lighting(
+            out,
+            lb_ratio,
+            half_widths,
+            rng,
+            side_sign=sun_side_sign,
+            bright=True,
+            opacity_range=(0.03, 0.07),
+            outer_frac_range=(0.68, 0.88),
+            start_fracs=(0.18, 0.42),
         )
-    # flat / rim_dark: no deck highlight
+    elif shading_style == "broadside_light":
+        _write_side_lighting(
+            out,
+            lb_ratio,
+            half_widths,
+            rng,
+            side_sign=shadow_side_sign,
+            bright=False,
+            opacity_range=(0.03, 0.07),
+            outer_frac_range=(0.70, 0.88),
+            start_fracs=(0.16, 0.40),
+        )
+    elif shading_style == "center_tone" and rng.random() < 0.45:
+        _write_side_lighting(
+            out,
+            lb_ratio,
+            half_widths,
+            rng,
+            side_sign=sun_side_sign,
+            bright=rng.random() < 0.5,
+            opacity_range=(0.02, 0.05),
+            outer_frac_range=(0.64, 0.84),
+            start_fracs=(0.22, 0.44),
+        )
+    elif shading_style == "edge_glint":
+        _write_side_lighting(
+            out,
+            lb_ratio,
+            half_widths,
+            rng,
+            side_sign=shadow_side_sign,
+            bright=False,
+            opacity_range=(0.02, 0.05),
+            outer_frac_range=(0.60, 0.78),
+            start_fracs=(0.30, 0.50),
+        )
     out.write('  </g>\n')
 
     # 1d) Hull colour mottling — large irregular patches break up the
@@ -1271,9 +1297,19 @@ def generate_ship_svg(
     _write_bow_stern_shading(out, lb_ratio, half_widths, rng)
     out.write('  </g>\n')
 
-    # 1f) Sun-side self-shadow — one half of the hull slightly darker
+    # 1f) Very soft hull-side asymmetry shared across all styles
     out.write('  <g clip-path="url(#h)">\n')
-    _write_sun_side_shadow(out, lb_ratio, half_widths, sun_dx, rng)
+    _write_side_lighting(
+        out,
+        lb_ratio,
+        half_widths,
+        rng,
+        side_sign=shadow_side_sign,
+        bright=False,
+        opacity_range=(0.02, 0.05),
+        outer_frac_range=(0.62, 0.82),
+        start_fracs=(0.26, 0.50),
+    )
     out.write('  </g>\n')
 
     # Compute approximate superstructure exclusion zones early (used by

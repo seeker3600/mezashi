@@ -1,15 +1,15 @@
-"""Tests for samples/pixel_profile.py core logic."""
-from __future__ import annotations
+"""Tests for medetect.debugging.pixel_profile."""
 
-import sys
-from pathlib import Path
+from __future__ import annotations
 
 import numpy as np
 import pytest
 
-# samples/ は src/ 以下ではないため直接 sys.path を追加してインポート
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "samples"))
-from pixel_profile import extract_line_profile, normalize_values, resolve_coords  # type: ignore[import-untyped]
+from medetect.debugging.pixel_profile import (
+    extract_line_profile,
+    normalize_values,
+    resolve_coords,
+)
 
 
 class TestExtractLineProfile:
@@ -17,7 +17,6 @@ class TestExtractLineProfile:
         """水平方向の直線でピクセル値が左→右の順に返る。"""
         arr = np.arange(100, dtype=np.uint8).reshape(10, 10)
         pos, vals = extract_line_profile(arr, 0, 5, 9, 5)
-        # row=5, cols 0..9 → values 50..59
         assert vals[0] == 50
         assert vals[-1] == 59
         assert len(pos) == len(vals)
@@ -35,16 +34,16 @@ class TestExtractLineProfile:
     def test_single_point_line(self) -> None:
         """始点と終点が一致する場合も落ちない。"""
         arr = np.full((5, 5), 42, dtype=np.uint8)
-        pos, vals = extract_line_profile(arr, 2, 2, 2, 2)
+        _pos, vals = extract_line_profile(arr, 2, 2, 2, 2)
         assert vals[0] == 42
 
     def test_rgb_image_shape(self) -> None:
         """カラー画像は (N, 3) の形で返る。"""
         arr = np.zeros((20, 20, 3), dtype=np.uint8)
-        arr[:, :, 0] = 100  # R=100
-        arr[:, :, 1] = 150  # G=150
-        arr[:, :, 2] = 200  # B=200
-        pos, vals = extract_line_profile(arr, 0, 0, 19, 0)
+        arr[:, :, 0] = 100
+        arr[:, :, 1] = 150
+        arr[:, :, 2] = 200
+        _pos, vals = extract_line_profile(arr, 0, 0, 19, 0)
         assert vals.shape == (20, 3)
         assert (vals[:, 0] == 100).all()
         assert (vals[:, 1] == 150).all()
@@ -53,7 +52,7 @@ class TestExtractLineProfile:
     def test_out_of_bounds_clamped(self) -> None:
         """座標が画像境界を超えてもクリップされてエラーにならない。"""
         arr = np.full((10, 10), 77, dtype=np.uint8)
-        pos, vals = extract_line_profile(arr, -5, 5, 20, 5)
+        _pos, vals = extract_line_profile(arr, -5, 5, 20, 5)
         assert (vals == 77).all()
 
 

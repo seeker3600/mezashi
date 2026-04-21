@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from medetect.debugging.ship_profile import render_ship_profile_metrics
 from medetect.shipgen.gen import (
     generate_ship_svg,
     generate_ships,
@@ -225,8 +226,8 @@ class TestGenerateShipSvg:
         svg = generate_ship_svg("destroyer", rng=random.Random(42))
         root = ET.fromstring(svg)
         clipped = [e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib]
-        # At minimum: edge darken, deck highlight, mottling, bow/stern,
-        # sun-side shadow, panels, wear, scatter
+        # At minimum: primary lighting, secondary lighting, mottling,
+        # bow/stern shading, soft side asymmetry, panels, wear, scatter
         assert len(clipped) >= 7
 
     def test_hull_mottling_adds_polygons(self) -> None:
@@ -263,68 +264,55 @@ class TestGenerateShipSvg:
         black_rgba_rects = [r for r in rects if r.get("fill", "").startswith("rgba(0,0,0")]
         assert len(black_rgba_rects) == 0, "shadows should not use pure-black rgba"
 
-    def test_shading_style_vignette_has_edge_and_highlight(self) -> None:
-        """vignetteスタイルでは縁暗化とハイライトが両方生成される。"""
-        # seed 42 → shading_style == "vignette" for "frigate"
-        # We iterate seeds to find one that picks vignette
-        import re
+    def test_rendered_profiles_do_not_show_bilateral_outline(self) -> None:
+        """描画後の船幅断面で両縁だけが同方向に強調されない。"""
+        cases = [
+            ("amphib_assault", 42),
+            ("barge", 42),
+            ("barge_deck", 42),
+            ("carrier", 42),
+            ("corvette", 42),
+            ("destroyer", 42),
+            ("destroyer_stealth", 42),
+            ("fishing_longliner", 42),
+            ("fishing_purse_seiner", 42),
+            ("tug_harbor", 42),
+        ]
+        offenders: list[tuple[str, float, float]] = []
 
-        vignette_svgs = []
-        for seed in range(200):
-            svg = generate_ship_svg("frigate", rng=random.Random(seed))
-            root = ET.fromstring(svg)
-            clipped_groups = [
-                e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib
-            ]
-            # vignette has both edge (dark polygons in 1st group) and highlight
-            # (white rgba polygon in 2nd group)
-            has_dark_edge = any(
-                any("rgba(0,0,0" in c.get("fill", "") for c in g)
-                for g in clipped_groups[:1]
-            )
-            has_white_highlight = any(
-                any("rgba(255,255,255" in c.get("fill", "") for c in g)
-                for g in clipped_groups[1:2]
-            )
-            if has_dark_edge and has_white_highlight:
-                vignette_svgs.append(svg)
-        assert len(vignette_svgs) >= 1, "vignette スタイルが1件以上生成されること"
+        for ship_class, seed in cases:
+            metrics = render_ship_profile_metrics(ship_class, seed=seed)
+            if metrics.has_dark_outline or metrics.has_bright_outline:
+                offenders.append(
+                    (
+                        ship_class,
+                        round(metrics.left_edge_delta, 2),
+                        round(metrics.right_edge_delta, 2),
+                    )
+                )
 
-    def test_shading_style_flat_no_edge_no_highlight(self) -> None:
-        """flatスタイルでは縁暗化もハイライトも存在しない。"""
-        # Iterate seeds to find flat-style ships
-        flat_found = False
-        for seed in range(300):
-            svg = generate_ship_svg("frigate", rng=random.Random(seed))
-            root = ET.fromstring(svg)
-            clipped_groups = [
-                e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib
-            ]
-            # Groups 0 (1b) and 1 (1c) should be empty for flat style
-            if len(clipped_groups) >= 2:
-                g1b_empty = len(list(clipped_groups[0])) == 0
-                g1c_empty = len(list(clipped_groups[1])) == 0
-                if g1b_empty and g1c_empty:
-                    flat_found = True
-                    # Verify SVG is still valid XML with a hull polygon
-                    assert root.tag == f"{{{SVG_NS}}}svg"
-                    break
-        assert flat_found, "flat スタイルが1件以上生成されること"
+        assert not offenders, f"bilateral outline detected: {offenders}"
 
-    def test_shading_styles_produce_variety(self) -> None:
-        """複数シードで異なる1b/1cグループの組み合わせが生成される。"""
-        patterns: set[tuple[bool, bool]] = set()
-        for seed in range(100):
-            svg = generate_ship_svg("frigate", rng=random.Random(seed))
-            root = ET.fromstring(svg)
-            clipped_groups = [
-                e for e in root if e.tag == f"{{{SVG_NS}}}g" and "clip-path" in e.attrib
-            ]
-            has_edge = len(list(clipped_groups[0])) > 0 if len(clipped_groups) >= 1 else False
-            has_hl = len(list(clipped_groups[1])) > 0 if len(clipped_groups) >= 2 else False
-            patterns.add((has_edge, has_hl))
-        # 少なくとも3種類のパターンが出現すること（4種のうち3+）
-        assert len(patterns) >= 3, f"バリエーションが不足: {patterns}"
+    def test_rendered_profiles_keep_lighting_variety_without_outline(self) -> None:
+        """複数シードでフラット・暗側・明側の断面が混在する。"""
+        patterns: set[str] = set()
+        for seed in range(40):
+            metrics = render_ship_profile_metrics("frigate", seed=seed)
+            assert not metrics.has_dark_outline
+            assert not metrics.has_bright_outline
+
+            left = metrics.left_edge_delta
+            right = metrics.right_edge_delta
+            if abs(left) < 4.0 and abs(right) < 4.0:
+                patterns.add("flat")
+            if min(left, right) < -5.0:
+                patterns.add("shadowed_side")
+            if max(left, right) > 5.0:
+                patterns.add("lit_side")
+            if len(patterns) == 3:
+                break
+
+        assert len(patterns) >= 3, f"断面バリエーションが不足: {patterns}"
 
 
 # ── Ship class registry ──────────────────────────────────────────────────
