@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 
 import medetect.datagen.placement as placement_mod
 from medetect.datagen.ship import MIN_SHIP_BEAM_PX
+from shapely.geometry import box
 
 from medetect.datagen.placement import (
     _geometry_projection_extents,
@@ -340,6 +341,46 @@ def _capture_vector_cluster(monkeypatch: pytest.MonkeyPatch) -> list:
 
     monkeypatch.setattr(placement_mod, "_render_vector_raft_cluster", _mock_render_vector_cluster)
     return captured
+
+
+class TestTightClusterBridgeGeometry:
+    def test_bridge_geometry_only_fills_internal_gap(self) -> None:
+        """tight cluster bridge は外周リングではなく内部ギャップだけを埋める。"""
+        ships = [
+            placement_mod._RaftShipPlacement(
+                svg_text="",
+                cx=13.0,
+                cy=22.0,
+                bw=6,
+                lh=24,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=0,
+                hull_geom=box(10.0, 10.0, 16.0, 34.0),
+                hull_fill=(220, 40, 40, 255),
+            ),
+            placement_mod._RaftShipPlacement(
+                svg_text="",
+                cx=19.3,
+                cy=22.0,
+                bw=6,
+                lh=24,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=0,
+                hull_geom=box(16.6, 10.0, 22.6, 34.0),
+                hull_fill=(40, 80, 220, 255),
+            ),
+        ]
+
+        bridge = placement_mod._tight_cluster_bridge_geometry(ships, 0.75)
+
+        assert bridge is not None
+        min_x, min_y, max_x, max_y = bridge.bounds
+        assert min_x >= 15.9
+        assert max_x <= 16.7
+        assert min_y >= 10.0
+        assert max_y <= 34.0
 
 
 class TestPlaceCluster:

@@ -221,6 +221,38 @@ def _draw_geometry_fill(
         draw.polygon(exterior, fill=fill)
 
 
+def _tight_cluster_bridge_geometry(
+    ships: list[_RaftShipPlacement],
+    join_tolerance: float,
+) -> BaseGeometry | None:
+    """Return only the interior geometry needed to close tight-cluster slits.
+
+    The previous tight-cluster underlay buffered the whole merged hull group,
+    which also painted a coloured ring around the outer cluster boundary.
+    Here we perform a morphological closing on the unioned hulls and keep only
+    the newly added bridge area, so the helper fills internal seams without
+    expanding the exterior silhouette.
+    """
+    if join_tolerance <= 0.0 or len(ships) < 2:
+        return None
+
+    merged_hull: BaseGeometry | None = None
+    for ship in ships:
+        merged_hull = ship.hull_geom if merged_hull is None else merged_hull.union(ship.hull_geom)
+
+    if merged_hull is None or merged_hull.is_empty:
+        return None
+
+    closed_hull = merged_hull.buffer(join_tolerance).buffer(-join_tolerance)
+    if closed_hull.is_empty:
+        return None
+
+    bridge = closed_hull.difference(merged_hull).buffer(0)
+    if bridge.is_empty or float(getattr(bridge, "area", 0.0)) <= 1e-6:
+        return None
+    return bridge
+
+
 def _stamp_geometry_occupancy(
     occupancy: NDArray[np.bool_],
     geometry: BaseGeometry,
@@ -256,17 +288,14 @@ def _render_vector_raft_cluster(
     layer_bounds: list[tuple[float, float, float, float]] = []
 
     if join_tolerance > 0.0 and ships:
-        merged_hull: BaseGeometry | None = None
-        for ship in ships:
-            buffered = ship.hull_geom.buffer(join_tolerance)
-            merged_hull = buffered if merged_hull is None else merged_hull.union(buffered)
-        if merged_hull is not None and not merged_hull.is_empty:
+        bridge_geom = _tight_cluster_bridge_geometry(ships, join_tolerance)
+        if bridge_geom is not None and not bridge_geom.is_empty:
             avg_fill = tuple(
                 round(sum(ship.hull_fill[idx] for ship in ships) / len(ships))
                 for idx in range(4)
             )
             scaled_underlay = affinity.scale(
-                merged_hull,
+                bridge_geom,
                 xfact=scene_scale,
                 yfact=scene_scale,
                 origin=(0.0, 0.0),

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from medetect.datagen.render import (
+    downsample_rgba_premultiplied_exact,
     extract_hull_polygon,
     parse_color,
     parse_svg_metadata,
@@ -220,3 +221,48 @@ class TestRasterizeShipSvg:
         assert result[80, 20, 3] > 0
         assert result[80, 20, :3].mean() > 200
         assert result[120, 20, 3] == 0
+
+
+class TestDownsampleRgbaPremultipliedExact:
+    def test_does_not_bleed_into_neighbor_blocks(self) -> None:
+        """整数 supersample の box-average 縮小は隣接ブロックへ色をにじませない。"""
+        rgba = np.zeros((8, 8, 4), dtype=np.uint8)
+        rgba[:4, :4, :3] = (200, 40, 40)
+        rgba[:4, :4, 3] = 255
+
+        result = downsample_rgba_premultiplied_exact(rgba, 4)
+
+        assert result.shape == (2, 2, 4)
+        assert tuple(result[0, 0]) == (200, 40, 40, 255)
+        assert tuple(result[0, 1]) == (0, 0, 0, 0)
+        assert tuple(result[1, 0]) == (0, 0, 0, 0)
+        assert tuple(result[1, 1]) == (0, 0, 0, 0)
+
+    def test_preserves_rotated_edge_color(self) -> None:
+        """cluster 用の 4x→1x 縮小でも白船の半透明縁が黒ずまない。"""
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 5">'
+            '  <rect x="0.05" y="0.05" width="0.9" height="4.9" fill="rgb(255,255,255)"/>'
+            '</svg>'
+        )
+        raster_4x = rasterize_ship_svg(svg, 80, 400, angle_deg=30.0, supersample=1)
+
+        pad_h = (-raster_4x.shape[0]) % 4
+        pad_w = (-raster_4x.shape[1]) % 4
+        if pad_h or pad_w:
+            padded = np.zeros(
+                (raster_4x.shape[0] + pad_h, raster_4x.shape[1] + pad_w, 4),
+                dtype=np.uint8,
+            )
+            padded[: raster_4x.shape[0], : raster_4x.shape[1]] = raster_4x
+            raster_4x = padded
+
+        result = downsample_rgba_premultiplied_exact(raster_4x, 4)
+
+        rgba = result.astype(np.float32)
+        alpha = rgba[:, :, 3]
+        semi = (alpha > 10) & (alpha < 245)
+        assert semi.any()
+
+        edge_rgb_mean = rgba[:, :, :3][semi].mean()
+        assert edge_rgb_mean > 200

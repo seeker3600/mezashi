@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from PIL import Image, ImageFilter
 
 from medetect.datagen.render import (
+    downsample_rgba_premultiplied_exact,
     gaussian_blur_rgba_premultiplied,
     rasterize_ship_svg,
     resize_rgba_premultiplied,
@@ -488,7 +489,7 @@ def _downsample_cluster_patch(
 
     out_w = max(1, layer.shape[1] // scene_scale)
     out_h = max(1, layer.shape[0] // scene_scale)
-    downsampled = resize_rgba_premultiplied(layer, out_w, out_h)
+    downsampled = downsample_rgba_premultiplied_exact(layer, scene_scale)
     return RgbaLayerPatch(scene_x0 // scene_scale, scene_y0 // scene_scale, downsampled)
 
 
@@ -500,7 +501,7 @@ def _downsample_cluster_layer(
     """Convert a supersampled cluster layer back to image resolution."""
     if scene_scale == 1:
         return layer
-    return resize_rgba_premultiplied(layer, image_size, image_size)
+    return downsample_rgba_premultiplied_exact(layer, scene_scale)
 
 
 def _sample_water_tint(

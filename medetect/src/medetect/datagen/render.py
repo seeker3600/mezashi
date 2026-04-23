@@ -303,6 +303,46 @@ def resize_rgba_premultiplied(
     return np.array(resized, dtype=np.uint8)
 
 
+def downsample_rgba_premultiplied_exact(
+    rgba: NDArray[np.uint8],
+    factor: int,
+) -> NDArray[np.uint8]:
+    """Downsample an RGBA array by an integer factor using exact area averaging.
+
+    Cluster patches are already rasterized at a fixed supersample grid.
+    Averaging premultiplied RGBA blocks avoids Lanczos ringing around the
+    cluster's outer boundary while preserving the intended edge colour.
+    """
+    if factor <= 1:
+        return np.array(rgba, copy=True)
+
+    height, width = rgba.shape[:2]
+    if height % factor != 0 or width % factor != 0:
+        msg = "input dimensions must be divisible by the downsample factor"
+        raise ValueError(msg)
+
+    arr = rgba.astype(np.float32)
+    alpha = arr[:, :, 3:4] / 255.0
+    premul = np.empty_like(arr)
+    premul[:, :, :3] = arr[:, :, :3] * alpha
+    premul[:, :, 3:4] = arr[:, :, 3:4]
+
+    out_h = height // factor
+    out_w = width // factor
+    downsampled = premul.reshape(out_h, factor, out_w, factor, 4).mean(axis=(1, 3))
+
+    alpha2 = downsampled[:, :, 3:4] / 255.0
+    safe_alpha = np.where(alpha2 > 1e-3, alpha2, 1.0)
+    downsampled[:, :, :3] = np.where(
+        alpha2 > 1e-3,
+        downsampled[:, :, :3] / safe_alpha,
+        0.0,
+    )
+    downsampled[:, :, :3] = np.clip(downsampled[:, :, :3], 0, 255)
+    downsampled[:, :, 3:4] = np.clip(downsampled[:, :, 3:4], 0, 255)
+    return downsampled.astype(np.uint8)
+
+
 def gaussian_blur_rgba_premultiplied(
     rgba: NDArray[np.uint8],
     radius: float,
