@@ -34,6 +34,13 @@ from medetect.shipgen.ship_class import (
 
 logger = logging.getLogger(__name__)
 
+_DEBUG_RECT_COLORS: tuple[tuple[int, int, int], ...] = (
+    (220, 48, 48),
+    (48, 180, 72),
+    (54, 104, 224),
+    (236, 208, 48),
+)
+
 # ── SVG formatting helpers ───────────────────────────────────────────────
 
 
@@ -44,6 +51,15 @@ def _f(v: float) -> str:
 
 def _polygon_attr(pts: list[tuple[float, float]]) -> str:
     return " ".join(f"{_f(x)},{_f(y)}" for x, y in pts)
+
+
+def _rgb_css(color: tuple[int, int, int]) -> str:
+    r, g, b = color
+    return f"rgb({r},{g},{b})"
+
+
+def _debug_rect_points(lb_ratio: float) -> list[tuple[float, float]]:
+    return [(0.03, 0.0), (0.97, 0.0), (0.97, lb_ratio), (0.03, lb_ratio)]
 
 
 # ── SVG element writers ──────────────────────────────────────────────────
@@ -1096,9 +1112,11 @@ def _write_scatter_shadow(
 # ── Public API ───────────────────────────────────────────────────────────
 
 
-def get_ship_classes() -> list[str]:
+def get_ship_classes(*, include_debug: bool = False) -> list[str]:
     """Return sorted list of available ship class names."""
-    return sorted(SHIP_CLASSES)
+    if include_debug:
+        return sorted(SHIP_CLASSES)
+    return sorted(name for name, cls in SHIP_CLASSES.items() if not cls.debug_only)
 
 
 def generate_ship_svg(
@@ -1142,6 +1160,32 @@ def generate_ship_svg(
     lb_ratio = rng.uniform(*cls.lb)
     bow_sharpness = rng.uniform(*cls.bow)
     stern_hw = rng.uniform(*cls.stern_hw)
+
+    if ship_class == "debug_rect":
+        hull_pts = _debug_rect_points(lb_ratio)
+        fill = _rgb_css(rng.choice(_DEBUG_RECT_COLORS))
+
+        out = StringIO()
+        out.write(
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'viewBox="0 0 1 {_f(lb_ratio)}" '
+            f'data-ship-class="{ship_class}" '
+            f'data-lb-ratio="{_f(lb_ratio)}">\n'
+        )
+        out.write(
+            f'  <defs>\n'
+            f'    <clipPath id="h">\n'
+            f'      <polygon points="{_polygon_attr(hull_pts)}"/>\n'
+            f'    </clipPath>\n'
+            f'  </defs>\n'
+        )
+        out.write(
+            f'  <polygon points="{_polygon_attr(hull_pts)}" '
+            f'fill="{fill}"/>\n'
+        )
+        out.write("</svg>\n")
+        return out.getvalue()
+
     colors = sample_colors(cls.color_family, rng)
 
     # Hull outline in normalised coords
@@ -1393,7 +1437,7 @@ def generate_ships(
     else:
         for name in types:
             if name not in SHIP_CLASSES:
-                msg = f"Unknown ship class: {name!r}. Available: {get_ship_classes()}"
+                msg = f"Unknown ship class: {name!r}. Available: {get_ship_classes(include_debug=True)}"
                 raise ValueError(msg)
         classes = list(types)
         weights = [types[c] for c in classes]

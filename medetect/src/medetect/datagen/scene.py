@@ -10,7 +10,11 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image, ImageFilter
 
-from medetect.datagen.render import rasterize_ship_svg, resize_rgba_premultiplied
+from medetect.datagen.render import (
+    gaussian_blur_rgba_premultiplied,
+    rasterize_ship_svg,
+    resize_rgba_premultiplied,
+)
 from medetect.datagen.ship import _resolve_ship_dimensions
 from medetect.datagen.wake import MotionState
 
@@ -397,9 +401,7 @@ def _render_ship(
     )
 
     if blur_sigma > 0 and min(beam_px, length_px) > 2:
-        img = Image.fromarray(rgba)
-        img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
-        rgba = np.array(img)
+        rgba = gaussian_blur_rgba_premultiplied(rgba, blur_sigma)
 
     return rgba, ship_class, beam_px, length_px, lb_ratio
 
@@ -422,9 +424,7 @@ def _rasterize_ship_scene(
         supersample=1,
     )
     if blur_sigma > 0 and min(beam_px, length_px) > 2:
-        img = Image.fromarray(rgba)
-        img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma * scene_scale))
-        rgba = np.array(img)
+        rgba = gaussian_blur_rgba_premultiplied(rgba, blur_sigma * scene_scale)
     return rgba
 
 

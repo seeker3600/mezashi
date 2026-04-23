@@ -8,13 +8,18 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 from shapely import affinity
 from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from medetect.datagen.obb import compute_obb_corners, format_obb_label
-from medetect.datagen.render import extract_hull_fill, extract_hull_polygon, rasterize_ship_svg
+from medetect.datagen.render import (
+    extract_hull_fill,
+    extract_hull_polygon,
+    gaussian_blur_rgba_premultiplied,
+    rasterize_ship_svg,
+)
 from medetect.datagen.scene import (
     RgbaLayerPatch,
     _blend_rgba_layer,
@@ -361,9 +366,7 @@ def _render_vector_raft_cluster(
         _composite_rgba(layer, detail_rgba, x0_scene - patch_x0, y0_scene - patch_y0)
 
     if blur_sigma > 0 and ships:
-        img = Image.fromarray(layer)
-        img = img.filter(ImageFilter.GaussianBlur(radius=blur_sigma * scene_scale))
-        layer = np.array(img)
+        layer = gaussian_blur_rgba_premultiplied(layer, blur_sigma * scene_scale)
 
     return (
         _composite_items_to_patch(

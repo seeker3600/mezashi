@@ -26,7 +26,9 @@ def _parse_types(raw: list[str]) -> dict[str, float]:
 
 
 def main() -> None:
-    all_classes = get_ship_classes()
+    public_classes = get_ship_classes()
+    debug_classes = sorted(set(get_ship_classes(include_debug=True)) - set(public_classes))
+    available_classes = public_classes + [f"{name} (debug only)" for name in debug_classes]
 
     parser = argparse.ArgumentParser(
         description="Generate synthetic ship silhouette SVGs for training.",
@@ -50,7 +52,7 @@ def main() -> None:
         metavar="CLASS:WEIGHT",
         help=(
             "Ship classes with sampling weights (e.g. destroyer:3 frigate:2). "
-            f"Available classes: {', '.join(all_classes)}"
+            f"Available classes: {', '.join(available_classes)}"
         ),
     )
     parser.add_argument(

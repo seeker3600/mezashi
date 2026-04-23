@@ -13,7 +13,7 @@ from collections.abc import Callable
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from medetect.datagen.svg import parse_svg_metadata
 
@@ -301,6 +301,31 @@ def resize_rgba_premultiplied(
     img = Image.fromarray(rgba, "RGBA")
     resized = _resize_premultiplied(img, out_w, out_h)
     return np.array(resized, dtype=np.uint8)
+
+
+def gaussian_blur_rgba_premultiplied(
+    rgba: NDArray[np.uint8],
+    radius: float,
+) -> NDArray[np.uint8]:
+    """Apply Gaussian blur to RGBA without darkening semi-transparent edges."""
+    if radius <= 0.0:
+        return np.array(rgba, copy=True)
+
+    arr = rgba.astype(np.float32)
+    alpha = arr[:, :, 3:4] / 255.0
+    arr[:, :, :3] *= alpha
+
+    premul = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
+    premul = premul.filter(ImageFilter.GaussianBlur(radius=radius))
+
+    blurred = np.array(premul, dtype=np.float32)
+    alpha2 = blurred[:, :, 3:4] / 255.0
+    safe_alpha = np.where(alpha2 > 1e-3, alpha2, 1.0)
+    blurred[:, :, :3] /= safe_alpha
+    blurred[:, :, :3] = np.where(alpha2 > 1e-3, blurred[:, :, :3], 0.0)
+    blurred[:, :, :3] = np.clip(blurred[:, :, :3], 0, 255)
+
+    return blurred.astype(np.uint8)
 
 
 def _draw_elements(

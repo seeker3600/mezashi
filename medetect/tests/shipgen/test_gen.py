@@ -267,12 +267,37 @@ class TestGenerateShipSvg:
             )
         assert _count(svg_hi) > _count(svg_lo)
 
-    @pytest.mark.parametrize("ship_class", get_ship_classes())
+    @pytest.mark.parametrize("ship_class", get_ship_classes(include_debug=True))
     def test_all_classes_generate(self, ship_class: str) -> None:
         """全艦種でエラーなく SVG を生成できる。"""
         svg = generate_ship_svg(ship_class, rng=random.Random(42))
         root = ET.fromstring(svg)
         assert root.tag == f"{{{SVG_NS}}}svg"
+
+    def test_debug_rect_generates_single_hull_polygon(self) -> None:
+        """debug_rect は単色の長方形 hull だけを出力する。"""
+        svg = generate_ship_svg("debug_rect", rng=random.Random(42))
+        root = ET.fromstring(svg)
+
+        polygons = root.findall(f"{{{SVG_NS}}}polygon")
+        assert len(polygons) == 1
+        assert len(polygons[0].attrib["points"].split()) == 4
+        assert polygons[0].attrib["fill"] in {
+            "rgb(220,48,48)",
+            "rgb(48,180,72)",
+            "rgb(54,104,224)",
+            "rgb(236,208,48)",
+        }
+        assert not root.findall(f".//{{{SVG_NS}}}rect")
+        assert not root.findall(f".//{{{SVG_NS}}}circle")
+        assert not root.findall(f".//{{{SVG_NS}}}line")
+
+    def test_debug_rect_profile_is_symmetric(self) -> None:
+        """debug_rect の断面は単純で左右対称な矩形になる。"""
+        metrics = render_ship_profile_metrics("debug_rect", seed=42, bg_color=(255, 255, 255))
+
+        assert not metrics.has_dark_outline
+        assert abs(metrics.left_edge_delta - metrics.right_edge_delta) < 1.0
 
     def test_hull_has_multiple_clipped_groups(self) -> None:
         """船体エフェクト用の clip-path グループが複数存在する。"""
@@ -393,10 +418,11 @@ class TestGetShipClasses:
         classes = get_ship_classes()
         assert len(classes) > 0
         assert classes == sorted(classes)
+        assert "debug_rect" not in classes
 
-    def test_matches_registry(self) -> None:
-        """レジストリのキーと一致する。"""
-        assert set(get_ship_classes()) == set(SHIP_CLASSES)
+    def test_include_debug_matches_registry(self) -> None:
+        """debug class を含めるとレジストリのキーと一致する。"""
+        assert set(get_ship_classes(include_debug=True)) == set(SHIP_CLASSES)
 
 
 # ── Batch generation ─────────────────────────────────────────────────────
@@ -435,8 +461,8 @@ class TestGenerateShips:
                 types={"nonexistent_xyz": 1.0},
             )
 
-    def test_default_types_uses_all_classes(self, tmp_path: Path) -> None:
-        """types 未指定で全クラスから均等にサンプリングされる。"""
+    def test_default_types_use_public_classes_only(self, tmp_path: Path) -> None:
+        """types 未指定では debug class を除いた公開クラスだけを使う。"""
         generate_ships(
             output_dir=tmp_path,
             count=20,
@@ -444,3 +470,20 @@ class TestGenerateShips:
         )
         files = list(tmp_path.glob("*.svg"))
         assert len(files) == 20
+        assert not any(path.name.startswith("debug_rect_") for path in files)
+
+    def test_explicit_debug_rect_selection_is_allowed(self, tmp_path: Path) -> None:
+        """debug_rect は明示指定したときだけ生成できる。"""
+        generate_ships(
+            output_dir=tmp_path,
+            count=3,
+            types={"debug_rect": 1.0},
+            seed=42,
+        )
+
+        files = sorted(tmp_path.glob("*.svg"))
+        assert len(files) == 3
+        assert all(path.name.startswith("debug_rect_") for path in files)
+        for path in files:
+            root = ET.fromstring(path.read_text(encoding="utf-8"))
+            assert root.attrib["data-ship-class"] == "debug_rect"

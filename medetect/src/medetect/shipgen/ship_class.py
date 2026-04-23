@@ -465,6 +465,7 @@ class ShipClass:
     color_family: str               # key into _PALETTES
     structs: tuple[Struct, ...]
     details: tuple[Detail, ...]
+    debug_only: bool = False
 
 
 # ── Ship class registry ──────────────────────────────────────────────────
@@ -1193,5 +1194,15 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("vent", x=(0.50, 0.56), y=0.38, size=0.015, prob=0.4),
             Detail("antenna", x=(0.28, 0.34), size=0.035, prob=0.4),
         ),
+    ),
+    "debug_rect": ShipClass(
+        hull="box",
+        lb=(6.0, 6.0),
+        bow=(0.0, 0.0),
+        stern_hw=(0.5, 0.5),
+        color_family="navy_gray",
+        structs=(),
+        details=(),
+        debug_only=True,
     ),
 }

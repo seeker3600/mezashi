@@ -271,6 +271,32 @@ class TestShadowHelpers:
 class TestAntiAliasedEdges:
     """スーパーサンプリング + PSF ブラーの確認。"""
 
+    def test_small_ship_blur_preserves_edge_rgb(self) -> None:
+        """小型船でも premultiplied blur が半透明縁の RGB を保つ。"""
+        rng = random.Random(7)
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 8"'
+            ' data-ship-class="test_rect" data-lb-ratio="8.0">'
+            '<rect x="0.05" y="0" width="0.9" height="8" fill="rgb(255,255,255)"/>'
+            '</svg>'
+        )
+
+        rgba, *_ = _render_ship(
+            svg,
+            0.3,
+            rng,
+            0.8,
+            length_range=(15.0, 15.0),
+            length_exponent=3.0,
+        )
+
+        alpha = rgba[:, :, 3].astype(np.float32)
+        semi = (alpha > 5) & (alpha < 250)
+        assert semi.any()
+
+        edge_rgb_mean = float(rgba[:, :, :3][semi].mean())
+        assert edge_rgb_mean > 220.0
+
     def test_alpha_edges_are_soft(self) -> None:
         """生成された船のアルファ端部に中間値が存在する。"""
         rng = random.Random(7)
