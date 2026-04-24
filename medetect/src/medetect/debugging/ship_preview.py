@@ -30,11 +30,18 @@ def render_ship_grid(
     beam_px: int = 60,
     length_px: int = 400,
     bg_color: tuple[int, int, int] = (40, 60, 90),
+    trim_mode: str | None = None,
+    visible_side: str | None = None,
 ) -> np.ndarray:
     """Render a single-row preview grid for ship classes."""
     images = []
     for ship_class in classes:
-        svg = generate_ship_svg(ship_class, rng=random.Random(seed))
+        svg = generate_ship_svg(
+            ship_class,
+            rng=random.Random(seed),
+            trim_mode=trim_mode,
+            visible_side=visible_side,
+        )
         rgba = rasterize_ship_svg(svg, beam_px, length_px)
         images.append(composite_rgba_on_background(rgba, bg_color=bg_color))
 
@@ -60,6 +67,8 @@ def render_multi_seed_grid(
     beam_px: int = 50,
     length_px: int = 300,
     bg_color: tuple[int, int, int] = (40, 60, 90),
+    trim_mode: str | None = None,
+    visible_side: str | None = None,
 ) -> np.ndarray:
     """Render a grid whose rows are seeds and columns are ship classes."""
     pad = 6
@@ -67,7 +76,12 @@ def render_multi_seed_grid(
     for seed in seeds:
         row = []
         for ship_class in classes:
-            svg = generate_ship_svg(ship_class, rng=random.Random(seed))
+            svg = generate_ship_svg(
+                ship_class,
+                rng=random.Random(seed),
+                trim_mode=trim_mode,
+                visible_side=visible_side,
+            )
             rgba = rasterize_ship_svg(svg, beam_px, length_px)
             row.append(composite_rgba_on_background(rgba, bg_color=bg_color))
         all_images.append(row)
@@ -96,6 +110,8 @@ def save_ship_previews(
     classes: Sequence[str] = DEFAULT_PREVIEW_CLASSES,
     seeds: Sequence[int] = (42, 7, 123, 999),
     bg_color: tuple[int, int, int] = (40, 60, 90),
+    trim_mode: str | None = None,
+    visible_side: str | None = None,
 ) -> dict[str, Path]:
     """Write default ship preview assets and return their paths."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -103,6 +119,22 @@ def save_ship_previews(
     multi_path = output_dir / "ship_multi_preview.png"
 
     preview_seed = seeds[0] if seeds else 42
-    Image.fromarray(render_ship_grid(classes, seed=preview_seed, bg_color=bg_color)).save(preview_path)
-    Image.fromarray(render_multi_seed_grid(classes, seeds, bg_color=bg_color)).save(multi_path)
+    Image.fromarray(
+        render_ship_grid(
+            classes,
+            seed=preview_seed,
+            bg_color=bg_color,
+            trim_mode=trim_mode,
+            visible_side=visible_side,
+        )
+    ).save(preview_path)
+    Image.fromarray(
+        render_multi_seed_grid(
+            classes,
+            seeds,
+            bg_color=bg_color,
+            trim_mode=trim_mode,
+            visible_side=visible_side,
+        )
+    ).save(multi_path)
     return {"ship_preview": preview_path, "ship_multi_preview": multi_path}

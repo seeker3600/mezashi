@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
@@ -37,9 +38,18 @@ DEFAULT_SHIPGEN_QA_CLASSES = (
 )
 
 
+def _extract_trim_metadata(svg_text: str) -> tuple[str, str]:
+    root = ET.fromstring(svg_text)
+    trim_mode = root.attrib.get("data-trim-mode", "none")
+    visible_side = root.attrib.get("data-visible-side", "none")
+    return trim_mode, visible_side
+
+
 @dataclass(frozen=True)
 class ShipgenQaRecord:
     ship_class: str
+    trim_mode: str
+    visible_side: str
     image_path: str
     profile_tsv_path: str
     profile_png_path: str
@@ -75,6 +85,8 @@ def run_shipgen_profile_qa(
     bg_color: tuple[int, int, int] = (40, 60, 90),
     hull_noise: float = 0.005,
     deck_scatter_density: float = 3.0,
+    trim_mode: str | None = "none",
+    visible_side: str | None = "none",
 ) -> ShipgenQaResult:
     """Render the standard 10-ship QA set and write profile artifacts."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -85,7 +97,7 @@ def run_shipgen_profile_qa(
 
     records: list[ShipgenQaRecord] = []
     manifest_lines = [
-        "class\timage\tprofile_tsv\tprofile_png\tx0\ty0\tx1\ty1\tleft_delta\tright_delta\tdark_outline\tbright_outline"
+        "class\ttrim_mode\tvisible_side\timage\tprofile_tsv\tprofile_png\tx0\ty0\tx1\ty1\tleft_delta\tright_delta\tdark_outline\tbright_outline"
     ]
 
     for ship_class in ship_classes:
@@ -94,7 +106,10 @@ def run_shipgen_profile_qa(
             rng=random.Random(seed),
             hull_noise=hull_noise,
             deck_scatter_density=deck_scatter_density,
+            trim_mode=trim_mode,
+            visible_side=visible_side,
         )
+        resolved_trim_mode, resolved_visible_side = _extract_trim_metadata(svg)
         rgba = rasterize_ship_svg(svg, beam_px, length_px)
         rgb = composite_rgba_on_background(rgba, bg_color=bg_color)
         image_path = image_dir / f"{ship_class}.png"
@@ -126,6 +141,8 @@ def run_shipgen_profile_qa(
 
         record = ShipgenQaRecord(
             ship_class=ship_class,
+            trim_mode=resolved_trim_mode,
+            visible_side=resolved_visible_side,
             image_path=image_path.as_posix(),
             profile_tsv_path=profile_tsv_path.as_posix(),
             profile_png_path=profile_png_path.as_posix(),
@@ -143,6 +160,8 @@ def run_shipgen_profile_qa(
             "\t".join(
                 [
                     record.ship_class,
+                    record.trim_mode,
+                    record.visible_side,
                     record.image_path,
                     record.profile_tsv_path,
                     record.profile_png_path,

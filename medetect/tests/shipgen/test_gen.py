@@ -430,6 +430,67 @@ class TestGenerateShipSvg:
         assert struct_rects
         assert shadow_rects
 
+    def test_forced_perimeter_trim_adds_trim_polygons(self) -> None:
+        """全周 trim を強制すると hull trim ポリゴンが出力される。"""
+        svg = generate_ship_svg(
+            "fishing_longliner",
+            rng=random.Random(42),
+            trim_mode="perimeter",
+            visible_side="none",
+        )
+        root = ET.fromstring(svg)
+
+        trim_polygons = [
+            polygon for polygon in root.findall(f"{{{SVG_NS}}}polygon")
+            if polygon.get("data-role") == "hull-trim"
+        ]
+
+        assert root.attrib["data-trim-mode"] == "perimeter"
+        assert root.attrib["data-visible-side"] == "none"
+        assert trim_polygons
+
+    def test_forced_bow_trim_excludes_perimeter_trim(self) -> None:
+        """船首 trim を強制した場合は全周 trim を同時に出さない。"""
+        svg = generate_ship_svg(
+            "fishing_purse_seiner",
+            rng=random.Random(42),
+            trim_mode="bow",
+            visible_side="none",
+        )
+        root = ET.fromstring(svg)
+
+        bow_polygons = [
+            polygon for polygon in root.findall(f"{{{SVG_NS}}}polygon")
+            if polygon.get("data-role") == "bow-trim"
+        ]
+        perimeter_polygons = [
+            polygon for polygon in root.findall(f"{{{SVG_NS}}}polygon")
+            if polygon.get("data-role") == "hull-trim"
+        ]
+
+        assert root.attrib["data-trim-mode"] == "bow"
+        assert bow_polygons
+        assert not perimeter_polygons
+
+    def test_forced_visible_side_tags_side_trim(self) -> None:
+        """側面色を強制すると片側 trim と side metadata を残す。"""
+        svg = generate_ship_svg(
+            "tug_harbor",
+            rng=random.Random(42),
+            trim_mode="none",
+            visible_side="starboard",
+        )
+        root = ET.fromstring(svg)
+
+        side_polygons = [
+            polygon for polygon in root.findall(f"{{{SVG_NS}}}polygon")
+            if polygon.get("data-role") == "side-trim"
+        ]
+
+        assert root.attrib["data-trim-mode"] == "none"
+        assert root.attrib["data-visible-side"] == "starboard"
+        assert side_polygons
+
     def test_rendered_profiles_do_not_show_bilateral_outline(self) -> None:
         """描画後の船幅断面で両縁だけが同方向に強調されない。"""
         cases = [

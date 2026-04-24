@@ -23,6 +23,10 @@ def _parse_hex_color(value: str) -> tuple[int, int, int]:
         raise argparse.ArgumentTypeError(f"Expected #RRGGBB, got {value!r}") from exc
 
 
+def _normalize_variant_choice(value: str) -> str | None:
+    return None if value == "auto" else value
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -53,6 +57,16 @@ def main(argv: list[str] | None = None) -> None:
     preview_parser.add_argument("--classes", nargs="+", default=list(DEFAULT_PREVIEW_CLASSES))
     preview_parser.add_argument("--seeds", nargs="+", type=int, default=[42, 7, 123, 999])
     preview_parser.add_argument("--bg-color", type=_parse_hex_color, default=(40, 60, 90))
+    preview_parser.add_argument(
+        "--trim-mode",
+        choices=["auto", "none", "perimeter", "bow"],
+        default="auto",
+    )
+    preview_parser.add_argument(
+        "--visible-side",
+        choices=["auto", "none", "port", "starboard"],
+        default="auto",
+    )
 
     shipgen_qa_parser = subparsers.add_parser("shipgen-qa", help="Run the standard 10-ship beam-profile QA.")
     shipgen_qa_parser.add_argument(
@@ -65,6 +79,16 @@ def main(argv: list[str] | None = None) -> None:
     shipgen_qa_parser.add_argument("--beam-px", type=int, default=128)
     shipgen_qa_parser.add_argument("--length-px", type=int, default=640)
     shipgen_qa_parser.add_argument("--bg-color", type=_parse_hex_color, default=(40, 60, 90))
+    shipgen_qa_parser.add_argument(
+        "--trim-mode",
+        choices=["auto", "none", "perimeter", "bow"],
+        default="none",
+    )
+    shipgen_qa_parser.add_argument(
+        "--visible-side",
+        choices=["auto", "none", "port", "starboard"],
+        default="none",
+    )
 
     shadow_parser = subparsers.add_parser("shadow-preview", help="Render shadow QA preview images.")
     shadow_parser.add_argument(
@@ -95,7 +119,14 @@ def main(argv: list[str] | None = None) -> None:
         ])
         return
     if args.command == "ship-preview":
-        outputs = save_ship_previews(args.output_dir, classes=args.classes, seeds=args.seeds, bg_color=args.bg_color)
+        outputs = save_ship_previews(
+            args.output_dir,
+            classes=args.classes,
+            seeds=args.seeds,
+            bg_color=args.bg_color,
+            trim_mode=_normalize_variant_choice(args.trim_mode),
+            visible_side=_normalize_variant_choice(args.visible_side),
+        )
         for name, path in outputs.items():
             print(f"{name}: {path}")
         return
@@ -107,6 +138,8 @@ def main(argv: list[str] | None = None) -> None:
             beam_px=args.beam_px,
             length_px=args.length_px,
             bg_color=args.bg_color,
+            trim_mode=_normalize_variant_choice(args.trim_mode),
+            visible_side=_normalize_variant_choice(args.visible_side),
         )
         print(f"manifest: {result.manifest_path}")
         print(f"summary: {result.summary_path}")

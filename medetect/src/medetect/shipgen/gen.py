@@ -62,6 +62,174 @@ def _debug_rect_points(lb_ratio: float) -> list[tuple[float, float]]:
     return [(0.03, 0.0), (0.97, 0.0), (0.97, lb_ratio), (0.03, lb_ratio)]
 
 
+def _inset_hull_points(
+    hull_pts: list[tuple[float, float]],
+    inset: float,
+) -> list[tuple[float, float]]:
+    """Move hull points inward toward the centerline by a fixed beam offset."""
+    if inset <= 0.0:
+        return list(hull_pts)
+
+    inset_pts: list[tuple[float, float]] = []
+    for x, y in hull_pts:
+        offset = x - 0.5
+        if abs(offset) < 1e-6:
+            inset_pts.append((0.5, y))
+            continue
+        inner_offset = max(abs(offset) - inset, 0.0)
+        inset_pts.append((0.5 + (1.0 if offset > 0.0 else -1.0) * inner_offset, y))
+    return inset_pts
+
+
+def _segment_index_bounds(point_count: int, t_start: float, t_end: float) -> tuple[int, int]:
+    i0 = max(0, min(int(round(t_start * (point_count - 1))), point_count - 1))
+    i1 = max(i0, min(int(round(t_end * (point_count - 1))), point_count - 1))
+    return i0, i1
+
+
+def _write_hull_edge_band(
+    out: StringIO,
+    hull_pts: list[tuple[float, float]],
+    inner_pts: list[tuple[float, float]],
+    *,
+    side: str,
+    fill: str,
+    role: str,
+    t_start: float = 0.0,
+    t_end: float = 1.0,
+    side_tag: str | None = None,
+) -> None:
+    """Write a narrow hull-edge band for one side of the ship."""
+    if len(hull_pts) != len(inner_pts) or len(hull_pts) < 4:
+        return
+
+    point_count = len(hull_pts) // 2
+    i0, i1 = _segment_index_bounds(point_count, t_start, t_end)
+    if i1 - i0 < 1:
+        return
+
+    if side == "starboard":
+        outer = [hull_pts[i] for i in range(i0, i1 + 1)]
+        inner = [inner_pts[i] for i in range(i1, i0 - 1, -1)]
+    elif side == "port":
+        outer = [hull_pts[2 * point_count - 1 - i] for i in range(i0, i1 + 1)]
+        inner = [inner_pts[2 * point_count - 1 - i] for i in range(i1, i0 - 1, -1)]
+    else:
+        msg = f"Unsupported hull edge side: {side!r}"
+        raise ValueError(msg)
+
+    attrs = f' data-side="{side_tag}"' if side_tag is not None else ""
+    pts = outer + inner
+    if len(pts) >= 3:
+        out.write(
+            f'  <polygon points="{_polygon_attr(pts)}" fill="{fill}" data-role="{role}"{attrs}/>\n'
+        )
+
+
+def _write_trim_cap(
+    out: StringIO,
+    hull_pts: list[tuple[float, float]],
+    inner_pts: list[tuple[float, float]],
+    *,
+    index: int,
+    fill: str,
+    role: str,
+) -> None:
+    """Write a short cross-ship cap that closes a trim segment."""
+    if len(hull_pts) != len(inner_pts) or len(hull_pts) < 4:
+        return
+
+    point_count = len(hull_pts) // 2
+    idx = max(0, min(index, point_count - 1))
+    pts = [
+        hull_pts[idx],
+        hull_pts[2 * point_count - 1 - idx],
+        inner_pts[2 * point_count - 1 - idx],
+        inner_pts[idx],
+    ]
+    unique = {(round(x, 6), round(y, 6)) for x, y in pts}
+    if len(unique) < 3:
+        return
+    out.write(
+        f'  <polygon points="{_polygon_attr(pts)}" fill="{fill}" data-role="{role}"/>\n'
+    )
+
+
+def _write_hull_trim(
+    out: StringIO,
+    hull_pts: list[tuple[float, float]],
+    colors: ShipColors,
+) -> None:
+    """Write sampled hull trim and one-sided visible hull colour bands."""
+    trim = colors.trim
+
+    primary_fill = trim.primary_css()
+    if primary_fill is not None and trim.primary_width > 0.0:
+        primary_inner = _inset_hull_points(hull_pts, trim.primary_width)
+        point_count = len(hull_pts) // 2
+        if trim.primary_mode == "perimeter":
+            _write_hull_edge_band(
+                out,
+                hull_pts,
+                primary_inner,
+                side="starboard",
+                fill=primary_fill,
+                role="hull-trim",
+            )
+            _write_hull_edge_band(
+                out,
+                hull_pts,
+                primary_inner,
+                side="port",
+                fill=primary_fill,
+                role="hull-trim",
+            )
+            _write_trim_cap(out, hull_pts, primary_inner, index=0, fill=primary_fill, role="hull-trim")
+            _write_trim_cap(
+                out,
+                hull_pts,
+                primary_inner,
+                index=point_count - 1,
+                fill=primary_fill,
+                role="hull-trim",
+            )
+        elif trim.primary_mode == "bow":
+            _write_hull_edge_band(
+                out,
+                hull_pts,
+                primary_inner,
+                side="starboard",
+                fill=primary_fill,
+                role="bow-trim",
+                t_end=trim.bow_extent,
+            )
+            _write_hull_edge_band(
+                out,
+                hull_pts,
+                primary_inner,
+                side="port",
+                fill=primary_fill,
+                role="bow-trim",
+                t_end=trim.bow_extent,
+            )
+            _write_trim_cap(out, hull_pts, primary_inner, index=0, fill=primary_fill, role="bow-trim")
+
+    side_fill = trim.side_css()
+    if side_fill is not None and trim.side_width > 0.0 and trim.visible_side != "none":
+        side_inner = _inset_hull_points(hull_pts, trim.side_width)
+        _write_hull_edge_band(
+            out,
+            hull_pts,
+            side_inner,
+            side=trim.visible_side,
+            fill=side_fill,
+            role="side-trim",
+            t_start=trim.side_start,
+            t_end=trim.side_end,
+            side_tag=trim.visible_side,
+        )
+
+
 # ── SVG element writers ──────────────────────────────────────────────────
 
 
@@ -1126,6 +1294,8 @@ def generate_ship_svg(
     hull_noise: float = 0.005,
     n_hull_points: int = 64,
     deck_scatter_density: float = 3.0,
+    trim_mode: str | None = None,
+    visible_side: str | None = None,
 ) -> str:
     """Generate a single ship as an SVG string.
 
@@ -1145,6 +1315,12 @@ def generate_ship_svg(
     deck_scatter_density
         Scatter shape density on deck.  Shapes per unit lb_ratio.
         0 disables scatter entirely.  Default is 3.0.
+    trim_mode
+        Optional forced hull trim mode: ``none``, ``perimeter``, or ``bow``.
+        ``None`` samples from the class family defaults.
+    visible_side
+        Optional forced visible-side band: ``none``, ``port``, or
+        ``starboard``. ``None`` samples from the class family defaults.
 
     Returns
     -------
@@ -1170,6 +1346,8 @@ def generate_ship_svg(
             f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'viewBox="0 0 1 {_f(lb_ratio)}" '
             f'data-ship-class="{ship_class}" '
+            f'data-trim-mode="none" '
+            f'data-visible-side="none" '
             f'data-lb-ratio="{_f(lb_ratio)}">\n'
         )
         out.write(
@@ -1186,7 +1364,12 @@ def generate_ship_svg(
         out.write("</svg>\n")
         return out.getvalue()
 
-    colors = sample_colors(cls.color_family, rng)
+    colors = sample_colors(
+        cls.color_family,
+        rng,
+        trim_mode=trim_mode,
+        visible_side=visible_side,
+    )
 
     # Hull outline in normalised coords
     half_widths = interpolate_hull(
@@ -1200,6 +1383,8 @@ def generate_ship_svg(
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'viewBox="0 0 1 {_f(lb_ratio)}" '
         f'data-ship-class="{ship_class}" '
+        f'data-trim-mode="{colors.trim.primary_mode}" '
+        f'data-visible-side="{colors.trim.visible_side}" '
         f'data-lb-ratio="{_f(lb_ratio)}">\n'
     )
 
@@ -1217,6 +1402,7 @@ def generate_ship_svg(
         f'  <polygon points="{_polygon_attr(hull_pts)}" '
         f'fill="{colors.hull_css()}"/>\n'
     )
+    _write_hull_trim(out, hull_pts, colors)
 
     # 2) Superstructures (with directional shadow)
     # Pick a consistent sun angle for the whole ship

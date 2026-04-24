@@ -9,7 +9,7 @@ and earthy tones that are clearly distinguishable at 0.3 m/px resolution.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # ── Colour system ────────────────────────────────────────────────────────
 
@@ -279,6 +279,204 @@ _STRUCT_FAMILY_ALIASES: dict[str, str] = {
 }
 
 
+_TRIM_PRIMARY_WEIGHTS: dict[str, tuple[int, int, int]] = {
+    "navy_gray": (82, 8, 10),
+    "navy_dark": (86, 6, 8),
+    "fishing_mixed": (48, 22, 30),
+    "fishing_white": (30, 40, 30),
+    "work_mixed": (62, 12, 26),
+    "barge_dull": (76, 6, 18),
+}
+
+
+_TRIM_SIDE_WEIGHTS: dict[str, tuple[int, int, int]] = {
+    "navy_gray": (48, 26, 26),
+    "navy_dark": (52, 24, 24),
+    "fishing_mixed": (36, 32, 32),
+    "fishing_white": (34, 33, 33),
+    "work_mixed": (42, 29, 29),
+    "barge_dull": (54, 23, 23),
+}
+
+
+_PERIMETER_TRIM_PALETTES: dict[str, list[tuple[int, int, int]]] = {
+    "navy_gray": [(214, 216, 220), (222, 222, 216), (205, 210, 216)],
+    "navy_dark": [(208, 210, 214), (198, 202, 208), (216, 216, 210)],
+    "fishing_mixed": [(228, 228, 222), (220, 222, 224), (214, 216, 212)],
+    "fishing_white": [(238, 238, 232), (232, 232, 226), (224, 226, 222)],
+    "work_mixed": [(228, 224, 216), (216, 216, 210), (206, 206, 200)],
+    "barge_dull": [(220, 214, 204), (208, 204, 196), (196, 198, 194)],
+}
+
+
+_BOW_TRIM_PALETTES: dict[str, list[tuple[int, int, int]]] = {
+    "navy_gray": [(170, 54, 48), (208, 154, 54), (214, 214, 204)],
+    "navy_dark": [(168, 48, 42), (198, 140, 50), (206, 204, 198)],
+    "fishing_mixed": [(188, 54, 44), (210, 118, 54), (54, 98, 160), (56, 124, 106)],
+    "fishing_white": [(196, 48, 42), (44, 90, 150), (58, 126, 110), (214, 156, 60)],
+    "work_mixed": [(202, 88, 42), (182, 58, 38), (214, 164, 60), (214, 214, 204)],
+    "barge_dull": [(156, 76, 52), (188, 142, 64), (180, 182, 176)],
+}
+
+
+_SIDE_TRIM_PALETTES: dict[str, list[tuple[int, int, int]]] = {
+    "navy_gray": [(102, 110, 122), (132, 44, 42), (82, 88, 96)],
+    "navy_dark": [(80, 88, 100), (126, 42, 38), (94, 98, 106)],
+    "fishing_mixed": [(162, 54, 44), (44, 84, 132), (54, 112, 98), (84, 88, 96)],
+    "fishing_white": [(170, 56, 48), (48, 86, 136), (60, 116, 102), (96, 100, 106)],
+    "work_mixed": [(182, 70, 42), (206, 118, 60), (70, 76, 86), (120, 116, 108)],
+    "barge_dull": [(120, 78, 52), (96, 92, 84), (74, 80, 84), (134, 112, 82)],
+}
+
+
+def _fork_rng(rng: random.Random) -> random.Random:
+    forked = random.Random()
+    forked.setstate(rng.getstate())
+    return forked
+
+
+def _resolve_trim_family(family: str) -> str:
+    return _STRUCT_FAMILY_ALIASES.get(family, family)
+
+
+def _resolve_primary_trim_mode(
+    family_key: str,
+    rng: random.Random,
+    forced: str | None,
+) -> str:
+    allowed = {"none", "perimeter", "bow"}
+    if forced is not None:
+        if forced not in allowed:
+            msg = f"Unsupported trim_mode: {forced!r}"
+            raise ValueError(msg)
+        return forced
+    weights = _TRIM_PRIMARY_WEIGHTS.get(family_key, (58, 16, 26))
+    return rng.choices(["none", "perimeter", "bow"], weights=weights, k=1)[0]
+
+
+def _resolve_visible_side(
+    family_key: str,
+    rng: random.Random,
+    forced: str | None,
+) -> str:
+    allowed = {"none", "port", "starboard"}
+    if forced is not None:
+        if forced not in allowed:
+            msg = f"Unsupported visible_side: {forced!r}"
+            raise ValueError(msg)
+        return forced
+    weights = _TRIM_SIDE_WEIGHTS.get(family_key, (40, 30, 30))
+    return rng.choices(["none", "port", "starboard"], weights=weights, k=1)[0]
+
+
+def _sample_perimeter_trim_color(
+    family_key: str,
+    hull: tuple[int, int, int],
+    rng: random.Random,
+) -> tuple[int, int, int]:
+    tone = rng.choice(_PERIMETER_TRIM_PALETTES.get(family_key, _PERIMETER_TRIM_PALETTES["work_mixed"]))
+    mixed = _mix_rgb(tone, _desaturate_toward_gray(hull, 0.55), rng.uniform(0.04, 0.14))
+    lifted = _lift_rgb(mixed, rng.randint(0, 8))
+    return _jitter_rgb(lifted, rng, 4)
+
+
+def _sample_bow_trim_color(
+    family_key: str,
+    hull: tuple[int, int, int],
+    rng: random.Random,
+) -> tuple[int, int, int]:
+    tone = rng.choice(_BOW_TRIM_PALETTES.get(family_key, _BOW_TRIM_PALETTES["work_mixed"]))
+    mixed = _mix_rgb(tone, hull, rng.uniform(0.08, 0.22))
+    return _jitter_rgb(mixed, rng, 5)
+
+
+def _sample_side_trim_color(
+    family_key: str,
+    hull: tuple[int, int, int],
+    rng: random.Random,
+) -> tuple[int, int, int]:
+    tone = rng.choice(_SIDE_TRIM_PALETTES.get(family_key, _SIDE_TRIM_PALETTES["work_mixed"]))
+    mixed = _mix_rgb(tone, hull, rng.uniform(0.10, 0.28))
+    capped = _cap_luminance(mixed, _luminance(hull) + 26.0)
+    return _jitter_rgb(capped, rng, 5)
+
+
+@dataclass(frozen=True)
+class HullTrimStyle:
+    """Appearance rules for hull trim paint and one visible side band."""
+
+    primary_mode: str = "none"
+    primary_color: tuple[int, int, int] | None = None
+    primary_width: float = 0.0
+    bow_extent: float = 0.0
+    visible_side: str = "none"
+    side_color: tuple[int, int, int] | None = None
+    side_width: float = 0.0
+    side_start: float = 0.0
+    side_end: float = 1.0
+
+    def primary_css(self) -> str | None:
+        if self.primary_color is None:
+            return None
+        r, g, b = self.primary_color
+        return f"rgb({r},{g},{b})"
+
+    def side_css(self) -> str | None:
+        if self.side_color is None:
+            return None
+        r, g, b = self.side_color
+        return f"rgb({r},{g},{b})"
+
+
+def _sample_hull_trim_style(
+    family: str,
+    hull: tuple[int, int, int],
+    rng: random.Random,
+    *,
+    trim_mode: str | None = None,
+    visible_side: str | None = None,
+) -> HullTrimStyle:
+    family_key = _resolve_trim_family(family)
+    trim_rng = _fork_rng(rng)
+
+    primary_mode = _resolve_primary_trim_mode(family_key, trim_rng, trim_mode)
+    resolved_side = _resolve_visible_side(family_key, trim_rng, visible_side)
+
+    primary_color: tuple[int, int, int] | None = None
+    primary_width = 0.0
+    bow_extent = 0.0
+    if primary_mode == "perimeter":
+        primary_color = _sample_perimeter_trim_color(family_key, hull, trim_rng)
+        primary_width = trim_rng.uniform(0.018, 0.038)
+        bow_extent = trim_rng.uniform(0.04, 0.08)
+    elif primary_mode == "bow":
+        primary_color = _sample_bow_trim_color(family_key, hull, trim_rng)
+        primary_width = trim_rng.uniform(0.022, 0.046)
+        bow_extent = trim_rng.uniform(0.10, 0.22)
+
+    side_color: tuple[int, int, int] | None = None
+    side_width = 0.0
+    side_start = 0.0
+    side_end = 1.0
+    if resolved_side != "none":
+        side_color = _sample_side_trim_color(family_key, hull, trim_rng)
+        side_width = trim_rng.uniform(0.028, 0.062)
+        side_start = trim_rng.uniform(0.06, 0.18)
+        side_end = trim_rng.uniform(0.78, 0.96)
+
+    return HullTrimStyle(
+        primary_mode=primary_mode,
+        primary_color=primary_color,
+        primary_width=primary_width,
+        bow_extent=bow_extent,
+        visible_side=resolved_side,
+        side_color=side_color,
+        side_width=side_width,
+        side_start=side_start,
+        side_end=side_end,
+    )
+
+
 def _sample_civilian_struct_base(
     family: str,
     hull: tuple[int, int, int],
@@ -344,6 +542,7 @@ class ShipColors:
 
     hull: tuple[int, int, int]
     struct_base: tuple[int, int, int]
+    trim: HullTrimStyle = field(default_factory=HullTrimStyle)
 
     def hull_css(self) -> str:
         r, g, b = self.hull
@@ -403,7 +602,13 @@ class ShipColors:
         return f"rgb({sr},{sg},{sb})"
 
 
-def sample_colors(family: str, rng: random.Random) -> ShipColors:
+def sample_colors(
+    family: str,
+    rng: random.Random,
+    *,
+    trim_mode: str | None = None,
+    visible_side: str | None = None,
+) -> ShipColors:
     """Sample a colour scheme from the given palette family.
     
     Parameters
@@ -444,7 +649,14 @@ def sample_colors(family: str, rng: random.Random) -> ShipColors:
         # Civilian ships keep family-specific wheelhouse palettes instead of
         # defaulting most dark hulls to the same bright white block.
         struct_base = _sample_civilian_struct_base(family, hull, rng)
-    return ShipColors(hull=hull, struct_base=struct_base)
+    trim = _sample_hull_trim_style(
+        family,
+        hull,
+        rng,
+        trim_mode=trim_mode,
+        visible_side=visible_side,
+    )
+    return ShipColors(hull=hull, struct_base=struct_base, trim=trim)
 
 
 # ── Structural element data classes ──────────────────────────────────────

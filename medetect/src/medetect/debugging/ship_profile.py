@@ -238,6 +238,8 @@ def render_ship_profile_metrics(
     hull_noise: float = 0.005,
     deck_scatter_density: float = 3.0,
     sample_count: int = 128,
+    trim_mode: str | None = "none",
+    visible_side: str | None = "none",
 ) -> BeamProfileMetrics:
     """Render one ship and summarize its beam-direction brightness profile."""
     svg = generate_ship_svg(
@@ -245,6 +247,8 @@ def render_ship_profile_metrics(
         rng=random.Random(seed),
         hull_noise=hull_noise,
         deck_scatter_density=deck_scatter_density,
+        trim_mode=trim_mode,
+        visible_side=visible_side,
     )
     rgba = rasterize_ship_svg(svg, beam_px, length_px)
     return summarize_rendered_ship_profile(
