@@ -232,11 +232,11 @@ _STRUCT_NEUTRALS: dict[str, list[tuple[int, int, int]]] = {
         (168, 174, 178),
     ],
     "fishing_white": [
-        (198, 200, 196),
-        (206, 206, 202),
-        (210, 208, 202),
-        (196, 200, 204),
-        (204, 206, 198),
+        (174, 176, 174),
+        (180, 182, 180),
+        (186, 188, 184),
+        (188, 190, 192),
+        (194, 194, 190),
     ],
     "work_mixed": [
         (146, 146, 140),
@@ -257,7 +257,7 @@ _STRUCT_NEUTRALS: dict[str, list[tuple[int, int, int]]] = {
 
 _STRUCT_BASE_LUMINANCE_CAPS: dict[str, float] = {
     "fishing_mixed": 192.0,
-    "fishing_white": 214.0,
+    "fishing_white": 198.0,
     "work_mixed": 170.0,
     "barge_dull": 160.0,
 }
@@ -288,14 +288,18 @@ def _sample_civilian_struct_base(
     tone = rng.choice(_STRUCT_NEUTRALS.get(family_key, _STRUCT_NEUTRALS["work_mixed"]))
     hull_muted = _desaturate_toward_gray(hull, rng.uniform(0.25, 0.65))
     roll = rng.random()
+    struct_cap = _STRUCT_BASE_LUMINANCE_CAPS.get(family_key, 188.0)
 
     if family_key == "fishing_white":
-        if roll < 0.46:
-            struct_base = _jitter_rgb(tone, rng, 6)
-        elif roll < 0.78:
-            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.52), rng.randint(10, 22))
+        if roll < 0.10:
+            struct_base = _jitter_rgb(_lift_rgb(tone, rng.randint(18, 26)), rng, 3)
+            struct_cap = 214.0
+        elif roll < 0.56:
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.46), rng.randint(0, 6))
+            struct_cap = 198.0
         else:
-            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.55), rng.randint(16, 28))
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.62), rng.randint(-2, 6))
+            struct_cap = 196.0
     elif family_key == "fishing_mixed":
         if roll < 0.18:
             struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.18), rng, 5)
@@ -326,7 +330,7 @@ def _sample_civilian_struct_base(
 
     capped = _cap_luminance(
         struct_base,
-        _STRUCT_BASE_LUMINANCE_CAPS.get(family_key, 188.0),
+        struct_cap,
     )
     max_gap = _STRUCT_MAX_HULL_LUMINANCE_GAPS.get(family_key)
     if max_gap is None:

@@ -172,17 +172,23 @@ class TestShipColors:
         assert near_white <= max_near_white
         assert mean_luminance <= max_mean_luminance
 
-    def test_fishing_white_keeps_a_bright_superstructure_branch(self) -> None:
-        """白系漁船は明るい艦橋バリエーションを維持する。"""
-        samples = [sample_colors("fishing_white", random.Random(seed)).struct_base for seed in range(64)]
+    def test_fishing_white_keeps_an_occasional_bright_superstructure_branch(self) -> None:
+        """白系漁船でも極端に白い艦橋はたまに出る程度に留まる。"""
+        samples = [sample_colors("fishing_white", random.Random(seed)).struct_base for seed in range(256)]
         near_white = sum(
             _luminance(rgb) >= 200.0 and _chroma(rgb) <= 18
             for rgb in samples
         )
+        light_gray = sum(
+            182.0 <= _luminance(rgb) < 200.0 and _chroma(rgb) <= 18
+            for rgb in samples
+        )
         mean_luminance = float(np.mean([_luminance(rgb) for rgb in samples]))
 
-        assert near_white >= 18
-        assert mean_luminance >= 190.0
+        assert near_white >= 16
+        assert near_white <= 96
+        assert light_gray >= 72
+        assert 184.0 <= mean_luminance <= 198.0
 
     @pytest.mark.parametrize(
         ("family", "min_muted", "min_dark_muted", "min_light_muted"),
