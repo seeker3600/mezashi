@@ -35,6 +35,10 @@ def _chroma(rgb: tuple[int, int, int]) -> int:
     return max(rgb) - min(rgb)
 
 
+def _sample_family_colors(family: str, count: int = 256) -> list[ShipColors]:
+    return [sample_colors(family, random.Random(seed)) for seed in range(count)]
+
+
 # ── Hull interpolation ───────────────────────────────────────────────────
 
 
@@ -179,6 +183,68 @@ class TestShipColors:
 
         assert near_white >= 18
         assert mean_luminance >= 190.0
+
+    @pytest.mark.parametrize(
+        ("family", "min_muted", "min_dark_muted", "min_light_muted"),
+        [
+            ("fishing_mixed", 116, 28, 72),
+            ("work_mixed", 128, 80, 0),
+            ("barge_dull", 160, 150, 0),
+        ],
+    )
+    def test_civilian_hulls_include_low_saturation_variants(
+        self,
+        family: str,
+        min_muted: int,
+        min_dark_muted: int,
+        min_light_muted: int,
+    ) -> None:
+        """民生系 hull は低彩度の暗色・明色バリエーションを十分に含む。"""
+        samples = _sample_family_colors(family)
+        hulls = [sample.hull for sample in samples]
+
+        muted = sum(_chroma(rgb) <= 30 for rgb in hulls)
+        dark_muted = sum(
+            _luminance(rgb) <= 95.0 and _chroma(rgb) <= 30
+            for rgb in hulls
+        )
+        light_muted = sum(
+            _luminance(rgb) >= 185.0 and _chroma(rgb) <= 24
+            for rgb in hulls
+        )
+
+        assert muted >= min_muted
+        assert dark_muted >= min_dark_muted
+        assert light_muted >= min_light_muted
+
+    @pytest.mark.parametrize(
+        ("family", "max_large_gap", "max_dark_hull_bright_struct"),
+        [
+            ("fishing_mixed", 14, 4),
+            ("work_mixed", 6, 0),
+            ("barge_dull", 4, 0),
+        ],
+    )
+    def test_non_white_civilian_superstructures_do_not_float_far_above_hull_brightness(
+        self,
+        family: str,
+        max_large_gap: int,
+        max_dark_hull_bright_struct: int,
+    ) -> None:
+        """非 white 系 civilian は艦橋だけが不自然に明るく浮きすぎない。"""
+        samples = _sample_family_colors(family)
+        gaps = [
+            _luminance(sample.struct_base) - _luminance(sample.hull)
+            for sample in samples
+        ]
+        dark_hull_bright_struct = sum(
+            _luminance(sample.hull) <= 105.0
+            and _luminance(sample.struct_base) >= 165.0
+            for sample in samples
+        )
+
+        assert sum(gap >= 60.0 for gap in gaps) <= max_large_gap
+        assert dark_hull_bright_struct <= max_dark_hull_bright_struct
 
 
 # ── SVG generation ───────────────────────────────────────────────────────

@@ -44,6 +44,14 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (195, 198, 202),  # Bluish off-white
         (225, 225, 220),  # Bright white
         (200, 200, 195),  # Ivory white
+        (204, 206, 208),  # Sun-faded white
+        (196, 198, 200),  # Cool light gray
+        (188, 190, 194),  # Light neutral gray
+        (178, 180, 182),  # Weathered light gray
+        (164, 166, 170),  # Harbor gray
+        (104, 106, 110),  # Medium gray
+        (86, 88, 92),     # Charcoal gray
+        (56, 58, 62),     # Dark charcoal
         # Blue hulls (common in Asia, Mediterranean, N. Europe)
         (52, 82, 128),    # Medium blue
         (36, 58, 102),    # Deep blue
@@ -86,6 +94,10 @@ _PALETTES: dict[str, list[tuple[int, int, int]]] = {
         (82, 72, 58),     # Weathered brown-gray
         (112, 108, 104),  # Mid-gray utility vessel
         (148, 144, 138),  # Light gray work vessel
+        (138, 138, 134),  # Faded gray workboat
+        (96, 98, 102),    # Steel gray
+        (72, 74, 78),     # Charcoal steel
+        (48, 52, 56),     # Dark steel
         (200, 110, 60),   # Burnt orange
         (165, 75, 50),    # Darker orange-red
         (55, 65, 85),     # Dark blue-gray
@@ -251,6 +263,13 @@ _STRUCT_BASE_LUMINANCE_CAPS: dict[str, float] = {
 }
 
 
+_STRUCT_MAX_HULL_LUMINANCE_GAPS: dict[str, float] = {
+    "fishing_mixed": 52.0,
+    "work_mixed": 48.0,
+    "barge_dull": 44.0,
+}
+
+
 _STRUCT_FAMILY_ALIASES: dict[str, str] = {
     "blue_variants": "fishing_mixed",
     "red_orange": "work_mixed",
@@ -278,37 +297,41 @@ def _sample_civilian_struct_base(
         else:
             struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.55), rng.randint(16, 28))
     elif family_key == "fishing_mixed":
-        if roll < 0.22:
-            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.12), rng, 6)
-        elif roll < 0.58:
-            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.28), rng.randint(8, 20))
+        if roll < 0.18:
+            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.18), rng, 5)
+        elif roll < 0.56:
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.22), rng.randint(6, 16))
         elif roll < 0.84:
-            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.35), rng.randint(14, 28))
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.35), rng.randint(10, 22))
         else:
-            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.18), rng.randint(6, 16))
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.14), rng.randint(4, 12))
     elif family_key == "work_mixed":
-        if roll < 0.10:
-            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.10), rng, 6)
-        elif roll < 0.42:
-            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.34), rng.randint(6, 16))
-        elif roll < 0.76:
-            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.28), rng.randint(8, 18))
-        else:
-            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.22), rng.randint(4, 14))
-    else:
         if roll < 0.08:
-            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.08), rng, 5)
-        elif roll < 0.50:
-            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.30), rng.randint(6, 16))
-        elif roll < 0.82:
-            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.40), rng.randint(6, 18))
+            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.14), rng, 5)
+        elif roll < 0.40:
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.28), rng.randint(4, 12))
+        elif roll < 0.78:
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.28), rng.randint(6, 14))
         else:
-            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.18), rng.randint(2, 12))
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.16), rng.randint(2, 10))
+    else:
+        if roll < 0.05:
+            struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.12), rng, 4)
+        elif roll < 0.48:
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.24), rng.randint(4, 12))
+        elif roll < 0.84:
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.40), rng.randint(4, 14))
+        else:
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.14), rng.randint(0, 8))
 
-    return _cap_luminance(
+    capped = _cap_luminance(
         struct_base,
         _STRUCT_BASE_LUMINANCE_CAPS.get(family_key, 188.0),
     )
+    max_gap = _STRUCT_MAX_HULL_LUMINANCE_GAPS.get(family_key)
+    if max_gap is None:
+        return capped
+    return _cap_luminance(capped, _luminance(hull) + max_gap)
 
 
 @dataclass(frozen=True)
