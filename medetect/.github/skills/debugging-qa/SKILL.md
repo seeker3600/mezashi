@@ -1,11 +1,13 @@
 ---
 name: debugging-qa
-description: Use this when working on medetect visual debugging or QA flows, especially shipgen beam-profile validation, preview rendering, and artifact inspection under medetect.debugging.
+description: Use this when the user explicitly asks for medetect visual QA, preview rendering, artifact inspection, or reusable debugging commands under medetect.debugging. Do not use it for production shipgen or datagen defect fixes unless the user asks for debugging tooling or existing validation is insufficient.
 ---
 
 # medetect debugging QA
 
-Use this skill when the task is about visual inspection, beam-profile validation, or reusable debugging commands in this repository.
+Use this skill when the user explicitly wants visual inspection, beam-profile validation, artifact inspection, or reusable debugging commands in this repository.
+
+Do not use this skill just because the defect is visual. When the problem is a production behavior in `src/medetect/shipgen/` or `src/medetect/datagen/`, first inspect and modify the owning module and nearby tests. Extend `src/medetect/debugging/` only if the user asked for repro tooling or the existing validation surface cannot express the needed observation.
 
 ## Core rules
 
@@ -14,6 +16,7 @@ Use this skill when the task is about visual inspection, beam-profile validation
 1. On Windows, do not run `.pixi/envs/.../python.exe` directly for NumPy/Pillow work. Use `pixi run python -m ...`.
 1. For ship outline QA, validate rendered appearance after background compositing. Do not judge transparent RGB directly.
 1. If a task changes ship appearance, run the ten-ship QA and inspect the generated profile images before concluding the work is done.
+1. Before creating new debugging workflows, name the missing observation that existing tests, `shipgen-qa`, or `ship-preview` cannot provide.
 
 ## Main commands
 
@@ -51,7 +54,7 @@ The representative row is intentionally chosen from a wide mid-body band after b
 
 ## When extending debugging tools
 
-1. Add reusable logic to `src/medetect/debugging/`.
+1. Add reusable logic to `src/medetect/debugging/` only after deciding that the production fix belongs elsewhere or that a dedicated QA workflow is explicitly required.
 1. Expose it through `python -m medetect.debugging ...` when it is a user-facing workflow.
 1. Add focused pytest coverage for pure logic and artifact generation contracts.
 1. Keep `samples/` free of active Python entry points.
