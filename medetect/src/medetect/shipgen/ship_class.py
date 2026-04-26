@@ -270,6 +270,16 @@ _STRUCT_MAX_HULL_LUMINANCE_GAPS: dict[str, float] = {
 }
 
 
+_SMALL_SHIP_STRUCT_LUMINANCE_CAPS: dict[str, float] = {
+    "fishing_white": 184.0,
+}
+
+
+_SMALL_SHIP_STRUCT_HULL_GAPS: dict[str, float] = {
+    "fishing_white": 26.0,
+}
+
+
 _STRUCT_FAMILY_ALIASES: dict[str, str] = {
     "blue_variants": "fishing_mixed",
     "red_orange": "work_mixed",
@@ -537,6 +547,70 @@ def _sample_civilian_struct_base(
 
 
 @dataclass(frozen=True)
+class ShipAppearanceVariant:
+    """Optional low-probability appearance toggles for one ship instance."""
+
+    small_ship: bool = False
+    oversized_struct: bool = False
+    bright_white_struct: bool = False
+
+
+def _sample_bright_white_small_ship_struct(
+    rng: random.Random,
+) -> tuple[int, int, int]:
+    tone = rng.choice(_STRUCT_NEUTRALS["fishing_white"])
+    bright = _lift_rgb(_desaturate_toward_gray(tone, 0.70), rng.randint(18, 28))
+    return _jitter_rgb(_cap_luminance(bright, 226.0), rng, 2)
+
+
+def _apply_small_ship_struct_base_variant(
+    family: str,
+    hull: tuple[int, int, int],
+    struct_base: tuple[int, int, int],
+    rng: random.Random,
+    appearance_variant: ShipAppearanceVariant | None,
+) -> tuple[int, int, int]:
+    if appearance_variant is None or not appearance_variant.small_ship:
+        return struct_base
+
+    if appearance_variant.bright_white_struct:
+        return _sample_bright_white_small_ship_struct(_fork_rng(rng))
+
+    family_key = _STRUCT_FAMILY_ALIASES.get(family, family)
+    max_luminance = _SMALL_SHIP_STRUCT_LUMINANCE_CAPS.get(family_key)
+    if max_luminance is None:
+        return struct_base
+
+    toned = _mix_rgb(struct_base, _desaturate_toward_gray(hull, 0.60), 0.32)
+    toned = _cap_luminance(toned, max_luminance)
+    max_gap = _SMALL_SHIP_STRUCT_HULL_GAPS.get(family_key)
+    if max_gap is None:
+        return toned
+    return _cap_luminance(toned, _luminance(hull) + max_gap)
+
+
+def sample_ship_appearance_variant(
+    ship_class: ShipClass,
+    rng: random.Random,
+) -> ShipAppearanceVariant:
+    """Resolve rare small-ship appearance toggles without advancing the main RNG."""
+
+    has_small_ship_variant = (
+        ship_class.rare_oversized_struct_prob > 0.0
+        or ship_class.rare_bright_white_struct_prob > 0.0
+    )
+    if not has_small_ship_variant:
+        return ShipAppearanceVariant()
+
+    forked = _fork_rng(rng)
+    return ShipAppearanceVariant(
+        small_ship=True,
+        oversized_struct=forked.random() < ship_class.rare_oversized_struct_prob,
+        bright_white_struct=forked.random() < ship_class.rare_bright_white_struct_prob,
+    )
+
+
+@dataclass(frozen=True)
 class ShipColors:
     """Resolved colour set for one ship instance."""
 
@@ -608,6 +682,7 @@ def sample_colors(
     *,
     trim_mode: str | None = None,
     visible_side: str | None = None,
+    appearance_variant: ShipAppearanceVariant | None = None,
 ) -> ShipColors:
     """Sample a colour scheme from the given palette family.
     
@@ -649,6 +724,13 @@ def sample_colors(
         # Civilian ships keep family-specific wheelhouse palettes instead of
         # defaulting most dark hulls to the same bright white block.
         struct_base = _sample_civilian_struct_base(family, hull, rng)
+    struct_base = _apply_small_ship_struct_base_variant(
+        family,
+        hull,
+        struct_base,
+        rng,
+        appearance_variant,
+    )
     trim = _sample_hull_trim_style(
         family,
         hull,
@@ -705,6 +787,8 @@ class ShipClass:
     structs: tuple[Struct, ...]
     details: tuple[Detail, ...]
     debug_only: bool = False
+    rare_oversized_struct_prob: float = 0.0
+    rare_bright_white_struct_prob: float = 0.0
 
 
 # ── Ship class registry ──────────────────────────────────────────────────
@@ -1108,6 +1192,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("tire_fender", x=(0.85, 0.92), y=0.90, size=0.012, prob=0.35),
             Detail("hatch", x=(0.15, 0.25), size=0.04, prob=0.3),
         ),
+        rare_oversized_struct_prob=0.02,
+        rare_bright_white_struct_prob=0.02,
     ),
     "fishing_purse_seiner": ShipClass(
         hull="fishing_wide",
@@ -1176,6 +1262,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("liferaft", x=(0.55, 0.62), y=0.25, size=0.02, prob=0.4),
             Detail("vent", x=(0.35, 0.40), y=0.35, size=0.012, prob=0.35),
         ),
+        rare_oversized_struct_prob=0.02,
+        rare_bright_white_struct_prob=0.02,
     ),
     # ─── Wide / stubby vessels (5–50 m, low L/B) ───
     "tug_harbor": ShipClass(
@@ -1214,6 +1302,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("antenna", x=(0.40, 0.46), size=0.03, prob=0.45),
             Detail("pipe", x=(0.25, 0.55), y=0.25, size=0.015, prob=0.35),
         ),
+        rare_oversized_struct_prob=0.02,
+        rare_bright_white_struct_prob=0.02,
     ),
     "tug_ocean": ShipClass(
         hull="tug",
@@ -1253,6 +1343,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("liferaft", x=(0.72, 0.78), y=0.75, size=0.018, prob=0.4),
             Detail("pipe", x=(0.22, 0.48), y=0.22, size=0.012, prob=0.3),
         ),
+        rare_oversized_struct_prob=0.02,
+        rare_bright_white_struct_prob=0.02,
     ),
     "barge": ShipClass(
         hull="barge",
@@ -1339,6 +1431,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("vent", x=(0.55, 0.62), y=0.35, size=0.012, prob=0.3),
             Detail("liferaft", x=(0.58, 0.65), y=0.30, size=0.018, prob=0.4),
         ),
+        rare_oversized_struct_prob=0.02,
+        rare_bright_white_struct_prob=0.02,
     ),
     "workboat": ShipClass(
         hull="workboat",
@@ -1375,6 +1469,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("pipe", x=(0.20, 0.45), y=0.20, size=0.01, prob=0.3),
             Detail("liferaft", x=(0.62, 0.70), y=0.22, size=0.016, prob=0.35),
         ),
+        rare_oversized_struct_prob=0.02,
+        rare_bright_white_struct_prob=0.02,
     ),
     "landing_craft": ShipClass(
         hull="barge",
@@ -1433,6 +1529,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("vent", x=(0.50, 0.56), y=0.38, size=0.015, prob=0.4),
             Detail("antenna", x=(0.28, 0.34), size=0.035, prob=0.4),
         ),
+        rare_oversized_struct_prob=0.02,
+        rare_bright_white_struct_prob=0.02,
     ),
     "debug_rect": ShipClass(
         hull="box",

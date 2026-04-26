@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import random
+from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from medetect.shipgen.ship_class import (
     ShipColors,
     Struct,
     sample_colors,
+    sample_ship_appearance_variant,
 )
 
 
@@ -233,25 +235,52 @@ def _write_hull_trim(
 # ── SVG element writers ──────────────────────────────────────────────────
 
 
-def _write_struct_svg(
-    out: StringIO,
+@dataclass(frozen=True)
+class _ResolvedStructRect:
+    el: float
+    er: float
+    y0: float
+    y1: float
+    brightness_off: int
+
+
+def _apply_oversized_struct_geometry(
+    x0: float,
+    x1: float,
+    w_frac: float,
+) -> tuple[float, float, float]:
+    span = x1 - x0
+    if span <= 0.0:
+        return x0, x1, w_frac
+
+    center = (x0 + x1) * 0.5
+    target_span = min(max(span * 1.9, 0.46), 0.60)
+    x0 = max(center - target_span * 0.5, 0.10)
+    x1 = min(center + target_span * 0.5, 0.92)
+    if x1 - x0 < target_span:
+        if x0 <= 0.10:
+            x1 = min(x0 + target_span, 0.96)
+        else:
+            x0 = max(x1 - target_span, 0.04)
+    w_frac = min(max(w_frac * 1.45, 0.78), 0.96)
+    return x0, x1, w_frac
+
+
+def _resolve_struct_rect(
     spec: Struct,
     lb_ratio: float,
     half_widths: NDArray,
-    colors: ShipColors,
     rng: random.Random,
-    sun_dx: float = 0.0,
-) -> None:
-    """Append one superstructure <rect>, clipped to hull width.
-
-    Includes a one-side darkening overlay to simulate directional
-    self-shadow on the structure face.
-    """
+    *,
+    oversized_variant: bool = False,
+) -> _ResolvedStructRect | None:
     x0 = rng.uniform(*spec.x0)
     x1 = rng.uniform(*spec.x1)
     if x0 >= x1:
-        return
+        return None
     w_frac = rng.uniform(*spec.w)
+    if oversized_variant:
+        x0, x1, w_frac = _apply_oversized_struct_geometry(x0, x1, w_frac)
 
     n = len(half_widths)
     mid_idx = min(int((x0 + x1) / 2 * (n - 1)), n - 1)
@@ -262,16 +291,53 @@ def _write_struct_svg(
     el = max(cx - block_hw, 0.5 - hull_hw + 0.02)
     er = min(cx + block_hw, 0.5 + hull_hw - 0.02)
     if el >= er:
-        return
+        return None
 
-    y0 = x0 * lb_ratio
-    y1 = x1 * lb_ratio
-    fill = colors.struct_css(spec.brightness_off, rng)
-    stroke = colors.struct_css(spec.brightness_off - 25, rng)
-    sw = min(er - el, y1 - y0) * 0.06
+    return _ResolvedStructRect(
+        el=el,
+        er=er,
+        y0=x0 * lb_ratio,
+        y1=x1 * lb_ratio,
+        brightness_off=spec.brightness_off,
+    )
+
+
+def _consume_struct_geometry_draws(spec: Struct, rng: random.Random) -> None:
+    rng.uniform(*spec.x0)
+    rng.uniform(*spec.x1)
+    rng.uniform(*spec.w)
+
+
+def _estimate_struct_zone(
+    spec: Struct,
+    *,
+    oversized_variant: bool = False,
+) -> tuple[float, float]:
+    x0 = spec.x0[0]
+    x1 = spec.x1[1]
+    if oversized_variant:
+        x0, x1, _ = _apply_oversized_struct_geometry(x0, x1, spec.w[1])
+    return x0, x1
+
+
+def _write_struct_svg(
+    out: StringIO,
+    rect: _ResolvedStructRect,
+    colors: ShipColors,
+    rng: random.Random,
+    sun_dx: float = 0.0,
+) -> None:
+    """Append one superstructure <rect>, clipped to hull width.
+
+    Includes a one-side darkening overlay to simulate directional
+    self-shadow on the structure face.
+    """
+    fill = colors.struct_css(rect.brightness_off, rng)
+    stroke = colors.struct_css(rect.brightness_off - 25, rng)
+    sw = min(rect.er - rect.el, rect.y1 - rect.y0) * 0.06
     out.write(
-        f'  <rect x="{_f(el)}" y="{_f(y0)}" '
-        f'width="{_f(er - el)}" height="{_f(y1 - y0)}" '
+        f'  <rect x="{_f(rect.el)}" y="{_f(rect.y0)}" '
+        f'width="{_f(rect.er - rect.el)}" height="{_f(rect.y1 - rect.y0)}" '
         f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(sw)}" '
         f'data-role="struct"/>\n'
     )
@@ -280,20 +346,20 @@ def _write_struct_svg(
     # The shadow colour is derived from the structure's own base colour so the
     # shaded face looks like the same material under reduced illumination rather
     # than a pure-black overlay.
-    shadow_w = (er - el) * rng.uniform(0.25, 0.45)
-    shadow_fill = colors.struct_shadow_css(spec.brightness_off, rng)
+    shadow_w = (rect.er - rect.el) * rng.uniform(0.25, 0.45)
+    shadow_fill = colors.struct_shadow_css(rect.brightness_off, rng)
     if sun_dx > 0:
         # Sun from right → shadow on left side
         out.write(
-            f'  <rect x="{_f(el)}" y="{_f(y0)}" '
-            f'width="{_f(shadow_w)}" height="{_f(y1 - y0)}" '
+            f'  <rect x="{_f(rect.el)}" y="{_f(rect.y0)}" '
+            f'width="{_f(shadow_w)}" height="{_f(rect.y1 - rect.y0)}" '
             f'fill="{shadow_fill}" data-role="struct-shadow"/>\n'
         )
     else:
         # Sun from left → shadow on right side
         out.write(
-            f'  <rect x="{_f(er - shadow_w)}" y="{_f(y0)}" '
-            f'width="{_f(shadow_w)}" height="{_f(y1 - y0)}" '
+            f'  <rect x="{_f(rect.er - shadow_w)}" y="{_f(rect.y0)}" '
+            f'width="{_f(shadow_w)}" height="{_f(rect.y1 - rect.y0)}" '
             f'fill="{shadow_fill}" data-role="struct-shadow"/>\n'
         )
 
@@ -1018,9 +1084,7 @@ def _write_deck_wear(
 
 def _write_struct_shadow_svg(
     out: StringIO,
-    spec: Struct,
-    lb_ratio: float,
-    half_widths: NDArray,
+    rect: _ResolvedStructRect,
     sun_dx: float,
     sun_dy: float,
     colors: ShipColors,
@@ -1032,27 +1096,10 @@ def _write_struct_shadow_svg(
     sky-ambient-tinted — rather than pure black.  The element is a solid
     opaque rectangle; overall ship transparency is set externally.
     """
-    x0 = rng.uniform(*spec.x0)
-    x1 = rng.uniform(*spec.x1)
-    if x0 >= x1:
-        return
-    w_frac = rng.uniform(*spec.w)
-
-    n = len(half_widths)
-    mid_idx = min(int((x0 + x1) / 2 * (n - 1)), n - 1)
-    hull_hw = float(half_widths[mid_idx])
-
-    block_hw = w_frac * 0.5
-    cx = 0.5 + spec.y_off
-    el = max(cx - block_hw, 0.5 - hull_hw + 0.02)
-    er = min(cx + block_hw, 0.5 + hull_hw - 0.02)
-    if el >= er:
-        return
-
-    y0 = x0 * lb_ratio + sun_dy
-    y1 = x1 * lb_ratio + sun_dy
-    el_s = el + sun_dx
-    er_s = er + sun_dx
+    y0 = rect.y0 + sun_dy
+    y1 = rect.y1 + sun_dy
+    el_s = rect.el + sun_dx
+    er_s = rect.er + sun_dx
     shadow_fill = colors.shadow_css(rng)
     out.write(
         f'  <rect x="{_f(el_s)}" y="{_f(y0)}" '
@@ -1336,6 +1383,7 @@ def generate_ship_svg(
     lb_ratio = rng.uniform(*cls.lb)
     bow_sharpness = rng.uniform(*cls.bow)
     stern_hw = rng.uniform(*cls.stern_hw)
+    appearance_variant = sample_ship_appearance_variant(cls, rng)
 
     if ship_class == "debug_rect":
         hull_pts = _debug_rect_points(lb_ratio)
@@ -1369,6 +1417,7 @@ def generate_ship_svg(
         rng,
         trim_mode=trim_mode,
         visible_side=visible_side,
+        appearance_variant=appearance_variant,
     )
 
     # Hull outline in normalised coords
@@ -1545,7 +1594,13 @@ def generate_ship_svg(
 
     # Compute approximate superstructure exclusion zones early (used by
     # panel divisions, deck wear, and scatter).
-    struct_zones = [(s.x0[0], s.x1[1]) for s in cls.structs]
+    struct_zones = [
+        _estimate_struct_zone(
+            spec,
+            oversized_variant=appearance_variant.oversized_struct and index == 0,
+        )
+        for index, spec in enumerate(cls.structs)
+    ]
 
     # 1g) Deck panel divisions — centreline, seam lines, zone fills
     out.write('  <g clip-path="url(#h)">\n')
@@ -1557,10 +1612,21 @@ def generate_ship_svg(
     _write_deck_wear(out, lb_ratio, half_widths, rng, struct_zones)
     out.write('  </g>\n')
 
-    for s in cls.structs:
+    for index, s in enumerate(cls.structs):
         if rng.random() < s.prob:
-            _write_struct_shadow_svg(out, s, lb_ratio, half_widths, sun_dx, sun_dy, colors, rng)
-            _write_struct_svg(out, s, lb_ratio, half_widths, colors, rng, sun_dx)
+            rect = _resolve_struct_rect(
+                s,
+                lb_ratio,
+                half_widths,
+                rng,
+                oversized_variant=appearance_variant.oversized_struct and index == 0,
+            )
+            if rect is None:
+                _consume_struct_geometry_draws(s, rng)
+                continue
+            _write_struct_shadow_svg(out, rect, sun_dx, sun_dy, colors, rng)
+            _consume_struct_geometry_draws(s, rng)
+            _write_struct_svg(out, rect, colors, rng, sun_dx)
 
     # 3) Deck scatter — random small shapes clipped to hull for visual texture
     out.write('  <g clip-path="url(#h)" id="scatter">\n')

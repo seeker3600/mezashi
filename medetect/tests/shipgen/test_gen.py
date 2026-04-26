@@ -14,7 +14,12 @@ from medetect.shipgen.gen import (
     get_ship_classes,
 )
 from medetect.shipgen.hull import build_hull_points, interpolate_hull
-from medetect.shipgen.ship_class import SHIP_CLASSES, ShipColors, sample_colors
+from medetect.shipgen.ship_class import (
+    SHIP_CLASSES,
+    ShipColors,
+    sample_colors,
+    sample_ship_appearance_variant,
+)
 
 SVG_NS = "http://www.w3.org/2000/svg"
 
@@ -37,6 +42,47 @@ def _chroma(rgb: tuple[int, int, int]) -> int:
 
 def _sample_family_colors(family: str, count: int = 256) -> list[ShipColors]:
     return [sample_colors(family, random.Random(seed)) for seed in range(count)]
+
+
+def _parse_points(attr: str) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    for token in attr.split():
+        x_str, y_str = token.split(",")
+        points.append((float(x_str), float(y_str)))
+    return points
+
+
+def _polygon_area(points: list[tuple[float, float]]) -> float:
+    area = 0.0
+    for index, (x0, y0) in enumerate(points):
+        x1, y1 = points[(index + 1) % len(points)]
+        area += x0 * y1 - x1 * y0
+    return abs(area) * 0.5
+
+
+def _ship_area_from_svg(svg: str) -> float:
+    root = ET.fromstring(svg)
+    hull_polygon = next(root.iter(f"{{{SVG_NS}}}polygon"))
+    return _polygon_area(_parse_points(hull_polygon.attrib["points"]))
+
+
+def _struct_rect_colors(svg: str) -> list[tuple[int, int, int]]:
+    root = ET.fromstring(svg)
+    return [
+        _parse_rgb(rect.attrib["fill"])
+        for rect in root.iter(f"{{{SVG_NS}}}rect")
+        if rect.attrib.get("data-role") == "struct"
+    ]
+
+
+def _struct_area_ratio(svg: str) -> float:
+    root = ET.fromstring(svg)
+    struct_area = sum(
+        float(rect.attrib["width"]) * float(rect.attrib["height"])
+        for rect in root.iter(f"{{{SVG_NS}}}rect")
+        if rect.attrib.get("data-role") == "struct"
+    )
+    return struct_area / _ship_area_from_svg(svg)
 
 
 # ── Hull interpolation ───────────────────────────────────────────────────
@@ -379,6 +425,55 @@ class TestGenerateShipSvg:
         # At minimum: primary lighting, secondary lighting, mottling,
         # bow/stern shading, soft side asymmetry, panels, wear, scatter
         assert len(clipped) >= 7
+
+
+class TestSmallShipRareVariants:
+    def test_variant_flags_stay_sparse_and_independent(self) -> None:
+        """小型船レアバリアントの2条件は独立に低頻度で発生する。"""
+        ship_class = SHIP_CLASSES["fishing_longliner"]
+        variants = [
+            sample_ship_appearance_variant(ship_class, random.Random(seed))
+            for seed in range(512)
+        ]
+
+        oversized = sum(variant.oversized_struct for variant in variants)
+        bright = sum(variant.bright_white_struct for variant in variants)
+        oversized_only = sum(
+            variant.oversized_struct and not variant.bright_white_struct
+            for variant in variants
+        )
+        bright_only = sum(
+            variant.bright_white_struct and not variant.oversized_struct
+            for variant in variants
+        )
+
+        assert 4 <= oversized <= 20
+        assert 4 <= bright <= 20
+        assert oversized_only >= 1
+        assert bright_only >= 1
+
+    def test_small_fishing_white_superstructures_glow_only_rarely(self) -> None:
+        """小型の白系漁船で白く光る構造物はたまにしか出ない。"""
+        bright = 0
+        for seed in range(384):
+            svg = generate_ship_svg("fishing_longliner", rng=random.Random(seed))
+            if any(
+                _luminance(rgb) >= 220.0 and _chroma(rgb) <= 14
+                for rgb in _struct_rect_colors(svg)
+            ):
+                bright += 1
+
+        assert 3 <= bright <= 12
+
+    def test_small_ship_oversized_superstructures_stay_rare(self) -> None:
+        """小型船で構造物が船面積の半分超えになるのは稀に留まる。"""
+        oversized = 0
+        for seed in range(384):
+            svg = generate_ship_svg("pilot_boat", rng=random.Random(seed))
+            if _struct_area_ratio(svg) > 0.5:
+                oversized += 1
+
+        assert 3 <= oversized <= 12
 
     def test_hull_mottling_adds_polygons(self) -> None:
         """船体ムラ処理で半透明ポリゴンが追加される。"""
