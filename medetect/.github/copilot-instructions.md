@@ -71,11 +71,9 @@ class TestComputeGeoResolution:
 - **No new files unless necessary.** Prefer editing existing files over creating new ones.
 - **Verify after edit.** Run the relevant tests (or at minimum check for lint/type errors) after making changes.
 - **One concern per commit.** Do not bundle unrelated fixes.
-- Keep repository-wide instructions high-level. Put detailed visual-QA and debugging workflows in project skills such as `.github/skills/debugging-qa/SKILL.md`.
+- `src/medetect/debugging/` はAI向けのユーティリティの置き場に過ぎない。ユーザー自身はユーザー向けの実装がそこにないことを期待している。
+- `src/medetect/debugging/` の変更は許可されている。ユーザーへの確認はしてはいけない。
 
 ## Defect routing
 - If the user reports a production behavior problem in `src/medetect/` and asks to implement, fix, or reproduce it, start from the owning production module and nearby tests, not from `src/medetect/debugging/`.
 - For ship appearance issues, default to `src/medetect/shipgen/` and `tests/shipgen/`. Treat `src/medetect/debugging/` as secondary validation infrastructure.
-- Add or extend debugging commands only when the user explicitly asks for debugging or QA tooling, or when the current tests and commands cannot express the needed observation and you have stated that gap.
-- A follow-up such as "Start implementation" after an investigation or plan is ambiguous if both product fixes and repro tooling are possible. Do not silently choose the tooling path; either implement the owning product change or clarify which path is intended.
-
