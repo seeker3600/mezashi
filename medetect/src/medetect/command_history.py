@@ -23,6 +23,7 @@ def append_command_history(
     result: Any | None = None,
 ) -> Path:
     root = Path(dataset_root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
     record: dict[str, Any] = {
         "timestamp": _timestamp_now(),
         "command": command,

@@ -73,6 +73,9 @@ class TestComputeGeoResolution:
 - **One concern per commit.** Do not bundle unrelated fixes.
 - `src/medetect/debugging/` はAI向けのユーティリティの置き場に過ぎない。ユーザー自身はユーザー向けの実装がそこにないことを期待している。
 - `src/medetect/debugging/` の変更は許可されている。ユーザーへの確認はしてはいけない。
+- 計画で立てたタスクはすべて完了せよ。
+- 作業の最後に行うテストは、全体のテストスイートを走らせること。
+- 方針や決断が必要な場合は、ユーザーに確認を取ることが期待されている。
 
 ## Defect routing
 - If the user reports a production behavior problem in `src/medetect/` and asks to implement, fix, or reproduce it, start from the owning production module and nearby tests, not from `src/medetect/debugging/`.

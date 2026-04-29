@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+import sys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +49,22 @@ def expand_obb_dataset(*args, **kwargs):
     from medetect.yolo.expand_obb import expand_obb_dataset as _expand_obb_dataset
 
     return _expand_obb_dataset(*args, **kwargs)
+
+
+def _append_dataset_command_history(
+    config_path: Path,
+    *,
+    command: str,
+    result: dict[str, object] | None = None,
+) -> None:
+    try:
+        dataset_root = resolve_dataset_root_and_splits(config_path)[0]
+    except FileNotFoundError:
+        return
+    kwargs: dict[str, object] = {"command": command}
+    if result is not None:
+        kwargs["result"] = result
+    append_command_history(dataset_root, **kwargs)
 
 
 def main() -> None:
@@ -227,50 +244,41 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    module = sys.modules[__name__]
 
     if args.command == "tiff2png":
-        convert_tiffs_to_png(
+        module.convert_tiffs_to_png(
             args.dir,
             delete_source=not args.keep_source,
             max_workers=args.workers,
         )
     elif args.command == "relabel":
-        stats = relabel_yolo_detect_dataset(
+        stats = module.relabel_yolo_detect_dataset(
             args.config,
             empty_image_ratio=args.empty_image_ratio,
             max_workers=args.workers,
         )
-        append_command_history(
-            resolve_dataset_root_and_splits(args.config)[0],
-            command="yolo relabel",
-            result=stats,
-        )
+        module._append_dataset_command_history(args.config, command="yolo relabel", result=stats)
     elif args.command == "train":
-        train_yolo_model()
+        module.train_yolo_model()
     elif args.command == "valsplit":
-        split_train_to_val(
+        module.split_train_to_val(
             config=args.config,
             fraction=args.fraction,
             imgsz=args.imgsz,
             seed=args.seed,
             disable_augs=args.disable_augs,
         )
-        append_command_history(
-            resolve_dataset_root_and_splits(args.config)[0],
-            command="yolo valsplit",
-        )
+        module._append_dataset_command_history(args.config, command="yolo valsplit")
     elif args.command == "restore":
-        restore_dataset_splits(
+        module.restore_dataset_splits(
             args.config,
             splits=args.splits,
             with_images=args.with_images,
         )
-        append_command_history(
-            resolve_dataset_root_and_splits(args.config)[0],
-            command="yolo restore",
-        )
+        module._append_dataset_command_history(args.config, command="yolo restore")
     elif args.command == "expand-obb":
-        stats = expand_obb_dataset(
+        stats = module.expand_obb_dataset(
             args.config,
             expand_height=args.expand_height,
             expand_width=args.expand_width,
@@ -279,11 +287,7 @@ def main() -> None:
             avoid_overlap=args.avoid_overlap,
             max_workers=args.workers,
         )
-        append_command_history(
-            resolve_dataset_root_and_splits(args.config)[0],
-            command="yolo expand-obb",
-            result=stats,
-        )
+        module._append_dataset_command_history(args.config, command="yolo expand-obb", result=stats)
 
 if __name__ == "__main__":
     main()
