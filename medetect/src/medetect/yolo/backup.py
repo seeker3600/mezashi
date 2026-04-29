@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import shutil
 
-from medetect.yolo.dataset_yaml import choose_splits, get_dataset_root, load_dataset_yaml
+from medetect.dataset_yaml import choose_splits, get_dataset_root, load_dataset_yaml
 
 logger = logging.getLogger(__name__)
 

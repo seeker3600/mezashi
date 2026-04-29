@@ -1,4 +1,4 @@
-"""Helpers for resolving YOLO dataset YAML files."""
+"""Helpers for resolving dataset YAML files."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
+
+_DATASETS_DIR_NAME = "datasets"
 
 
 def load_dataset_yaml(
@@ -22,7 +24,11 @@ def load_dataset_yaml(
 
 
 def resolve_dataset_root(path_value: object, config_path: Path) -> Path:
-    """Resolve the dataset root specified by a YAML ``path`` entry."""
+    """Resolve the dataset root specified by a YAML ``path`` entry.
+
+    Relative paths first resolve against the YAML file location. If that path
+    does not exist, medetect falls back to a sibling ``datasets`` directory.
+    """
     if not isinstance(path_value, (str, Path)):
         raise TypeError("'path' must be a string or path-like value.")
 
@@ -34,17 +40,11 @@ def resolve_dataset_root(path_value: object, config_path: Path) -> Path:
     if config_relative.exists():
         return config_relative
 
-    try:
-        from ultralytics import settings
-    except ImportError:
-        return config_relative
+    datasets_relative = (config_path.parent / _DATASETS_DIR_NAME / dataset_path).resolve()
+    if datasets_relative.exists():
+        return datasets_relative
 
-    datasets_root = Path(settings["datasets_dir"]).expanduser()
-    ultralytics_relative = (datasets_root / dataset_path).resolve()
-    if ultralytics_relative.exists():
-        return ultralytics_relative
-
-    return ultralytics_relative
+    return datasets_relative
 
 
 def get_dataset_root(

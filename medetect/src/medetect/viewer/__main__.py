@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import os
-from pathlib import Path
-import shutil
 import logging
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,28 +10,9 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-from ultralytics.utils import DATASETS_DIR
-
 import fiftyone as fo
 
-from medetect.viewer.obb import detect_task, load_yolo_obb_dataset
-
-
-def _load_detect_dataset(yaml_path: Path, split: str) -> fo.Dataset:
-    """Load a standard YOLO detect dataset via FiftyOne's built-in loader."""
-    yaml_dst = Path(DATASETS_DIR) / "dataset.yaml"
-    shutil.copy(yaml_path, yaml_dst)
-    try:
-        return fo.Dataset.from_dir(
-            yaml_path=str(yaml_dst),
-            dataset_type=fo.types.YOLOv5Dataset,
-            split=split,
-        )
-    finally:
-        try:
-            os.remove(yaml_dst)
-        except FileNotFoundError:
-            pass
+from medetect.viewer.obb import detect_task, load_yolo_detect_dataset, load_yolo_obb_dataset
 
 
 def main() -> None:
@@ -66,8 +45,7 @@ def main() -> None:
     if task == "obb":
         dataset = load_yolo_obb_dataset(yaml_path, split=args.split)
     else:
-        logger.info("dataset_dir: %s", DATASETS_DIR)
-        dataset = _load_detect_dataset(yaml_path, split=args.split)
+        dataset = load_yolo_detect_dataset(yaml_path, split=args.split)
 
     session = fo.launch_app(dataset)
     session.wait()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pytest
 from PIL import Image
 
@@ -13,8 +12,10 @@ import fiftyone as fo
 from medetect.viewer.obb import (
     _build_class_map,
     _image_to_label_path,
+    _parse_detect_label_file,
     _parse_obb_label_file,
     detect_task,
+    load_yolo_detect_dataset,
     load_yolo_obb_dataset,
 )
 
@@ -133,6 +134,30 @@ class TestParseObbLabelFile:
         assert len(result.polylines) == 1
 
 
+class TestParseDetectLabelFile:
+    def _make_label(self, tmp_path: Path, lines: list[str]) -> Path:
+        p = tmp_path / "detect.txt"
+        p.write_text("\n".join(lines), encoding="utf-8")
+        return p
+
+    def test_single_detect_line(self, tmp_path: Path) -> None:
+        """1行の detect ラベルが正しく Detection に変換される。"""
+        p = self._make_label(tmp_path, ["0 0.5 0.5 0.2 0.4"])
+        result = _parse_detect_label_file(p, {0: "ship"})
+
+        assert len(result.detections) == 1
+        detection = result.detections[0]
+        assert detection.label == "ship"
+        assert detection.bounding_box == pytest.approx([0.4, 0.3, 0.2, 0.4])
+
+    def test_invalid_column_count_raises(self, tmp_path: Path) -> None:
+        """5列でない detect ラベルは ValueError を送出する。"""
+        p = self._make_label(tmp_path, ["0 0.5 0.5 0.2"])
+
+        with pytest.raises(ValueError, match="5 columns"):
+            _parse_detect_label_file(p, {0: "ship"})
+
+
 # ---------------------------------------------------------------------------
 # detect_task
 # ---------------------------------------------------------------------------
@@ -221,3 +246,26 @@ class TestLoadYoloObbDataset:
         ds1 = load_yolo_obb_dataset(yaml_path, split="val", dataset_name=name, overwrite=True)
         ds2 = load_yolo_obb_dataset(yaml_path, split="val", dataset_name=name, overwrite=True)
         assert len(ds2) == 1
+
+
+class TestLoadYoloDetectDataset:
+    def test_loads_samples(self, tmp_path: Path) -> None:
+        """detect データセットが正しい件数のサンプルを持つ。"""
+        yaml_path = _make_dataset_structure(tmp_path, n_cols=5)
+        ds = load_yolo_detect_dataset(yaml_path, split="val")
+        assert len(ds) == 1
+
+    def test_ground_truth_is_detections(self, tmp_path: Path) -> None:
+        """ground_truth フィールドが fo.Detections 型である。"""
+        yaml_path = _make_dataset_structure(tmp_path, n_cols=5)
+        ds = load_yolo_detect_dataset(yaml_path, split="val")
+        sample = ds.first()
+        assert isinstance(sample["ground_truth"], fo.Detections)
+
+    def test_detection_has_correct_bbox_and_label(self, tmp_path: Path) -> None:
+        """Detection のラベルと bbox が YAML とラベル内容に一致する。"""
+        yaml_path = _make_dataset_structure(tmp_path, n_cols=5)
+        ds = load_yolo_detect_dataset(yaml_path, split="val")
+        detection = ds.first()["ground_truth"].detections[0]
+        assert detection.label == "ship"
+        assert detection.bounding_box == pytest.approx([0.4, 0.4, 0.2, 0.2])

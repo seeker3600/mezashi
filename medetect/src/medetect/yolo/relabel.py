@@ -11,8 +11,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from medetect.dataset_yaml import load_dataset_yaml, resolve_dataset_root
 from medetect.yolo.backup import discover_split_names, ensure_split_backup
-from medetect.yolo.dataset_yaml import load_dataset_yaml, resolve_dataset_root
 
 logger = logging.getLogger(__name__)
 

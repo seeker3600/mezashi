@@ -15,8 +15,8 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
+from medetect.dataset_yaml import get_dataset_root, load_dataset_yaml
 from medetect.yolo.backup import ensure_split_backup, resolve_dataset_root_and_splits
-from medetect.yolo.dataset_yaml import get_dataset_root, load_dataset_yaml
 
 logger = logging.getLogger(__name__)
 

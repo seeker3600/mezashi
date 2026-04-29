@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import random
 import sys
-import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,17 +15,8 @@ from medetect.yolo.relabel import (
     relabel_yolo_detect_dataset,
     relabel_yolo_detect_labels,
 )
-
-
-def _install_fake_ultralytics(monkeypatch: pytest.MonkeyPatch, datasets_dir: Path) -> None:
-    fake_module = types.ModuleType("ultralytics")
-    fake_module.settings = {"datasets_dir": str(datasets_dir)}
-    monkeypatch.setitem(sys.modules, "ultralytics", fake_module)
-
-
-def test_relabel_yolo_detect_dataset_resolves_relative_path_with_ultralytics_settings(
+def test_relabel_yolo_detect_dataset_resolves_relative_path_from_datasets_directory(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     datasets_dir = tmp_path / "datasets"
     dataset_root = datasets_dir / "toy"
@@ -54,7 +44,6 @@ def test_relabel_yolo_detect_dataset_resolves_relative_path_with_ultralytics_set
         "  13: -1\n",
         encoding="utf-8",
     )
-    _install_fake_ultralytics(monkeypatch, datasets_dir)
 
     stats = relabel_yolo_detect_dataset(config_path)
 
@@ -221,7 +210,6 @@ def test_relabel_yolo_detect_labels_keeps_empty_images_when_keep_prob_one(tmp_pa
 
 def test_relabel_yolo_detect_dataset_reads_keep_prob_from_yaml(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     datasets_dir = tmp_path / "datasets"
     dataset_root = datasets_dir / "toy"
@@ -239,7 +227,6 @@ def test_relabel_yolo_detect_dataset_reads_keep_prob_from_yaml(
         "  13: -1\n",
         encoding="utf-8",
     )
-    _install_fake_ultralytics(monkeypatch, datasets_dir)
 
     stats = relabel_yolo_detect_dataset(config_path)
 
@@ -327,7 +314,6 @@ def test_cli_main_invokes_relabel(
         "  10: 1\n",
         encoding="utf-8",
     )
-    _install_fake_ultralytics(monkeypatch, datasets_dir)
 
     monkeypatch.setattr(
         sys,

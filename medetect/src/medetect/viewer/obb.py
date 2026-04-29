@@ -1,9 +1,4 @@
-"""YOLO OBB dataset loader for FiftyOne.
-
-Converts YOLO OBB labels (9-column: class x1 y1 x2 y2 x3 y3 x4 y4) to
-``fo.Polylines`` so that oriented bounding boxes are rendered as proper
-quadrilaterals in the FiftyOne App, rather than plain axis-aligned bboxes.
-"""
+"""YOLO dataset loaders for FiftyOne."""
 
 from __future__ import annotations
 
@@ -13,7 +8,7 @@ from typing import Literal
 
 import fiftyone as fo
 
-from medetect.yolo.dataset_yaml import (
+from medetect.dataset_yaml import (
     choose_splits,
     get_dataset_root,
     load_dataset_yaml,
@@ -23,6 +18,44 @@ from medetect.yolo.dataset_yaml import (
 logger = logging.getLogger(__name__)
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+
+
+def load_yolo_detect_dataset(
+    yaml_path: str | Path,
+    split: str | None = "val",
+    *,
+    dataset_name: str | None = None,
+    overwrite: bool = True,
+) -> fo.Dataset:
+    """Load a YOLO detect dataset from a YAML config as a FiftyOne Dataset."""
+    yaml_path = Path(yaml_path).resolve()
+
+    _, cfg = load_dataset_yaml(yaml_path)
+    root = get_dataset_root(cfg, yaml_path, default_to_parent=True)
+    class_map = _build_class_map(cfg["names"])
+
+    name = dataset_name or f"{yaml_path.stem}_detect"
+    if overwrite and fo.dataset_exists(name):
+        fo.delete_dataset(name)
+
+    dataset = fo.Dataset(name=name)
+
+    splits_to_load = choose_splits(cfg, split)
+    samples: list[fo.Sample] = []
+
+    for sp in splits_to_load:
+        dirs = resolve_split_dirs(cfg[sp], root)
+        for img_path in _iter_images(dirs):
+            label_path = _image_to_label_path(img_path)
+            sample = fo.Sample(filepath=str(img_path))
+            sample["ground_truth"] = _parse_detect_label_file(label_path, class_map)
+            sample["split"] = sp
+            samples.append(sample)
+
+        logger.info("Loaded %d samples from split=%s", len(samples), sp)
+
+    dataset.add_samples(samples)
+    return dataset
 
 
 def load_yolo_obb_dataset(
@@ -159,6 +192,43 @@ def _parse_obb_label_file(label_path: Path, class_map: dict[int, str]) -> fo.Pol
             )
 
     return fo.Polylines(polylines=polylines)
+
+
+def _parse_detect_label_file(label_path: Path, class_map: dict[int, str]) -> fo.Detections:
+    """Parse a YOLO detect label file into a ``fo.Detections`` instance."""
+    detections: list[fo.Detection] = []
+
+    if not label_path.exists():
+        return fo.Detections(detections=[])
+
+    with label_path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+
+            vals = line.split()
+            if len(vals) != 5:
+                raise ValueError(
+                    f"Invalid detect label at {label_path}:{line_no} "
+                    f"(expected 5 columns, got {len(vals)})"
+                )
+
+            cls_id = int(vals[0])
+            center_x, center_y, width, height = map(float, vals[1:])
+            detections.append(
+                fo.Detection(
+                    label=class_map.get(cls_id, str(cls_id)),
+                    bounding_box=[
+                        center_x - width / 2.0,
+                        center_y - height / 2.0,
+                        width,
+                        height,
+                    ],
+                )
+            )
+
+    return fo.Detections(detections=detections)
 
 
 def detect_task(yaml_path: Path, split: str = "val") -> Literal["obb", "detect"]:

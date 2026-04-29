@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,14 +26,6 @@ def _label_corners(label_line: str) -> np.ndarray:
 
 def _overlap_area(corners_a: np.ndarray, corners_b: np.ndarray) -> float:
     return float(Polygon(corners_a).intersection(Polygon(corners_b)).area)
-
-
-def _install_fake_ultralytics(monkeypatch: pytest.MonkeyPatch, datasets_dir: Path) -> None:
-    fake_module = types.ModuleType("ultralytics")
-    fake_module.settings = {"datasets_dir": str(datasets_dir)}
-    monkeypatch.setitem(sys.modules, "ultralytics", fake_module)
-
-
 def _write_dataset_yaml(
     yaml_path: Path,
     dataset_root: Path,
@@ -654,8 +645,8 @@ class TestExpandObbDataset:
         backup_path = split_backup_dir(ds_root, "labels", "train") / "img1.txt"
         assert backup_path.read_text() == original
 
-    def test_yaml_path_resolves_relative_dataset_root(self, tmp_path, monkeypatch) -> None:
-        """YAML の相対 path は ultralytics settings 経由でも解決できる。"""
+    def test_yaml_path_resolves_relative_dataset_root(self, tmp_path) -> None:
+        """YAML の相対 path は sibling datasets/ 配下から解決できる。"""
         from PIL import Image
 
         datasets_dir = tmp_path / "datasets"
@@ -673,7 +664,6 @@ class TestExpandObbDataset:
 
         config_path = tmp_path / "toy.yaml"
         _write_dataset_yaml(config_path, ds_root, path_value="toy")
-        _install_fake_ultralytics(monkeypatch, datasets_dir)
 
         stats = expand_obb_dataset(config_path, expand_height=10, max_workers=1)
 
