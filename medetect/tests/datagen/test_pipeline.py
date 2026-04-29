@@ -9,6 +9,7 @@ import pytest
 import medetect.datagen.pipeline as pipeline_mod
 
 from medetect.datagen.pipeline import _false_source_grid, _write_dataset_yaml, generate_false_negatives
+from medetect.datagen.scene import DEFAULT_EDGE_HARDNESS
 
 
 class TestWorkerInit:
@@ -139,8 +140,9 @@ class TestGenerateDatasetParams:
         assert "force_tight_clusters" not in params
         assert "debug_bg_color" not in params
         assert "disable_water_tint" not in params
-        assert params["water_tint_strength"] == pytest.approx(0.18)
-        assert params["cluster_blend_strength"] == pytest.approx(1.0)
+        assert "water_tint_strength" not in params
+        assert "cluster_blend_strength" not in params
+        assert params["edge_hardness"] == pytest.approx(DEFAULT_EDGE_HARDNESS)
         assert params["shadow_alpha_scale"] == 1.0
         assert params["shadow_length_range"] == "0.0:3.75"
 
@@ -155,9 +157,7 @@ class TestGenerateDatasetParams:
         for index in range(2):
             (bg_dir / f"scene_{index}_visual.tif").write_bytes(b"placeholder")
 
-        calls: list[
-            tuple[int, pathlib.Path, tuple[int, int, int] | None, float, float]
-        ] = []
+        calls: list[tuple[int, pathlib.Path, tuple[int, int, int] | None, float]] = []
         init_calls: list[tuple[pathlib.Path | None, pathlib.Path | None]] = []
 
         def _fail_executor(*args, **kwargs):
@@ -185,8 +185,7 @@ class TestGenerateDatasetParams:
                     index,
                     tif_path,
                     getattr(config, "debug_bg_color"),
-                    getattr(config, "water_tint_strength"),
-                    getattr(config, "cluster_blend_strength"),
+                    getattr(config, "edge_hardness"),
                 )
             )
             return 1, 0
@@ -205,8 +204,7 @@ class TestGenerateDatasetParams:
             output_dir=tmp_path / "out",
             count=2,
             debug_bg_color=(1, 2, 3),
-            water_tint_strength=0.3,
-            cluster_blend_strength=0.4,
+            edge_hardness=0.3,
             max_workers=0,
         )
 
@@ -215,7 +213,6 @@ class TestGenerateDatasetParams:
         assert {call[0] for call in calls} == {0, 1}
         assert all(call[2] == (1, 2, 3) for call in calls)
         assert all(call[3] == pytest.approx(0.3) for call in calls)
-        assert all(call[4] == pytest.approx(0.4) for call in calls)
         assert stats["images"] == 2
         assert stats["ships"] == 2
         assert stats["clusters"] == 0
@@ -513,8 +510,9 @@ class TestDatagenCli:
 
         assert "--force_tight_clusters" not in help_text
         assert "--debug_bg_color" in help_text
-        assert "--water_tint_strength" in help_text
-        assert "--cluster_blend_strength" in help_text
+        assert "--edge_hardness" in help_text
+        assert "--water_tint_strength" not in help_text
+        assert "--cluster_blend_strength" not in help_text
         assert "--disable-water-tint" not in help_text
         assert "--shadow_elevation" not in help_text
         assert "placement events per image" in help_text
@@ -559,11 +557,11 @@ class TestDatagenCli:
         assert captured["debug_bg_color"] == (0x12, 0x34, 0x56)
         assert captured["max_workers"] == 0
 
-    def test_blend_controls_are_forwarded(
+    def test_edge_hardness_is_forwarded(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """blend control options are parsed and forwarded to generate_dataset."""
+        """edge_hardness は CLI から generate_dataset へ渡る。"""
         import sys
 
         import medetect.datagen.__main__ as datagen_main
@@ -586,14 +584,13 @@ class TestDatagenCli:
                 "out",
                 "--count",
                 "1",
-                "--water_tint_strength",
-                "0.35",
-                "--cluster_blend_strength",
+                "--edge_hardness",
                 "0.25",
             ],
         )
 
         datagen_main.main()
 
-        assert captured["water_tint_strength"] == pytest.approx(0.35)
-        assert captured["cluster_blend_strength"] == pytest.approx(0.25)
+        assert captured["edge_hardness"] == pytest.approx(0.25)
+        assert "water_tint_strength" not in captured
+        assert "cluster_blend_strength" not in captured

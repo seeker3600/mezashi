@@ -50,6 +50,8 @@ class RgbaLayerPatch:
 _SHADOW_TILE_ALPHA_RANGE = (0.08, 0.11)
 _SHADOW_SIZE_ALPHA_BOOST_MAX = 0.12
 DEFAULT_WATER_TINT_STRENGTH = 0.18
+DEFAULT_EDGE_HARDNESS = 0.6
+_MAX_EDGE_BLUR_SIGMA = 2.0
 
 
 def _sample_shadow_alpha(rng: random.Random) -> float:
@@ -60,14 +62,19 @@ def _sample_shadow_alpha(rng: random.Random) -> float:
 def _blend_ship_rgb_with_water_tint(
     ship_rgb: NDArray[np.float32],
     water_tint: NDArray[np.float32] | None,
-    water_tint_strength: float,
 ) -> NDArray[np.float32]:
     """Mix ship RGB toward the sampled water tint."""
-    if water_tint is None or water_tint_strength <= 0.0:
+    if water_tint is None:
         return ship_rgb
 
-    tint_strength = float(np.clip(water_tint_strength, 0.0, 1.0))
+    tint_strength = DEFAULT_WATER_TINT_STRENGTH
     return ship_rgb * (1.0 - tint_strength) + water_tint * tint_strength
+
+
+def _edge_hardness_to_blur_sigma(edge_hardness: float) -> float:
+    """Map public edge hardness [0, 1] to the internal Gaussian blur sigma."""
+    hardness = float(np.clip(edge_hardness, 0.0, 1.0))
+    return _MAX_EDGE_BLUR_SIGMA * (1.0 - hardness)
 
 
 def blend_ship(
@@ -77,7 +84,6 @@ def blend_ship(
     cy: int,
     alpha_factor: float = 0.85,
     water_tint: NDArray[np.float32] | None = None,
-    water_tint_strength: float = DEFAULT_WATER_TINT_STRENGTH,
 ) -> None:
     """Alpha-composite *ship_rgba* onto *background* centred at ``(cx, cy)``."""
     sh, sw = ship_rgba.shape[:2]
@@ -101,7 +107,6 @@ def blend_ship(
     ship_rgb = _blend_ship_rgb_with_water_tint(
         ship_crop[:, :, :3].astype(np.float32),
         water_tint,
-        water_tint_strength,
     )
 
     blended = bg_crop.astype(np.float32) * (1.0 - alpha) + ship_rgb * alpha
@@ -151,14 +156,12 @@ def _blend_rgba_layer(
     layer: NDArray[np.uint8],
     alpha_factor: float,
     water_tint: NDArray[np.float32] | None,
-    water_tint_strength: float = DEFAULT_WATER_TINT_STRENGTH,
 ) -> None:
     """Alpha-composite an RGBA *layer* onto an RGB *background* in place."""
     alpha = (layer[:, :, 3:4].astype(np.float32) / 255.0) * alpha_factor
     ship_rgb = _blend_ship_rgb_with_water_tint(
         layer[:, :, :3].astype(np.float32),
         water_tint,
-        water_tint_strength,
     )
     blended = background.astype(np.float32) * (1.0 - alpha) + ship_rgb * alpha
     background[:] = blended.clip(0, 255).astype(np.uint8)
@@ -169,7 +172,6 @@ def _blend_rgba_patch(
     patch: RgbaLayerPatch,
     alpha_factor: float,
     water_tint: NDArray[np.float32] | None,
-    water_tint_strength: float = DEFAULT_WATER_TINT_STRENGTH,
 ) -> None:
     """Alpha-composite an RGBA patch onto an RGB background in place."""
     ph, pw = patch.layer.shape[:2]
@@ -189,7 +191,6 @@ def _blend_rgba_patch(
         layer_crop,
         alpha_factor,
         water_tint,
-        water_tint_strength,
     )
 
 

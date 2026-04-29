@@ -21,7 +21,6 @@ from medetect.datagen.render import (
     rasterize_ship_svg,
 )
 from medetect.datagen.scene import (
-    DEFAULT_WATER_TINT_STRENGTH,
     RgbaLayerPatch,
     _blend_rgba_layer,
     _blend_rgba_patch,
@@ -272,7 +271,6 @@ def _render_vector_raft_cluster(
     image_size: int,
     blur_sigma: float,
     scene_scale: int,
-    cluster_blend_strength: float = 1.0,
     join_tolerance: float = 0.0,
     shadow_azimuth_rad: float | None = None,
     shadow_length: float | None = None,
@@ -282,10 +280,9 @@ def _render_vector_raft_cluster(
     """Render a raft cluster from vector hulls plus per-ship detail layers."""
     scene_size = image_size * scene_scale
     resample_pad = scene_scale * _CLUSTER_RESAMPLE_PAD_OUTPUT_PX
-    effective_blur_sigma = blur_sigma * max(cluster_blend_strength, 0.0)
     blur_pad = 0
-    if effective_blur_sigma > 0 and ships:
-        blur_pad = math.ceil(effective_blur_sigma * scene_scale * 3.0) + 2
+    if blur_sigma > 0 and ships:
+        blur_pad = math.ceil(blur_sigma * scene_scale * 3.0) + 2
 
     hull_entries: list[tuple[BaseGeometry, tuple[int, int, int, int]]] = []
     layer_bounds: list[tuple[float, float, float, float]] = []
@@ -397,10 +394,10 @@ def _render_vector_raft_cluster(
     for detail_rgba, x0_scene, y0_scene in detail_items:
         _composite_rgba(layer, detail_rgba, x0_scene - patch_x0, y0_scene - patch_y0)
 
-    if effective_blur_sigma > 0 and ships:
+    if blur_sigma > 0 and ships:
         layer = gaussian_blur_rgba_premultiplied(
             layer,
-            effective_blur_sigma * scene_scale,
+            blur_sigma * scene_scale,
         )
 
     return (
@@ -496,7 +493,6 @@ def _place_area_cluster(
     length_exponent: float,
     size_threshold: float | None,
     mixed: bool,
-    water_tint_strength: float = DEFAULT_WATER_TINT_STRENGTH,
     shadow_azimuth_rad: float | None = None,
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
@@ -523,11 +519,7 @@ def _place_area_cluster(
 
     area_cx, area_cy = pos
     cluster_alpha = rng.uniform(*alpha_range)
-    water_tint = (
-        _sample_water_tint(background, area_cx, area_cy)
-        if water_tint_strength > 0.0
-        else None
-    )
+    water_tint = _sample_water_tint(background, area_cx, area_cy)
 
     scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
     scene_size = image_size * scene_scale
@@ -672,7 +664,6 @@ def _place_area_cluster(
                 cluster_patch,
                 cluster_alpha,
                 water_tint,
-                water_tint_strength=water_tint_strength,
             )
         for cx, cy, bw, lh, angle_rad, cid in placed:
             corners = compute_obb_corners(
@@ -695,8 +686,6 @@ def _place_cluster(
     class_id: int,
     image_size: int,
     background: NDArray[np.uint8],
-    water_tint_strength: float = DEFAULT_WATER_TINT_STRENGTH,
-    cluster_blend_strength: float = 1.0,
     length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     size_threshold: float | None = None,
@@ -733,7 +722,6 @@ def _place_cluster(
             length_exponent,
             size_threshold,
             mixed,
-            water_tint_strength=water_tint_strength,
             shadow_azimuth_rad=shadow_azimuth_rad,
             shadow_length=shadow_length,
             shadow_alpha=shadow_alpha,
@@ -766,11 +754,7 @@ def _place_cluster(
 
     base_cx, base_cy = pos
     cluster_alpha = rng.uniform(*alpha_range)
-    water_tint = (
-        _sample_water_tint(background, base_cx, base_cy)
-        if water_tint_strength > 0.0
-        else None
-    )
+    water_tint = _sample_water_tint(background, base_cx, base_cy)
     placed: list[_RaftShipPlacement] = []
 
     pre_occupancy = occupancy.copy()
@@ -1018,7 +1002,6 @@ def _place_cluster(
             image_size,
             blur_sigma,
             scene_scale,
-            cluster_blend_strength=cluster_blend_strength,
             join_tolerance=0.75 if tight else 0.0,
             shadow_azimuth_rad=shadow_azimuth_rad,
             shadow_length=shadow_length,
@@ -1044,7 +1027,6 @@ def _place_cluster(
                 cluster_patch,
                 cluster_alpha,
                 water_tint,
-                water_tint_strength=water_tint_strength,
             )
         else:
             shadow_layer: NDArray[np.uint8]
@@ -1066,7 +1048,6 @@ def _place_cluster(
                 cluster_layer,
                 cluster_alpha,
                 water_tint,
-                water_tint_strength=water_tint_strength,
             )
         for ship in placed:
             corners = compute_obb_corners(

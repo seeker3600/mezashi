@@ -6,9 +6,11 @@ import numpy as np
 import pytest
 
 from medetect.datagen.scene import (
+    DEFAULT_WATER_TINT_STRENGTH,
     _blend_rgba_layer,
     _composite_rgba,
     _darken_rgba_layer,
+    _edge_hardness_to_blur_sigma,
     _make_shadow_rgba,
     _render_ship,
     _sample_shadow_alpha,
@@ -42,13 +44,12 @@ class TestBlendShip:
         ship = np.full((20, 10, 4), 200, dtype=np.uint8)
         blend_ship(bg, ship, cx=2, cy=2, alpha_factor=0.8)
 
-    def test_water_tint_strength_zero_keeps_ship_rgb(self) -> None:
-        """water_tint_strength=0 では船色をそのまま使う。"""
+    def test_water_tint_none_keeps_ship_rgb(self) -> None:
+        """water_tint がなければ船色をそのまま使う。"""
         bg = np.zeros((20, 20, 3), dtype=np.uint8)
         ship = np.zeros((6, 6, 4), dtype=np.uint8)
         ship[:, :, :3] = 200
         ship[:, :, 3] = 255
-        water_tint = np.array([20.0, 40.0, 60.0], dtype=np.float32)
 
         blend_ship(
             bg,
@@ -56,14 +57,13 @@ class TestBlendShip:
             cx=10,
             cy=10,
             alpha_factor=1.0,
-            water_tint=water_tint,
-            water_tint_strength=0.0,
+            water_tint=None,
         )
 
         np.testing.assert_array_equal(bg[10, 10], np.array([200, 200, 200], dtype=np.uint8))
 
-    def test_water_tint_strength_one_uses_water_tint(self) -> None:
-        """water_tint_strength=1 では sampled water tint を使う。"""
+    def test_fixed_water_tint_strength_blends_ship_rgb(self) -> None:
+        """water tint は固定内部強度で船色に混ざる。"""
         bg = np.zeros((20, 20, 3), dtype=np.uint8)
         ship = np.zeros((6, 6, 4), dtype=np.uint8)
         ship[:, :, :3] = 200
@@ -77,10 +77,17 @@ class TestBlendShip:
             cy=10,
             alpha_factor=1.0,
             water_tint=water_tint,
-            water_tint_strength=1.0,
         )
 
-        np.testing.assert_array_equal(bg[10, 10], np.array([20, 40, 60], dtype=np.uint8))
+        expected = np.array(
+            [
+                int(200 * (1.0 - DEFAULT_WATER_TINT_STRENGTH) + 20 * DEFAULT_WATER_TINT_STRENGTH),
+                int(200 * (1.0 - DEFAULT_WATER_TINT_STRENGTH) + 40 * DEFAULT_WATER_TINT_STRENGTH),
+                int(200 * (1.0 - DEFAULT_WATER_TINT_STRENGTH) + 60 * DEFAULT_WATER_TINT_STRENGTH),
+            ],
+            dtype=np.uint8,
+        )
+        np.testing.assert_array_equal(bg[10, 10], expected)
 
 
 class TestCompositeRgba:
@@ -143,28 +150,47 @@ class TestBlendRgbaLayer:
         assert bg[5, 5, 0] != 100
         assert bg[0, 0, 0] == 100
 
-    def test_tint_strength_zero_keeps_original_ship_rgb(self) -> None:
-        """water_tint_strength=0 では tint が無効になる。"""
+    def test_tint_none_keeps_original_ship_rgb(self) -> None:
+        """water_tint がなければ tint は無効。"""
+        bg = np.zeros((10, 10, 3), dtype=np.uint8)
+        layer = np.zeros((10, 10, 4), dtype=np.uint8)
+        layer[3:7, 3:7, :3] = 200
+        layer[3:7, 3:7, 3] = 255
+
+        _blend_rgba_layer(bg, layer, 1.0, None)
+
+        np.testing.assert_array_equal(bg[5, 5], np.array([200, 200, 200], dtype=np.uint8))
+
+    def test_fixed_tint_strength_reaches_expected_mix(self) -> None:
+        """固定 water tint 強度で期待どおりに混色される。"""
         bg = np.zeros((10, 10, 3), dtype=np.uint8)
         layer = np.zeros((10, 10, 4), dtype=np.uint8)
         layer[3:7, 3:7, :3] = 200
         layer[3:7, 3:7, 3] = 255
         water_tint = np.array([10.0, 30.0, 50.0], dtype=np.float32)
 
-        _blend_rgba_layer(bg, layer, 1.0, water_tint, water_tint_strength=0.0)
+        _blend_rgba_layer(bg, layer, 1.0, water_tint)
 
-        np.testing.assert_array_equal(bg[5, 5], np.array([200, 200, 200], dtype=np.uint8))
+        expected = np.array(
+            [
+                int(200 * (1.0 - DEFAULT_WATER_TINT_STRENGTH) + 10 * DEFAULT_WATER_TINT_STRENGTH),
+                int(200 * (1.0 - DEFAULT_WATER_TINT_STRENGTH) + 30 * DEFAULT_WATER_TINT_STRENGTH),
+                int(200 * (1.0 - DEFAULT_WATER_TINT_STRENGTH) + 50 * DEFAULT_WATER_TINT_STRENGTH),
+            ],
+            dtype=np.uint8,
+        )
+        np.testing.assert_array_equal(bg[5, 5], expected)
 
-    def test_tint_strength_full_reaches_water_tint(self) -> None:
-        """water_tint_strength=1 では tint 色をそのまま使う。"""
-        bg = np.zeros((10, 10, 3), dtype=np.uint8)
-        layer = np.zeros((10, 10, 4), dtype=np.uint8)
-        layer[3:7, 3:7, 3] = 255
-        water_tint = np.array([10.0, 30.0, 50.0], dtype=np.float32)
 
-        _blend_rgba_layer(bg, layer, 1.0, water_tint, water_tint_strength=1.0)
+class TestEdgeHardness:
+    def test_default_edge_hardness_matches_legacy_blur(self) -> None:
+        """既定の edge hardness は従来の blur sigma 0.8 に対応する。"""
+        assert _edge_hardness_to_blur_sigma(0.6) == pytest.approx(0.8)
 
-        np.testing.assert_array_equal(bg[5, 5], np.array([10, 30, 50], dtype=np.uint8))
+    def test_edge_hardness_clips_to_zero_one_range(self) -> None:
+        """edge hardness は [0, 1] にクリップされる。"""
+        assert _edge_hardness_to_blur_sigma(-1.0) == pytest.approx(2.0)
+        assert _edge_hardness_to_blur_sigma(2.0) == pytest.approx(0.0)
 
 
 class TestShadowHelpers:

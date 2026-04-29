@@ -26,13 +26,14 @@ from medetect.datagen.placement import (
     find_water_position,
 )
 from medetect.datagen.scene import (
-    DEFAULT_WATER_TINT_STRENGTH,
+    DEFAULT_EDGE_HARDNESS,
     SingleShipPlacement,
     _blend_rgba_layer,
     _cluster_scene_origin,
     _composite_rgba,
     _make_shadow_rgba,
     _downsample_cluster_layer,
+    _edge_hardness_to_blur_sigma,
     _rasterize_ship_scene,
     _render_ship,
     _sample_shadow_alpha,
@@ -195,10 +196,8 @@ def _compose_one(
     class_id: int = 0,
     erode_coast: int = 3,
     min_water_ratio: float = 0.3,
-    ship_blur_sigma: float = 0.8,
+    edge_hardness: float = DEFAULT_EDGE_HARDNESS,
     ship_alpha: tuple[float, float] = (0.7, 0.95),
-    water_tint_strength: float = DEFAULT_WATER_TINT_STRENGTH,
-    cluster_blend_strength: float = 1.0,
     ship_length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     rng: random.Random,
@@ -318,6 +317,7 @@ def _compose_one(
         tile = np.zeros_like(tile)
         tile[:, :] = debug_bg_color
 
+    blur_sigma = _edge_hardness_to_blur_sigma(edge_hardness)
     n_events = rng.randint(*ships_per_image)
     occupancy = np.zeros((image_size, image_size), dtype=bool)
     labels: list[str] = []
@@ -340,13 +340,11 @@ def _compose_one(
                 ship_resolution,
                 rng,
                 cluster_size,
-                ship_blur_sigma,
+                blur_sigma,
                 ship_alpha,
                 class_id,
                 image_size,
                 tile,
-                water_tint_strength=water_tint_strength,
-                cluster_blend_strength=cluster_blend_strength,
                 length_range=ship_length_range,
                 length_exponent=length_exponent,
                 size_threshold=size_threshold,
@@ -367,7 +365,7 @@ def _compose_one(
                 svg_text,
                 ship_resolution,
                 rng,
-                ship_blur_sigma,
+                blur_sigma,
                 ship_length_range,
                 angle_deg=angle_deg,
                 length_exponent=length_exponent,
@@ -381,11 +379,7 @@ def _compose_one(
 
             cx, cy = pos
             alpha = rng.uniform(*ship_alpha)
-            water_tint = (
-                _sample_water_tint(tile, cx, cy)
-                if water_tint_strength > 0.0
-                else None
-            )
+            water_tint = _sample_water_tint(tile, cx, cy)
             ship_state = pick_motion_state(rng)
             shadow_rgba = None
             if shadow_alpha_scale > 0.0 and tile_shadow_alpha > 0.0:
@@ -463,7 +457,6 @@ def _compose_one(
             ship.cy,
             ship.alpha,
             ship.water_tint,
-            water_tint_strength=water_tint_strength,
         )
         labels.append(format_obb_label(ship.class_id, ship.corners, image_size, image_size))
 

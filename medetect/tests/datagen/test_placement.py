@@ -811,13 +811,14 @@ class TestPlaceCluster:
         ship_mask = np.any(background != scene["background"], axis=2)
         assert _count_connected_components(ship_mask, min_size=20) == 1
 
-    def test_tight_cluster_forwards_water_tint_strength(
+    def test_tight_cluster_forwards_sampled_water_tint(
         self,
         scene,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """tight クラスターは water_tint_strength を最終ブレンドに渡す。"""
-        recorded_strengths: list[float] = []
+        """tight クラスターは sampled water tint を最終ブレンドに渡す。"""
+        sampled_tint = np.array([12.0, 34.0, 56.0], dtype=np.float32)
+        recorded_tints: list[np.ndarray | None] = []
         mock_svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
             '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
@@ -839,16 +840,16 @@ class TestPlaceCluster:
                 placement_mod.RgbaLayerPatch(0, 0, np.zeros((10, 10, 4), dtype=np.uint8)),
             ),
         )
+        monkeypatch.setattr(placement_mod, "_sample_water_tint", lambda *args, **kwargs: sampled_tint)
 
         def _mock_blend_rgba_patch(
             background: np.ndarray,
             patch: object,
             alpha_factor: float,
             water_tint: np.ndarray | None,
-            water_tint_strength: float = 0.18,
         ) -> None:
-            del background, patch, alpha_factor, water_tint
-            recorded_strengths.append(water_tint_strength)
+            del background, patch, alpha_factor
+            recorded_tints.append(None if water_tint is None else water_tint.copy())
 
         monkeypatch.setattr(placement_mod, "_blend_rgba_patch", _mock_blend_rgba_patch)
 
@@ -864,13 +865,14 @@ class TestPlaceCluster:
             class_id=0,
             image_size=self._IMAGE_SIZE,
             background=scene["background"].copy(),
-            water_tint_strength=0.55,
             length_range=(20.0, 80.0),
             mixed_prob=1.0,
         )
 
         assert len(labels) == 2
-        assert recorded_strengths == [pytest.approx(0.55)]
+        assert len(recorded_tints) == 1
+        assert recorded_tints[0] is not None
+        np.testing.assert_array_equal(recorded_tints[0], sampled_tint)
 
     def test_tight_cluster_shares_shadow_length(
         self,
@@ -1014,11 +1016,11 @@ class TestPlaceCluster:
         assert all(height < full_scene_size for height, _width in recorded_shapes)
         assert all(width < full_scene_size for _height, width in recorded_shapes)
 
-    def test_vector_cluster_blend_strength_zero_skips_extra_blur(
+    def test_vector_cluster_zero_blur_sigma_skips_extra_blur(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """cluster_blend_strength=0 では cluster 追加 blur を掛けない。"""
+        """cluster blur sigma が 0 なら追加 blur を掛けない。"""
         blur_calls: list[float] = []
         svg_text = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
@@ -1062,18 +1064,17 @@ class TestPlaceCluster:
         placement_mod._render_vector_raft_cluster(
             ships,
             image_size=self._IMAGE_SIZE,
-            blur_sigma=0.8,
+            blur_sigma=0.0,
             scene_scale=placement_mod._CLUSTER_SCENE_SUPERSAMPLE,
-            cluster_blend_strength=0.0,
         )
 
         assert blur_calls == []
 
-    def test_vector_cluster_blend_strength_scales_extra_blur(
+    def test_vector_cluster_blur_sigma_scales_extra_blur(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """cluster_blend_strength は cluster 追加 blur の強度を倍率で調整する。"""
+        """cluster blur sigma は scene-scale blur にそのまま反映される。"""
         blur_calls: list[float] = []
         svg_text = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
@@ -1116,9 +1117,8 @@ class TestPlaceCluster:
         placement_mod._render_vector_raft_cluster(
             ships,
             image_size=self._IMAGE_SIZE,
-            blur_sigma=0.8,
+            blur_sigma=0.4,
             scene_scale=placement_mod._CLUSTER_SCENE_SUPERSAMPLE,
-            cluster_blend_strength=0.5,
         )
 
         assert blur_calls == [pytest.approx(1.6)]

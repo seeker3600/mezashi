@@ -16,7 +16,7 @@ logging.getLogger("rasterio._env").setLevel(logging.ERROR)
 
 from medetect.command_history import append_command_history
 from medetect.datagen import generate_dataset
-from medetect.datagen.scene import DEFAULT_WATER_TINT_STRENGTH
+from medetect.datagen.scene import DEFAULT_EDGE_HARDNESS
 
 
 def _parse_range(s: str) -> tuple[int, int]:
@@ -143,10 +143,14 @@ def main() -> None:
         help="Minimum water fraction for a usable tile (default: 0.3).",
     )
     parser.add_argument(
-        "--ship_blur_sigma",
+        "--edge_hardness",
         type=float,
-        default=0.8,
-        help="Gaussian blur sigma for ships (default: 0.8).",
+        default=DEFAULT_EDGE_HARDNESS,
+        help=(
+            "Boundary hardness for ship silhouettes and cluster seams "
+            f"(default: {DEFAULT_EDGE_HARDNESS}). "
+            "0.0 = softest edges, 1.0 = crispest edges."
+        ),
     )
     parser.add_argument(
         "--ship_length",
@@ -190,26 +194,6 @@ def main() -> None:
         default="0.7:0.95",
         metavar="MIN:MAX",
         help="Ship opacity range for blending (default: 0.7:0.95).",
-    )
-    parser.add_argument(
-        "--water_tint_strength",
-        type=float,
-        default=DEFAULT_WATER_TINT_STRENGTH,
-        help=(
-            "Water-tint mix ratio for ship blending (default: 0.18). "
-            "Applied to both single ships and clusters. "
-            "0.0 keeps the original ship RGB. 1.0 fully uses the sampled water tint."
-        ),
-    )
-    parser.add_argument(
-        "--cluster_blend_strength",
-        type=float,
-        default=1.0,
-        help=(
-            "Multiplier for the cluster-only post-composite blur used by raft/open "
-            "clusters (default: 1.0). "
-            "0.0 disables the extra cluster seam blur."
-        ),
     )
     parser.add_argument(
         "--size_threshold",
@@ -352,10 +336,8 @@ def main() -> None:
         class_id=args.class_id,
         erode_coast=args.erode_coast,
         min_water_ratio=args.min_water_ratio,
-        ship_blur_sigma=args.ship_blur_sigma,
+        edge_hardness=args.edge_hardness,
         ship_alpha=args.ship_alpha,
-        water_tint_strength=args.water_tint_strength,
-        cluster_blend_strength=args.cluster_blend_strength,
         ship_length_range=args.ship_length,
         length_exponent=args.length_exponent,
         seed=args.seed,
