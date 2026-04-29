@@ -14,7 +14,11 @@ export function useImageDetection(
 	modelMetadata: ModelMetadata | null,
 ) {
 	return useCallback(
-		async (files: File[], pixelSizeMeters?: number) => {
+		async (
+			files: File[],
+			pixelSizeMeters?: number,
+			useInputAugmentation?: boolean,
+		) => {
 			if (!modelMetadata) {
 				dispatch({
 					type: "SET_STATUS",
@@ -89,6 +93,7 @@ export function useImageDetection(
 						},
 						geoMeta,
 						isGeoTIFF ? undefined : pixelSizeMeters,
+						useInputAugmentation,
 					);
 
 					dispatch({

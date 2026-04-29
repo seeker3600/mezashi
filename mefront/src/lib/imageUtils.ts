@@ -1,3 +1,196 @@
+export type TileAugmentation =
+	| "none"
+	| "gaussianBlur"
+	| "clahe"
+	| "brightnessContrast"
+	| "flipHorizontal"
+	| "flipVertical"
+	| "flipBoth";
+
+const ENABLED_TILE_AUGMENTATIONS: readonly TileAugmentation[] = [
+	"none",
+	"gaussianBlur",
+	"clahe",
+	"brightnessContrast",
+	"flipHorizontal",
+	"flipVertical",
+	"flipBoth",
+];
+
+function clamp8(v: number): number {
+	return Math.max(0, Math.min(255, Math.round(v)));
+}
+
+function flipCanvas(
+	canvas: HTMLCanvasElement,
+	flipX: boolean,
+	flipY: boolean,
+): void {
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("Cannot get 2d context");
+
+	const temp = document.createElement("canvas");
+	temp.width = canvas.width;
+	temp.height = canvas.height;
+	const tempCtx = temp.getContext("2d");
+	if (!tempCtx) throw new Error("Cannot get 2d context");
+	tempCtx.drawImage(canvas, 0, 0);
+
+	ctx.clearRect(0, 0, canvas.width, canvas.height);
+	ctx.save();
+	ctx.translate(flipX ? canvas.width : 0, flipY ? canvas.height : 0);
+	ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+	ctx.drawImage(temp, 0, 0);
+	ctx.restore();
+}
+
+function applyGaussianBlur(canvas: HTMLCanvasElement): void {
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("Cannot get 2d context");
+
+	const { width, height } = canvas;
+	const imageData = ctx.getImageData(0, 0, width, height);
+	const src = imageData.data;
+	const out = new Uint8ClampedArray(src.length);
+	const kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+	const sum = 16;
+
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			for (let c = 0; c < 3; c++) {
+				let acc = 0;
+				let k = 0;
+				for (let ky = -1; ky <= 1; ky++) {
+					const py = Math.max(0, Math.min(height - 1, y + ky));
+					for (let kx = -1; kx <= 1; kx++) {
+						const px = Math.max(0, Math.min(width - 1, x + kx));
+						const idx = (py * width + px) * 4 + c;
+						acc += src[idx] * kernel[k++];
+					}
+				}
+				out[(y * width + x) * 4 + c] = clamp8(acc / sum);
+			}
+			out[(y * width + x) * 4 + 3] = src[(y * width + x) * 4 + 3];
+		}
+	}
+
+	ctx.putImageData(new ImageData(out, width, height), 0, 0);
+}
+
+function applyBrightnessContrast(canvas: HTMLCanvasElement): void {
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("Cannot get 2d context");
+	const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+	const { data } = imageData;
+	const contrast = 1.15;
+	const brightness = 12;
+
+	for (let i = 0; i < data.length; i += 4) {
+		data[i] = clamp8((data[i] - 128) * contrast + 128 + brightness);
+		data[i + 1] = clamp8((data[i + 1] - 128) * contrast + 128 + brightness);
+		data[i + 2] = clamp8((data[i + 2] - 128) * contrast + 128 + brightness);
+	}
+	ctx.putImageData(imageData, 0, 0);
+}
+
+function applyClahe(canvas: HTMLCanvasElement): void {
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("Cannot get 2d context");
+	const { width, height } = canvas;
+	const imageData = ctx.getImageData(0, 0, width, height);
+	const { data } = imageData;
+	const tileSize = 8;
+
+	for (let ty = 0; ty < height; ty += tileSize) {
+		for (let tx = 0; tx < width; tx += tileSize) {
+			const tw = Math.min(tileSize, width - tx);
+			const th = Math.min(tileSize, height - ty);
+			const tilePixels = tw * th;
+			const hist = new Array<number>(256).fill(0);
+
+			for (let y = ty; y < ty + th; y++) {
+				for (let x = tx; x < tx + tw; x++) {
+					const i = (y * width + x) * 4;
+					const luma = Math.round(
+						0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2],
+					);
+					hist[luma]++;
+				}
+			}
+
+			const clipLimit = Math.max(1, Math.floor((2 * tilePixels) / 256));
+			let excess = 0;
+			for (let i = 0; i < 256; i++) {
+				if (hist[i] > clipLimit) {
+					excess += hist[i] - clipLimit;
+					hist[i] = clipLimit;
+				}
+			}
+			const increment = Math.floor(excess / 256);
+			const remainder = excess % 256;
+			for (let i = 0; i < 256; i++) {
+				hist[i] += increment + (i < remainder ? 1 : 0);
+			}
+
+			const cdf = new Array<number>(256).fill(0);
+			cdf[0] = hist[0];
+			for (let i = 1; i < 256; i++) cdf[i] = cdf[i - 1] + hist[i];
+			const cdfMin = cdf.find((v) => v > 0) ?? 0;
+			const denom = Math.max(1, tilePixels - cdfMin);
+
+			for (let y = ty; y < ty + th; y++) {
+				for (let x = tx; x < tx + tw; x++) {
+					const i = (y * width + x) * 4;
+					const luma = Math.round(
+						0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2],
+					);
+					const eq = clamp8(((cdf[luma] - cdfMin) / denom) * 255);
+					const ratio = luma > 0 ? eq / luma : 0;
+					data[i] = clamp8(data[i] * ratio);
+					data[i + 1] = clamp8(data[i + 1] * ratio);
+					data[i + 2] = clamp8(data[i + 2] * ratio);
+				}
+			}
+		}
+	}
+
+	ctx.putImageData(imageData, 0, 0);
+}
+
+function applyTileAugmentation(
+	canvas: HTMLCanvasElement,
+	augmentation: TileAugmentation,
+): void {
+	switch (augmentation) {
+		case "none":
+			return;
+		case "gaussianBlur":
+			applyGaussianBlur(canvas);
+			return;
+		case "clahe":
+			applyClahe(canvas);
+			return;
+		case "brightnessContrast":
+			applyBrightnessContrast(canvas);
+			return;
+		case "flipHorizontal":
+			flipCanvas(canvas, true, false);
+			return;
+		case "flipVertical":
+			flipCanvas(canvas, false, true);
+			return;
+		case "flipBoth":
+			flipCanvas(canvas, true, true);
+			return;
+	}
+}
+
+export function getTileAugmentations(
+	enabled: boolean,
+): readonly TileAugmentation[] {
+	return enabled ? ENABLED_TILE_AUGMENTATIONS : ["none"];
+}
+
 /**
  * Load an image file (jpg/png) into an HTMLImageElement.
  */
@@ -95,6 +288,7 @@ export function prepareTile(
 	sw: number,
 	sh: number,
 	modelSize: number,
+	augmentation: TileAugmentation = "none",
 ): {
 	input: Float32Array;
 	scale: number;
@@ -118,6 +312,7 @@ export function prepareTile(
 	ctx.fillStyle = `rgb(114, 114, 114)`;
 	ctx.fillRect(0, 0, modelSize, modelSize);
 	ctx.drawImage(src, sx, sy, sw, sh, padX, padY, newW, newH);
+	applyTileAugmentation(canvas, augmentation);
 
 	return {
 		input: canvasToFloat32CHW(canvas),

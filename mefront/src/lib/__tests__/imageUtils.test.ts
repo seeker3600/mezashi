@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGeoTIFFShrinkScale } from "../imageUtils";
+import { computeGeoTIFFShrinkScale, getTileAugmentations } from "../imageUtils";
 
 describe("computeGeoTIFFShrinkScale", () => {
 	it("should return 1.0 when image GSD equals targetGSD", () => {
@@ -45,5 +45,23 @@ describe("computeGeoTIFFShrinkScale", () => {
 	it("should not downscale when image GSD equals targetGSD (0.3m)", () => {
 		const scale = computeGeoTIFFShrinkScale({ x: 0.3, y: 0.3 }, 0.3);
 		expect(scale).toBe(1.0);
+	});
+});
+
+describe("getTileAugmentations", () => {
+	it("returns only base tile when disabled", () => {
+		expect(getTileAugmentations(false)).toEqual(["none"]);
+	});
+
+	it("returns all configured augmentations when enabled", () => {
+		expect(getTileAugmentations(true)).toEqual([
+			"none",
+			"gaussianBlur",
+			"clahe",
+			"brightnessContrast",
+			"flipHorizontal",
+			"flipVertical",
+			"flipBoth",
+		]);
 	});
 });
