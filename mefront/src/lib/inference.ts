@@ -190,11 +190,12 @@ export async function runInference(
 	// Decide whether to use slice inference
 	if (w <= inputSize && h <= inputSize) {
 		// Single pass
-		onProgress?.(0, 1);
+		onProgress?.(0, augmentations.length);
 		const dets: Detection[] = [];
 		let scale = 1;
 		let padX = 0;
 		let padY = 0;
+		let done = 0;
 		for (const augmentation of augmentations) {
 			const prepared = prepareTile(src, 0, 0, w, h, inputSize, augmentation);
 			scale = prepared.scale;
@@ -212,8 +213,9 @@ export async function runInference(
 					mapDetectionFromAugmentedTile(d, augmentation, inputSize),
 				),
 			);
+			done++;
+			onProgress?.(done, augmentations.length);
 		}
-		onProgress?.(1, 1);
 		detections = mapDetectionsToOriginal(dets, scale, padX, padY, 0, 0);
 	} else {
 		// Slice inference for large images
@@ -223,6 +225,7 @@ export async function runInference(
 		const tilesX = Math.max(1, Math.ceil((w - tileSize) / stride) + 1);
 		const tilesY = Math.max(1, Math.ceil((h - tileSize) / stride) + 1);
 		const totalTiles = tilesX * tilesY;
+		const totalSteps = totalTiles * augmentations.length;
 
 		const allDetections: Detection[] = [];
 		let done = 0;
@@ -269,10 +272,10 @@ export async function runInference(
 						sy,
 					);
 					allDetections.push(...mapped);
-				}
 
-				done++;
-				onProgress?.(done, totalTiles);
+					done++;
+					onProgress?.(done, totalSteps);
+				}
 			}
 		}
 

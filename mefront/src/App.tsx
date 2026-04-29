@@ -127,6 +127,7 @@ function App() {
 					<input
 						type="checkbox"
 						checked={inputAugmentationEnabled}
+						aria-describedby="input-augmentation-note"
 						onChange={(e) =>
 							dispatch({
 								type: "SET_INPUT_AUGMENTATION",
@@ -137,7 +138,10 @@ function App() {
 						className="h-4 w-4 accent-blue-600"
 					/>
 					入力画像拡張を有効化
-					<span className="text-xs text-gray-500 dark:text-gray-400">
+					<span
+						id="input-augmentation-note"
+						className="text-xs text-gray-500 dark:text-gray-400"
+					>
 						(GaussianBlur / CLAHE / Brightness・Contrast / 上下左右反転)
 					</span>
 				</label>

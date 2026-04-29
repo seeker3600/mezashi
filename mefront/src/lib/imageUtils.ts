@@ -17,8 +17,10 @@ const ENABLED_TILE_AUGMENTATIONS: readonly TileAugmentation[] = [
 	"flipBoth",
 ];
 
+// Brightness/contrast tuning for inference-time augmentation in 8-bit RGB space.
 const BRIGHTNESS_CONTRAST_ALPHA = 1.15;
 const BRIGHTNESS_CONTRAST_BETA = 12;
+// CLAHE settings: local tile size (px), histogram bins, and clip multiplier.
 const CLAHE_TILE_SIZE = 8;
 const CLAHE_HISTOGRAM_BINS = 256;
 const CLAHE_CLIP_FACTOR = 2;
@@ -165,7 +167,7 @@ function applyClahe(canvas: HTMLCanvasElement): void {
 						0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2],
 					);
 					const eq = clamp8(((cdf[luma] - cdfMin) / denom) * 255);
-					const ratio = luma > 0 ? eq / luma : 0;
+					const ratio = luma > 0 ? eq / luma : 1;
 					data[i] = clamp8(data[i] * ratio);
 					data[i + 1] = clamp8(data[i + 1] * ratio);
 					data[i + 2] = clamp8(data[i + 2] * ratio);
