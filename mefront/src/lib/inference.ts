@@ -191,16 +191,10 @@ export async function runInference(
 	if (w <= inputSize && h <= inputSize) {
 		// Single pass
 		onProgress?.(0, augmentations.length);
-		const dets: Detection[] = [];
-		let scale = 1;
-		let padX = 0;
-		let padY = 0;
+		const mappedDetections: Detection[] = [];
 		let done = 0;
 		for (const augmentation of augmentations) {
 			const prepared = prepareTile(src, 0, 0, w, h, inputSize, augmentation);
-			scale = prepared.scale;
-			padX = prepared.padX;
-			padY = prepared.padY;
 			const tileDetections = await runTile(
 				session,
 				prepared.input,
@@ -208,15 +202,23 @@ export async function runInference(
 				labels,
 				handler,
 			);
-			dets.push(
-				...tileDetections.map((d) =>
-					mapDetectionFromAugmentedTile(d, augmentation, inputSize),
+			const restored = tileDetections.map((d) =>
+				mapDetectionFromAugmentedTile(d, augmentation, inputSize),
+			);
+			mappedDetections.push(
+				...mapDetectionsToOriginal(
+					restored,
+					prepared.scale,
+					prepared.padX,
+					prepared.padY,
+					0,
+					0,
 				),
 			);
 			done++;
 			onProgress?.(done, augmentations.length);
 		}
-		detections = mapDetectionsToOriginal(dets, scale, padX, padY, 0, 0);
+		detections = mappedDetections;
 	} else {
 		// Slice inference for large images
 		const tileSize = inputSize;
@@ -237,9 +239,6 @@ export async function runInference(
 				const sw = Math.min(tileSize, w - sx);
 				const sh = Math.min(tileSize, h - sy);
 
-				let scale = 1;
-				let padX = 0;
-				let padY = 0;
 				for (const augmentation of augmentations) {
 					const prepared = prepareTile(
 						src,
@@ -250,9 +249,6 @@ export async function runInference(
 						inputSize,
 						augmentation,
 					);
-					scale = prepared.scale;
-					padX = prepared.padX;
-					padY = prepared.padY;
 					const tileDetections = await runTile(
 						session,
 						prepared.input,
@@ -265,9 +261,9 @@ export async function runInference(
 					);
 					const mapped = mapDetectionsToOriginal(
 						restored,
-						scale,
-						padX,
-						padY,
+						prepared.scale,
+						prepared.padX,
+						prepared.padY,
 						sx,
 						sy,
 					);

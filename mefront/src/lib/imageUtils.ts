@@ -167,7 +167,13 @@ function applyClahe(canvas: HTMLCanvasElement): void {
 						0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2],
 					);
 					const eq = clamp8(((cdf[luma] - cdfMin) / denom) * 255);
-					const ratio = luma > 0 ? eq / luma : 1;
+					if (luma === 0) {
+						data[i] = eq;
+						data[i + 1] = eq;
+						data[i + 2] = eq;
+						continue;
+					}
+					const ratio = eq / luma;
 					data[i] = clamp8(data[i] * ratio);
 					data[i + 1] = clamp8(data[i + 1] * ratio);
 					data[i + 2] = clamp8(data[i + 2] * ratio);
