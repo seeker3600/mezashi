@@ -85,7 +85,7 @@ export function useImageDetection(
 								type: "SET_STATUS",
 								status: {
 									type: "processing",
-									message: `推論中… (${done}/${total} 処理)`,
+									message: `推論中… (${done}/${total} 処理ステップ)`,
 									done,
 									total,
 								},
