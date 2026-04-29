@@ -16,6 +16,7 @@ logging.getLogger("rasterio._env").setLevel(logging.ERROR)
 
 from medetect.command_history import append_command_history
 from medetect.datagen import generate_dataset
+from medetect.datagen.scene import DEFAULT_WATER_TINT_STRENGTH
 
 
 def _parse_range(s: str) -> tuple[int, int]:
@@ -191,6 +192,26 @@ def main() -> None:
         help="Ship opacity range for blending (default: 0.7:0.95).",
     )
     parser.add_argument(
+        "--water_tint_strength",
+        type=float,
+        default=DEFAULT_WATER_TINT_STRENGTH,
+        help=(
+            "Water-tint mix ratio for ship blending (default: 0.18). "
+            "Applied to both single ships and clusters. "
+            "0.0 keeps the original ship RGB. 1.0 fully uses the sampled water tint."
+        ),
+    )
+    parser.add_argument(
+        "--cluster_blend_strength",
+        type=float,
+        default=1.0,
+        help=(
+            "Multiplier for the cluster-only post-composite blur used by raft/open "
+            "clusters (default: 1.0). "
+            "0.0 disables the extra cluster seam blur."
+        ),
+    )
+    parser.add_argument(
         "--size_threshold",
         type=float,
         default=None,
@@ -333,6 +354,8 @@ def main() -> None:
         min_water_ratio=args.min_water_ratio,
         ship_blur_sigma=args.ship_blur_sigma,
         ship_alpha=args.ship_alpha,
+        water_tint_strength=args.water_tint_strength,
+        cluster_blend_strength=args.cluster_blend_strength,
         ship_length_range=args.ship_length,
         length_exponent=args.length_exponent,
         seed=args.seed,

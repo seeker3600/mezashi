@@ -811,6 +811,67 @@ class TestPlaceCluster:
         ship_mask = np.any(background != scene["background"], axis=2)
         assert _count_connected_components(ship_mask, min_size=20) == 1
 
+    def test_tight_cluster_forwards_water_tint_strength(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """tight クラスターは water_tint_strength を最終ブレンドに渡す。"""
+        recorded_strengths: list[float] = []
+        mock_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: mock_svg)
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(6, 24), (6, 24)]),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_render_vector_raft_cluster",
+            lambda *args, **kwargs: (
+                None,
+                placement_mod.RgbaLayerPatch(0, 0, np.zeros((10, 10, 4), dtype=np.uint8)),
+            ),
+        )
+
+        def _mock_blend_rgba_patch(
+            background: np.ndarray,
+            patch: object,
+            alpha_factor: float,
+            water_tint: np.ndarray | None,
+            water_tint_strength: float = 0.18,
+        ) -> None:
+            del background, patch, alpha_factor, water_tint
+            recorded_strengths.append(water_tint_strength)
+
+        monkeypatch.setattr(placement_mod, "_blend_rgba_patch", _mock_blend_rgba_patch)
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0),
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            water_tint_strength=0.55,
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+        )
+
+        assert len(labels) == 2
+        assert recorded_strengths == [pytest.approx(0.55)]
+
     def test_tight_cluster_shares_shadow_length(
         self,
         scene,
@@ -952,6 +1013,115 @@ class TestPlaceCluster:
         full_scene_size = self._IMAGE_SIZE * placement_mod._CLUSTER_SCENE_SUPERSAMPLE
         assert all(height < full_scene_size for height, _width in recorded_shapes)
         assert all(width < full_scene_size for _height, width in recorded_shapes)
+
+    def test_vector_cluster_blend_strength_zero_skips_extra_blur(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """cluster_blend_strength=0 では cluster 追加 blur を掛けない。"""
+        blur_calls: list[float] = []
+        svg_text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        ships = [
+            placement_mod._RaftShipPlacement(
+                svg_text=svg_text,
+                cx=30.0,
+                cy=40.0,
+                bw=6,
+                lh=24,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=0,
+                hull_geom=box(27.0, 28.0, 33.0, 52.0),
+                hull_fill=(190, 190, 190, 255),
+            ),
+            placement_mod._RaftShipPlacement(
+                svg_text=svg_text,
+                cx=37.0,
+                cy=40.0,
+                bw=6,
+                lh=24,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=0,
+                hull_geom=box(34.0, 28.0, 40.0, 52.0),
+                hull_fill=(190, 190, 190, 255),
+            ),
+        ]
+
+        def _capture_blur(layer: np.ndarray, sigma: float) -> np.ndarray:
+            del layer
+            blur_calls.append(sigma)
+            return np.zeros((1, 1, 4), dtype=np.uint8)
+
+        monkeypatch.setattr(placement_mod, "gaussian_blur_rgba_premultiplied", _capture_blur)
+
+        placement_mod._render_vector_raft_cluster(
+            ships,
+            image_size=self._IMAGE_SIZE,
+            blur_sigma=0.8,
+            scene_scale=placement_mod._CLUSTER_SCENE_SUPERSAMPLE,
+            cluster_blend_strength=0.0,
+        )
+
+        assert blur_calls == []
+
+    def test_vector_cluster_blend_strength_scales_extra_blur(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """cluster_blend_strength は cluster 追加 blur の強度を倍率で調整する。"""
+        blur_calls: list[float] = []
+        svg_text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        ships = [
+            placement_mod._RaftShipPlacement(
+                svg_text=svg_text,
+                cx=30.0,
+                cy=40.0,
+                bw=6,
+                lh=24,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=0,
+                hull_geom=box(27.0, 28.0, 33.0, 52.0),
+                hull_fill=(190, 190, 190, 255),
+            ),
+            placement_mod._RaftShipPlacement(
+                svg_text=svg_text,
+                cx=37.0,
+                cy=40.0,
+                bw=6,
+                lh=24,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=0,
+                hull_geom=box(34.0, 28.0, 40.0, 52.0),
+                hull_fill=(190, 190, 190, 255),
+            ),
+        ]
+
+        def _capture_blur(layer: np.ndarray, sigma: float) -> np.ndarray:
+            blur_calls.append(sigma)
+            return layer
+
+        monkeypatch.setattr(placement_mod, "gaussian_blur_rgba_premultiplied", _capture_blur)
+
+        placement_mod._render_vector_raft_cluster(
+            ships,
+            image_size=self._IMAGE_SIZE,
+            blur_sigma=0.8,
+            scene_scale=placement_mod._CLUSTER_SCENE_SUPERSAMPLE,
+            cluster_blend_strength=0.5,
+        )
+
+        assert blur_calls == [pytest.approx(1.6)]
 
     def test_area_cluster_shares_shadow_length(
         self,

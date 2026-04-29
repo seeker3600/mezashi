@@ -42,6 +42,46 @@ class TestBlendShip:
         ship = np.full((20, 10, 4), 200, dtype=np.uint8)
         blend_ship(bg, ship, cx=2, cy=2, alpha_factor=0.8)
 
+    def test_water_tint_strength_zero_keeps_ship_rgb(self) -> None:
+        """water_tint_strength=0 では船色をそのまま使う。"""
+        bg = np.zeros((20, 20, 3), dtype=np.uint8)
+        ship = np.zeros((6, 6, 4), dtype=np.uint8)
+        ship[:, :, :3] = 200
+        ship[:, :, 3] = 255
+        water_tint = np.array([20.0, 40.0, 60.0], dtype=np.float32)
+
+        blend_ship(
+            bg,
+            ship,
+            cx=10,
+            cy=10,
+            alpha_factor=1.0,
+            water_tint=water_tint,
+            water_tint_strength=0.0,
+        )
+
+        np.testing.assert_array_equal(bg[10, 10], np.array([200, 200, 200], dtype=np.uint8))
+
+    def test_water_tint_strength_one_uses_water_tint(self) -> None:
+        """water_tint_strength=1 では sampled water tint を使う。"""
+        bg = np.zeros((20, 20, 3), dtype=np.uint8)
+        ship = np.zeros((6, 6, 4), dtype=np.uint8)
+        ship[:, :, :3] = 200
+        ship[:, :, 3] = 255
+        water_tint = np.array([20.0, 40.0, 60.0], dtype=np.float32)
+
+        blend_ship(
+            bg,
+            ship,
+            cx=10,
+            cy=10,
+            alpha_factor=1.0,
+            water_tint=water_tint,
+            water_tint_strength=1.0,
+        )
+
+        np.testing.assert_array_equal(bg[10, 10], np.array([20, 40, 60], dtype=np.uint8))
+
 
 class TestCompositeRgba:
     """_composite_rgba のテスト。"""
@@ -102,6 +142,29 @@ class TestBlendRgbaLayer:
         _blend_rgba_layer(bg, layer, 1.0, None)
         assert bg[5, 5, 0] != 100
         assert bg[0, 0, 0] == 100
+
+    def test_tint_strength_zero_keeps_original_ship_rgb(self) -> None:
+        """water_tint_strength=0 では tint が無効になる。"""
+        bg = np.zeros((10, 10, 3), dtype=np.uint8)
+        layer = np.zeros((10, 10, 4), dtype=np.uint8)
+        layer[3:7, 3:7, :3] = 200
+        layer[3:7, 3:7, 3] = 255
+        water_tint = np.array([10.0, 30.0, 50.0], dtype=np.float32)
+
+        _blend_rgba_layer(bg, layer, 1.0, water_tint, water_tint_strength=0.0)
+
+        np.testing.assert_array_equal(bg[5, 5], np.array([200, 200, 200], dtype=np.uint8))
+
+    def test_tint_strength_full_reaches_water_tint(self) -> None:
+        """water_tint_strength=1 では tint 色をそのまま使う。"""
+        bg = np.zeros((10, 10, 3), dtype=np.uint8)
+        layer = np.zeros((10, 10, 4), dtype=np.uint8)
+        layer[3:7, 3:7, 3] = 255
+        water_tint = np.array([10.0, 30.0, 50.0], dtype=np.float32)
+
+        _blend_rgba_layer(bg, layer, 1.0, water_tint, water_tint_strength=1.0)
+
+        np.testing.assert_array_equal(bg[5, 5], np.array([10, 30, 50], dtype=np.uint8))
 
 
 class TestShadowHelpers:

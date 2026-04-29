@@ -17,6 +17,7 @@ from PIL import Image
 from rasterio.windows import Window
 from tqdm import tqdm
 
+from medetect.datagen.scene import DEFAULT_WATER_TINT_STRENGTH
 from medetect.datagen.ship import _SvgMeta, _load_svg_metas
 from medetect.datagen.water_mask import CoastlineIndex
 
@@ -40,6 +41,8 @@ class _ComposeTaskConfig:
     min_water_ratio: float
     ship_blur_sigma: float
     ship_alpha: tuple[float, float]
+    water_tint_strength: float
+    cluster_blend_strength: float
     ship_length_range: tuple[float, float] | None
     length_exponent: float
     size_threshold: float | None
@@ -284,6 +287,8 @@ def generate_dataset(
     min_water_ratio: float = 0.3,
     ship_blur_sigma: float = 0.8,
     ship_alpha: tuple[float, float] = (0.7, 0.95),
+    water_tint_strength: float = DEFAULT_WATER_TINT_STRENGTH,
+    cluster_blend_strength: float = 1.0,
     ship_length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     seed: int | None = None,
@@ -376,6 +381,8 @@ def generate_dataset(
         min_water_ratio=min_water_ratio,
         ship_blur_sigma=ship_blur_sigma,
         ship_alpha=ship_alpha,
+        water_tint_strength=water_tint_strength,
+        cluster_blend_strength=cluster_blend_strength,
         ship_length_range=ship_length_range,
         length_exponent=length_exponent,
         size_threshold=size_threshold,
@@ -505,6 +512,8 @@ def generate_dataset(
         "cluster_mixed_prob": cluster_mixed_prob,
         "ship_blur_sigma": ship_blur_sigma,
         "ship_alpha": f"{ship_alpha[0]}:{ship_alpha[1]}",
+        "water_tint_strength": water_tint_strength,
+        "cluster_blend_strength": cluster_blend_strength,
         "ship_length_range": (
             f"{ship_length_range[0]}:{ship_length_range[1]}"
             if ship_length_range is not None
@@ -573,6 +582,8 @@ def _run_compose_task(
         min_water_ratio=config.min_water_ratio,
         ship_blur_sigma=config.ship_blur_sigma,
         ship_alpha=config.ship_alpha,
+        water_tint_strength=config.water_tint_strength,
+        cluster_blend_strength=config.cluster_blend_strength,
         ship_length_range=config.ship_length_range,
         length_exponent=config.length_exponent,
         rng=rng,

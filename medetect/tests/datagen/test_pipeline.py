@@ -139,6 +139,8 @@ class TestGenerateDatasetParams:
         assert "force_tight_clusters" not in params
         assert "debug_bg_color" not in params
         assert "disable_water_tint" not in params
+        assert params["water_tint_strength"] == pytest.approx(0.18)
+        assert params["cluster_blend_strength"] == pytest.approx(1.0)
         assert params["shadow_alpha_scale"] == 1.0
         assert params["shadow_length_range"] == "0.0:3.75"
 
@@ -153,7 +155,9 @@ class TestGenerateDatasetParams:
         for index in range(2):
             (bg_dir / f"scene_{index}_visual.tif").write_bytes(b"placeholder")
 
-        calls: list[tuple[int, pathlib.Path, tuple[int, int, int] | None]] = []
+        calls: list[
+            tuple[int, pathlib.Path, tuple[int, int, int] | None, float, float]
+        ] = []
         init_calls: list[tuple[pathlib.Path | None, pathlib.Path | None]] = []
 
         def _fail_executor(*args, **kwargs):
@@ -176,7 +180,15 @@ class TestGenerateDatasetParams:
             config: object,
         ) -> tuple[int, int]:
             del task_seed, img_out, lbl_out
-            calls.append((index, tif_path, getattr(config, "debug_bg_color")))
+            calls.append(
+                (
+                    index,
+                    tif_path,
+                    getattr(config, "debug_bg_color"),
+                    getattr(config, "water_tint_strength"),
+                    getattr(config, "cluster_blend_strength"),
+                )
+            )
             return 1, 0
 
         monkeypatch.setattr(
@@ -193,6 +205,8 @@ class TestGenerateDatasetParams:
             output_dir=tmp_path / "out",
             count=2,
             debug_bg_color=(1, 2, 3),
+            water_tint_strength=0.3,
+            cluster_blend_strength=0.4,
             max_workers=0,
         )
 
@@ -200,6 +214,8 @@ class TestGenerateDatasetParams:
         assert len(calls) == 2
         assert {call[0] for call in calls} == {0, 1}
         assert all(call[2] == (1, 2, 3) for call in calls)
+        assert all(call[3] == pytest.approx(0.3) for call in calls)
+        assert all(call[4] == pytest.approx(0.4) for call in calls)
         assert stats["images"] == 2
         assert stats["ships"] == 2
         assert stats["clusters"] == 0
@@ -497,6 +513,8 @@ class TestDatagenCli:
 
         assert "--force_tight_clusters" not in help_text
         assert "--debug_bg_color" in help_text
+        assert "--water_tint_strength" in help_text
+        assert "--cluster_blend_strength" in help_text
         assert "--disable-water-tint" not in help_text
         assert "--shadow_elevation" not in help_text
         assert "placement events per image" in help_text
@@ -540,3 +558,42 @@ class TestDatagenCli:
 
         assert captured["debug_bg_color"] == (0x12, 0x34, 0x56)
         assert captured["max_workers"] == 0
+
+    def test_blend_controls_are_forwarded(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """blend control options are parsed and forwarded to generate_dataset."""
+        import sys
+
+        import medetect.datagen.__main__ as datagen_main
+
+        captured: dict[str, object] = {}
+
+        def _capture_generate_dataset(**kwargs):
+            captured.update(kwargs)
+            return {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+
+        monkeypatch.setattr(datagen_main, "generate_dataset", _capture_generate_dataset)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "medetect.datagen",
+                "--bg_dir",
+                "bg",
+                "--output_dir",
+                "out",
+                "--count",
+                "1",
+                "--water_tint_strength",
+                "0.35",
+                "--cluster_blend_strength",
+                "0.25",
+            ],
+        )
+
+        datagen_main.main()
+
+        assert captured["water_tint_strength"] == pytest.approx(0.35)
+        assert captured["cluster_blend_strength"] == pytest.approx(0.25)

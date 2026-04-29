@@ -26,6 +26,7 @@ from medetect.datagen.placement import (
     find_water_position,
 )
 from medetect.datagen.scene import (
+    DEFAULT_WATER_TINT_STRENGTH,
     SingleShipPlacement,
     _blend_rgba_layer,
     _cluster_scene_origin,
@@ -196,6 +197,8 @@ def _compose_one(
     min_water_ratio: float = 0.3,
     ship_blur_sigma: float = 0.8,
     ship_alpha: tuple[float, float] = (0.7, 0.95),
+    water_tint_strength: float = DEFAULT_WATER_TINT_STRENGTH,
+    cluster_blend_strength: float = 1.0,
     ship_length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     rng: random.Random,
@@ -342,9 +345,11 @@ def _compose_one(
                 class_id,
                 image_size,
                 tile,
-                ship_length_range,
-                length_exponent,
-                size_threshold,
+                water_tint_strength=water_tint_strength,
+                cluster_blend_strength=cluster_blend_strength,
+                length_range=ship_length_range,
+                length_exponent=length_exponent,
+                size_threshold=size_threshold,
                 mixed_prob=cluster_mixed_prob,
                 shadow_azimuth_rad=tile_shadow_azimuth,
                 shadow_length=tile_shadow_length,
@@ -376,7 +381,11 @@ def _compose_one(
 
             cx, cy = pos
             alpha = rng.uniform(*ship_alpha)
-            water_tint = _sample_water_tint(tile, cx, cy)
+            water_tint = (
+                _sample_water_tint(tile, cx, cy)
+                if water_tint_strength > 0.0
+                else None
+            )
             ship_state = pick_motion_state(rng)
             shadow_rgba = None
             if shadow_alpha_scale > 0.0 and tile_shadow_alpha > 0.0:
@@ -447,7 +456,15 @@ def _compose_one(
             )
 
     for ship in single_ships:
-        blend_ship(tile, ship.rotated, ship.cx, ship.cy, ship.alpha, ship.water_tint)
+        blend_ship(
+            tile,
+            ship.rotated,
+            ship.cx,
+            ship.cy,
+            ship.alpha,
+            ship.water_tint,
+            water_tint_strength=water_tint_strength,
+        )
         labels.append(format_obb_label(ship.class_id, ship.corners, image_size, image_size))
 
     return tile, labels, n_clusters
