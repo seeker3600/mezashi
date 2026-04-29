@@ -76,6 +76,7 @@ class TestComputeGeoResolution:
 - 計画で立てたタスクはすべて完了せよ。
 - 作業の最後に行うテストは、全体のテストスイートを走らせること。
 - 方針や決断が必要な場合は、ユーザーに確認を取ることが期待されている。
+- 「実装を開始せよ」と指示されたら、まずは実装を開始して、権限の都合などで失敗したら報告せよ。最初からあきらめるな。
 
 ## Defect routing
 - If the user reports a production behavior problem in `src/medetect/` and asks to implement, fix, or reproduce it, start from the owning production module and nearby tests, not from `src/medetect/debugging/`.
