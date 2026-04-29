@@ -10,12 +10,44 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-from medetect.yolo.backup import restore_dataset_splits
-from medetect.yolo.expand_obb import expand_obb_dataset
-from medetect.yolo.relabel import relabel_yolo_detect_dataset
-from medetect.yolo.tiff2png import convert_tiffs_to_png
-from medetect.yolo.train import train_yolo_model
-from medetect.yolo.valsplit import split_train_to_val
+from medetect.command_history import append_command_history
+from medetect.yolo.backup import resolve_dataset_root_and_splits
+
+
+def convert_tiffs_to_png(*args, **kwargs):
+    from medetect.yolo.tiff2png import convert_tiffs_to_png as _convert_tiffs_to_png
+
+    return _convert_tiffs_to_png(*args, **kwargs)
+
+
+def relabel_yolo_detect_dataset(*args, **kwargs):
+    from medetect.yolo.relabel import relabel_yolo_detect_dataset as _relabel_yolo_detect_dataset
+
+    return _relabel_yolo_detect_dataset(*args, **kwargs)
+
+
+def train_yolo_model(*args, **kwargs):
+    from medetect.yolo.train import train_yolo_model as _train_yolo_model
+
+    return _train_yolo_model(*args, **kwargs)
+
+
+def split_train_to_val(*args, **kwargs):
+    from medetect.yolo.valsplit import split_train_to_val as _split_train_to_val
+
+    return _split_train_to_val(*args, **kwargs)
+
+
+def restore_dataset_splits(*args, **kwargs):
+    from medetect.yolo.backup import restore_dataset_splits as _restore_dataset_splits
+
+    return _restore_dataset_splits(*args, **kwargs)
+
+
+def expand_obb_dataset(*args, **kwargs):
+    from medetect.yolo.expand_obb import expand_obb_dataset as _expand_obb_dataset
+
+    return _expand_obb_dataset(*args, **kwargs)
 
 
 def main() -> None:
@@ -132,7 +164,7 @@ def main() -> None:
         help="Restore images as well as labels.",
     )
 
-    train_parser = subparsers.add_parser("train", help="Train a YOLO model.")
+    subparsers.add_parser("train", help="Train a YOLO model.")
 
     expand_parser = subparsers.add_parser(
         "expand-obb",
@@ -203,10 +235,15 @@ def main() -> None:
             max_workers=args.workers,
         )
     elif args.command == "relabel":
-        relabel_yolo_detect_dataset(
+        stats = relabel_yolo_detect_dataset(
             args.config,
             empty_image_ratio=args.empty_image_ratio,
             max_workers=args.workers,
+        )
+        append_command_history(
+            resolve_dataset_root_and_splits(args.config)[0],
+            command="yolo relabel",
+            result=stats,
         )
     elif args.command == "train":
         train_yolo_model()
@@ -218,14 +255,22 @@ def main() -> None:
             seed=args.seed,
             disable_augs=args.disable_augs,
         )
+        append_command_history(
+            resolve_dataset_root_and_splits(args.config)[0],
+            command="yolo valsplit",
+        )
     elif args.command == "restore":
         restore_dataset_splits(
             args.config,
             splits=args.splits,
             with_images=args.with_images,
         )
+        append_command_history(
+            resolve_dataset_root_and_splits(args.config)[0],
+            command="yolo restore",
+        )
     elif args.command == "expand-obb":
-        expand_obb_dataset(
+        stats = expand_obb_dataset(
             args.config,
             expand_height=args.expand_height,
             expand_width=args.expand_width,
@@ -233,6 +278,11 @@ def main() -> None:
             expand_width_weighted=args.expand_width_weighted,
             avoid_overlap=args.avoid_overlap,
             max_workers=args.workers,
+        )
+        append_command_history(
+            resolve_dataset_root_and_splits(args.config)[0],
+            command="yolo expand-obb",
+            result=stats,
         )
 
 if __name__ == "__main__":

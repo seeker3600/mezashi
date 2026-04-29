@@ -14,6 +14,7 @@ logging.getLogger("rasterio").setLevel(logging.WARNING)
 logging.getLogger("rasterio._env").setLevel(logging.ERROR)
 
 
+from medetect.command_history import append_command_history
 from medetect.datagen import generate_dataset
 
 
@@ -346,6 +347,11 @@ def main() -> None:
         max_workers=args.workers,
         coastline=args.coastline,
         override=args.override,
+    )
+    append_command_history(
+        args.output_dir,
+        command="datagen",
+        result=stats,
     )
 
     print(f"Done: {stats}")

@@ -8,6 +8,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+from medetect.command_history import append_command_history
 from medetect.xview.slice import slice_training_images
 
 
@@ -38,7 +39,7 @@ def main():
         else:
             parser.error("--resolution requires 1 or 2 values.")
 
-        slice_training_images(
+        stats = slice_training_images(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
             resolution=resolution,
@@ -48,6 +49,11 @@ def main():
             min_bbox_size=args.min_bbox_size,
             max_images=args.max_images,
             output_geotiff=args.output_geotiff,
+        )
+        append_command_history(
+            args.output_dir,
+            command="xview slice",
+            result=stats,
         )
 
 if __name__ == "__main__":
