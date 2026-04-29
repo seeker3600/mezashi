@@ -120,7 +120,7 @@ export function mapDetectionFromAugmentedTile(
 				...detection,
 				cx: modelSize - detection.cx,
 				cy: modelSize - detection.cy,
-				angle: normalizeAngle(detection.angle + Math.PI),
+				angle: normalizeAngle(detection.angle - Math.PI),
 			};
 		default:
 			return detection;

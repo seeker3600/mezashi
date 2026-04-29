@@ -17,6 +17,12 @@ const ENABLED_TILE_AUGMENTATIONS: readonly TileAugmentation[] = [
 	"flipBoth",
 ];
 
+const BRIGHTNESS_CONTRAST_ALPHA = 1.15;
+const BRIGHTNESS_CONTRAST_BETA = 12;
+const CLAHE_TILE_SIZE = 8;
+const CLAHE_HISTOGRAM_BINS = 256;
+const CLAHE_CLIP_FACTOR = 2;
+
 function clamp8(v: number): number {
 	return Math.max(0, Math.min(255, Math.round(v)));
 }
@@ -82,13 +88,23 @@ function applyBrightnessContrast(canvas: HTMLCanvasElement): void {
 	if (!ctx) throw new Error("Cannot get 2d context");
 	const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 	const { data } = imageData;
-	const contrast = 1.15;
-	const brightness = 12;
 
 	for (let i = 0; i < data.length; i += 4) {
-		data[i] = clamp8((data[i] - 128) * contrast + 128 + brightness);
-		data[i + 1] = clamp8((data[i + 1] - 128) * contrast + 128 + brightness);
-		data[i + 2] = clamp8((data[i + 2] - 128) * contrast + 128 + brightness);
+		data[i] = clamp8(
+			(data[i] - 128) * BRIGHTNESS_CONTRAST_ALPHA +
+				128 +
+				BRIGHTNESS_CONTRAST_BETA,
+		);
+		data[i + 1] = clamp8(
+			(data[i + 1] - 128) * BRIGHTNESS_CONTRAST_ALPHA +
+				128 +
+				BRIGHTNESS_CONTRAST_BETA,
+		);
+		data[i + 2] = clamp8(
+			(data[i + 2] - 128) * BRIGHTNESS_CONTRAST_ALPHA +
+				128 +
+				BRIGHTNESS_CONTRAST_BETA,
+		);
 	}
 	ctx.putImageData(imageData, 0, 0);
 }
@@ -99,14 +115,13 @@ function applyClahe(canvas: HTMLCanvasElement): void {
 	const { width, height } = canvas;
 	const imageData = ctx.getImageData(0, 0, width, height);
 	const { data } = imageData;
-	const tileSize = 8;
 
-	for (let ty = 0; ty < height; ty += tileSize) {
-		for (let tx = 0; tx < width; tx += tileSize) {
-			const tw = Math.min(tileSize, width - tx);
-			const th = Math.min(tileSize, height - ty);
+	for (let ty = 0; ty < height; ty += CLAHE_TILE_SIZE) {
+		for (let tx = 0; tx < width; tx += CLAHE_TILE_SIZE) {
+			const tw = Math.min(CLAHE_TILE_SIZE, width - tx);
+			const th = Math.min(CLAHE_TILE_SIZE, height - ty);
 			const tilePixels = tw * th;
-			const hist = new Array<number>(256).fill(0);
+			const hist = new Array<number>(CLAHE_HISTOGRAM_BINS).fill(0);
 
 			for (let y = ty; y < ty + th; y++) {
 				for (let x = tx; x < tx + tw; x++) {
@@ -118,23 +133,28 @@ function applyClahe(canvas: HTMLCanvasElement): void {
 				}
 			}
 
-			const clipLimit = Math.max(1, Math.floor((2 * tilePixels) / 256));
+			const clipLimit = Math.max(
+				1,
+				Math.floor((CLAHE_CLIP_FACTOR * tilePixels) / CLAHE_HISTOGRAM_BINS),
+			);
 			let excess = 0;
-			for (let i = 0; i < 256; i++) {
+			for (let i = 0; i < CLAHE_HISTOGRAM_BINS; i++) {
 				if (hist[i] > clipLimit) {
 					excess += hist[i] - clipLimit;
 					hist[i] = clipLimit;
 				}
 			}
-			const increment = Math.floor(excess / 256);
-			const remainder = excess % 256;
-			for (let i = 0; i < 256; i++) {
+			const increment = Math.floor(excess / CLAHE_HISTOGRAM_BINS);
+			const remainder = excess % CLAHE_HISTOGRAM_BINS;
+			for (let i = 0; i < CLAHE_HISTOGRAM_BINS; i++) {
 				hist[i] += increment + (i < remainder ? 1 : 0);
 			}
 
-			const cdf = new Array<number>(256).fill(0);
+			const cdf = new Array<number>(CLAHE_HISTOGRAM_BINS).fill(0);
 			cdf[0] = hist[0];
-			for (let i = 1; i < 256; i++) cdf[i] = cdf[i - 1] + hist[i];
+			for (let i = 1; i < CLAHE_HISTOGRAM_BINS; i++) {
+				cdf[i] = cdf[i - 1] + hist[i];
+			}
 			const cdfMin = cdf.find((v) => v > 0) ?? 0;
 			const denom = Math.max(1, tilePixels - cdfMin);
 
