@@ -137,7 +137,7 @@ function App() {
 						disabled={isProcessing}
 						className="h-4 w-4 accent-blue-600"
 					/>
-					入力画像拡張を有効化
+					入力画像拡張を有効化:
 					<span
 						id="input-augmentation-note"
 						className="text-xs text-gray-500 dark:text-gray-400"

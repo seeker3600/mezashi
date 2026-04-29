@@ -168,6 +168,7 @@ function applyClahe(canvas: HTMLCanvasElement): void {
 					);
 					const eq = clamp8(((cdf[luma] - cdfMin) / denom) * 255);
 					if (luma === 0) {
+						// Avoid division-by-zero while still applying equalized luminance.
 						data[i] = eq;
 						data[i + 1] = eq;
 						data[i + 2] = eq;
