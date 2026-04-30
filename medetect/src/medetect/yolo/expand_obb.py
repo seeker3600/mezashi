@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 from PIL import Image
@@ -34,6 +35,34 @@ class _ObbRecord:
     aabb: tuple[float, float, float, float]
     axes: tuple[np.ndarray, ...]
     area: float
+
+
+class _PolygonLike(Protocol):
+    corners: np.ndarray
+    aabb: tuple[float, float, float, float]
+    axes: tuple[np.ndarray, ...]
+    area: float
+
+
+@dataclass(frozen=True)
+class _PolygonGeometry:
+    corners: np.ndarray
+    aabb: tuple[float, float, float, float]
+    axes: tuple[np.ndarray, ...]
+    area: float
+
+
+@dataclass(frozen=True)
+class _ProcessLabelTask:
+    label_path: Path
+    img_size: tuple[int, int] | None
+    expand_width: float
+    expand_height: float
+    expand_width_weighted: float
+    expand_height_weighted: float
+    median_width: float
+    median_height: float
+    avoid_overlap: bool
 
 
 def _obb_dimensions(corners: np.ndarray) -> tuple[float, float]:
@@ -243,27 +272,34 @@ def _build_obb_record(
     )
 
 
+def _build_polygon_geometry(corners: np.ndarray) -> _PolygonGeometry:
+    """Build cached geometry for one polygon candidate."""
+    return _PolygonGeometry(
+        corners=corners,
+        aabb=_aabb_from_corners(corners),
+        axes=_polygon_axes(corners),
+        area=_polygon_area(corners),
+    )
+
+
 def _has_overlap_with_obstacles(
-    candidate_corners: np.ndarray,
+    candidate: _PolygonLike,
     obstacles: list[_ObbRecord],
 ) -> bool:
     """Return True when a candidate polygon overlaps any original OBB obstacle."""
-    candidate_area = _polygon_area(candidate_corners)
-    if candidate_area <= _POLYGON_AREA_EPSILON:
+    if candidate.area <= _POLYGON_AREA_EPSILON:
         return False
 
-    candidate_aabb = _aabb_from_corners(candidate_corners)
-    candidate_axes = _polygon_axes(candidate_corners)
-    if not candidate_axes:
+    if not candidate.axes:
         return False
 
     for obstacle in obstacles:
-        if not _aabb_intersects(candidate_aabb, obstacle.aabb):
+        if not _aabb_intersects(candidate.aabb, obstacle.aabb):
             continue
         if _polygons_overlap(
-            candidate_corners,
-            candidate_axes,
-            candidate_area,
+            candidate.corners,
+            candidate.axes,
+            candidate.area,
             obstacle.corners,
             obstacle.axes,
             obstacle.area,
@@ -339,8 +375,7 @@ def _expand_without_overlap(
         for record in records
     ]
 
-    original_corners = [record.corners.copy() for record in records]
-    final_corners = [corners.copy() for corners in original_corners]
+    final_corners = [record.corners.copy() for record in records]
     labels_expanded = 0
 
     for index, record in enumerate(records):
@@ -348,47 +383,51 @@ def _expand_without_overlap(
         if total_w == 0.0 and total_h == 0.0:
             continue
 
-        full_corners = _clip_corners_to_image(
-            _expand_obb(record.corners, expand_width=total_w, expand_height=total_h),
-            img_w,
-            img_h,
+        full_geometry = _build_polygon_geometry(
+            _clip_corners_to_image(
+                _expand_obb(record.corners, expand_width=total_w, expand_height=total_h),
+                img_w,
+                img_h,
+            )
         )
-        search_aabb = _merge_aabbs(record.aabb, _aabb_from_corners(full_corners))
+        search_aabb = _merge_aabbs(record.aabb, full_geometry.aabb)
         obstacles = [
             other
             for other_index, other in enumerate(records)
             if other_index != index and _aabb_intersects(search_aabb, other.aabb)
         ]
 
-        best_corners = original_corners[index]
-        if obstacles and _has_overlap_with_obstacles(record.corners, obstacles):
-            final_corners[index] = best_corners
+        best_geometry: _PolygonLike = record
+        if obstacles and _has_overlap_with_obstacles(record, obstacles):
+            final_corners[index] = best_geometry.corners.copy()
             continue
 
-        if not obstacles or not _has_overlap_with_obstacles(full_corners, obstacles):
-            best_corners = full_corners
+        if not obstacles or not _has_overlap_with_obstacles(full_geometry, obstacles):
+            best_geometry = full_geometry
         else:
             low = 0.0
             high = 1.0
             for _ in range(20):
                 mid = (low + high) / 2.0
-                candidate_corners = _clip_corners_to_image(
-                    _expand_obb(
-                        record.corners,
-                        expand_width=total_w * mid,
-                        expand_height=total_h * mid,
-                    ),
-                    img_w,
-                    img_h,
+                candidate_geometry = _build_polygon_geometry(
+                    _clip_corners_to_image(
+                        _expand_obb(
+                            record.corners,
+                            expand_width=total_w * mid,
+                            expand_height=total_h * mid,
+                        ),
+                        img_w,
+                        img_h,
+                    )
                 )
-                if _has_overlap_with_obstacles(candidate_corners, obstacles):
+                if _has_overlap_with_obstacles(candidate_geometry, obstacles):
                     high = mid
                 else:
                     low = mid
-                    best_corners = candidate_corners
+                    best_geometry = candidate_geometry
 
-        final_corners[index] = best_corners
-        if not np.allclose(best_corners, original_corners[index], atol=1e-6):
+        final_corners[index] = best_geometry.corners.copy()
+        if not np.allclose(best_geometry.corners, record.corners, atol=1e-6):
             labels_expanded += 1
 
     return final_corners, labels_expanded
@@ -524,6 +563,26 @@ def _collect_one(
     return label_path, size, widths, heights
 
 
+def _process_label_task(task: _ProcessLabelTask) -> dict[str, int]:
+    """Run one label-file expansion task."""
+    if task.img_size is None:
+        return {"updated": 0, "labels_expanded": 0}
+
+    img_w, img_h = task.img_size
+    return _process_label_file(
+        task.label_path,
+        img_w,
+        img_h,
+        expand_width=task.expand_width,
+        expand_height=task.expand_height,
+        expand_width_weighted=task.expand_width_weighted,
+        expand_height_weighted=task.expand_height_weighted,
+        median_width=task.median_width,
+        median_height=task.median_height,
+        avoid_overlap=task.avoid_overlap,
+    )
+
+
 def expand_obb_dataset(
     dataset: str | Path,
     *,
@@ -554,7 +613,8 @@ def expand_obb_dataset(
         If True, scale each OBB back until it no longer overlaps any other
         original OBB in the same image.
     max_workers:
-        Thread pool size.  Defaults to CPU count.
+        Parallel worker count. Pass 2 uses processes for avoid-overlap mode
+        and threads otherwise. Defaults to CPU count.
     """
     dataset_path = Path(dataset).resolve()
     if dataset_path.is_dir():
@@ -651,17 +711,10 @@ def expand_obb_dataset(
                             img_sizes[lp] = size
                         pbar.update(1)
 
-    # Pass 2 (or only pass): expand OBBs.
-    stats = {"files_processed": 0, "files_updated": 0, "labels_expanded": 0}
-
-    def _process(lp: Path) -> dict[str, int]:
-        size = img_sizes.get(lp)
-        if size is None:
-            return {"updated": 0, "labels_expanded": 0}
-        return _process_label_file(
-            lp,
-            size[0],
-            size[1],
+    tasks = [
+        _ProcessLabelTask(
+            label_path=lp,
+            img_size=img_sizes.get(lp),
             expand_width=expand_width,
             expand_height=expand_height,
             expand_width_weighted=expand_width_weighted,
@@ -670,18 +723,33 @@ def expand_obb_dataset(
             median_height=median_height,
             avoid_overlap=avoid_overlap,
         )
+        for lp in label_paths
+    ]
+
+    # Pass 2 (or only pass): expand OBBs.
+    stats = {"files_processed": 0, "files_updated": 0, "labels_expanded": 0}
 
     if max_workers == 0:
-        with tqdm(total=len(label_paths), desc="expanding OBBs", unit="file", dynamic_ncols=True) as pbar:
-            for lp in label_paths:
-                result = _process(lp)
+        with tqdm(total=len(tasks), desc="expanding OBBs", unit="file", dynamic_ncols=True) as pbar:
+            for task in tasks:
+                result = _process_label_task(task)
                 stats["files_processed"] += 1
                 stats["files_updated"] += result["updated"]
                 stats["labels_expanded"] += result["labels_expanded"]
                 pbar.update(1)
+    elif avoid_overlap:
+        chunksize = max(1, len(tasks) // max(max_workers * 4, 1))
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
+            results = pool.map(_process_label_task, tasks, chunksize=chunksize)
+            with tqdm(total=len(tasks), desc="expanding OBBs", unit="file", dynamic_ncols=True) as pbar:
+                for result in results:
+                    stats["files_processed"] += 1
+                    stats["files_updated"] += result["updated"]
+                    stats["labels_expanded"] += result["labels_expanded"]
+                    pbar.update(1)
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_process, lp): lp for lp in label_paths}
+            futures = {pool.submit(_process_label_task, task): task.label_path for task in tasks}
             with tqdm(total=len(futures), desc="expanding OBBs", unit="file", dynamic_ncols=True) as pbar:
                 for f in concurrent.futures.as_completed(futures):
                     result = f.result()

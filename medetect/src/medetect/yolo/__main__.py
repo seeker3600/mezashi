@@ -232,7 +232,7 @@ def main() -> None:
         type=int,
         default=None,
         metavar="N",
-        help="Number of worker threads (default: CPU count; 0 disables parallelism for profiling).",
+        help="Number of parallel workers (default: CPU count; 0 disables parallelism for profiling).",
     )
     expand_parser.add_argument(
         "--avoid-overlap",

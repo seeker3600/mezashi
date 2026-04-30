@@ -748,3 +748,44 @@ class TestExpandObbSerial:
         """max_workers=-1 のとき ValueError を送出する。"""
         with pytest.raises(ValueError, match="max_workers must be >= 0"):
             expand_obb_dataset(dataset, expand_height=5, max_workers=-1)
+
+
+class TestExpandObbParallel:
+    @pytest.fixture()
+    def dataset(self, tmp_path):
+        """100x100 画像付きのミニデータセットを作る。"""
+        from PIL import Image
+
+        ds_root = tmp_path / "dataset"
+        img_dir = ds_root / "images" / "train"
+        lbl_dir = ds_root / "labels" / "train"
+        img_dir.mkdir(parents=True)
+        lbl_dir.mkdir(parents=True)
+        config_path = tmp_path / "dataset.yaml"
+        _write_dataset_yaml(config_path, ds_root)
+
+        Image.new("RGB", (100, 100)).save(img_dir / "img1.png")
+        (lbl_dir / "img1.txt").write_text(
+            "0 0.400000 0.300000 0.600000 0.300000 "
+            "0.600000 0.700000 0.400000 0.700000\n"
+        )
+        return config_path
+
+    def test_avoid_overlap_parallel_uses_process_pool(self, dataset) -> None:
+        """avoid_overlap の並列実行では ProcessPoolExecutor を使う。"""
+        with patch("medetect.yolo.expand_obb.concurrent.futures.ProcessPoolExecutor") as mock_pool:
+            mock_pool.return_value.__enter__.return_value.map.return_value = [
+                {"updated": 1, "labels_expanded": 1}
+            ]
+
+            stats = expand_obb_dataset(
+                dataset,
+                expand_height=10,
+                avoid_overlap=True,
+                max_workers=2,
+            )
+
+        mock_pool.assert_called_once_with(max_workers=2)
+        assert stats["files_processed"] == 1
+        assert stats["files_updated"] == 1
+        assert stats["labels_expanded"] == 1
