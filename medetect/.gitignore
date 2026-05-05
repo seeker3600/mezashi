@@ -233,3 +233,5 @@ TODO.md
 *.onnx
 
 xView.yaml
+
+out/
