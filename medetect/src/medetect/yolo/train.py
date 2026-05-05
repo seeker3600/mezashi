@@ -8,28 +8,27 @@ from medetect.command_history import command_history_path
 from medetect.yolo.augment import RandomCloudOverlay
 from medetect.yolo.backup import resolve_dataset_root_and_splits
 
-model = "yolo26m-obb.pt"
+model = "yolo26n-obb.pt"
 
 custom_transforms = [
-    A.RandomFog(fog_coef_range=(0.03, 0.10), alpha_coef=0.05, p=0.25),
-    RandomCloudOverlay(r"datasets/cloud_overlays_png_640", alpha_range=(0.1, 0.3), p=0.25),
-    A.OneOf(
-        [
-            A.Blur(blur_limit=(3, 15)),
-            A.GaussianBlur(blur_limit=(3, 15)),
-        ],
-        p=1.0,
+    # RandomCloudOverlay(r"/mnt/r/training/datasets/cloud_overlays_png_640", alpha_range=(0.1, 0.3), p=0.3),
+    A.GaussNoise(std_range=(0.01, 0.1), mean_range=(0.0, 0.0), p=0.8),
+    A.GaussianBlur(blur_limit=(3,3), sigma_range=(0.1, 0.5), p=0.3),
+    A.ChromaticAberration(
+        primary_distortion_limit=(0.005, 0.02),
+        secondary_distortion_limit=(0.005, 0.02),
+        p=0.05,
     ),
-    A.GaussNoise(
-        std_range=(0.01, 0.04),
-        mean_range=(0.0, 0.0),
-        p=0.5,
+    A.ISONoise(
+        color_shift=(0.002, 0.005),
+        intensity=(0.05, 0.12),
+        p=0.2,
     ),
-    A.ImageCompression(
-        quality_range=(60, 95),
-        compression_type="jpeg",
-        p=0.3,
-    ),
+    #A.ImageCompression(
+    #    quality_range=(85, 95),
+    #    compression_type="jpeg",
+    #    p=0.2,
+    #),
     A.RandomBrightnessContrast(
         brightness_limit=0.12,
         contrast_limit=0.18,
@@ -49,29 +48,39 @@ custom_transforms = [
 
 train_kwargs: dict = dict(
     # 基本設定
-    data="datasets/synthetic_ship_dataset/dataset.yaml",
-    imgsz=640,
+    data="/root/training/datasets/synthetic_ship_dataset/dataset.yaml",
+    imgsz=1280,
     # 処理時間関連
-    epochs=1,
+    epochs=50,
+    # patience=30,
     batch=2,
-    amp=True,
-    cache=True,
+    amp=False,
+    cache='disk',
     workers=8,
     val=True,
     # データ拡張
-    degrees=10.0,
-    scale=0.1,
+    degrees=20.0,
+    translate=0.1,
+    scale=0.0,
     fliplr=0.5,
     flipud=0.5,
     hsv_h=0.1,
-    hsv_s=0.25,
-    hsv_v=0.20,
+    # hsv_s=0.25,
+    # hsv_v=0.20,
     augmentations=custom_transforms,
     # cutmix=0.0,
     # 無効にするデータ拡張
     mosaic=0.0,
     auto_augment=None,
     erasing=0.0,
+    # conf=0.05,
+    iou=0.7,
+    max_det=1000,
+    agnostic_nms=False,
+    multi_scale=0.0,
+    rect=True,
+    deterministic=True,
+    #device='cpu',
 )
 
 
