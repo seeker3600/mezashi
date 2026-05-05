@@ -1,17 +1,15 @@
-import shutil
 from pathlib import Path
 
 import albumentations as A
 from ultralytics import YOLO
 
-from medetect.command_history import command_history_path
 from medetect.yolo.augment import RandomCloudOverlay
-from medetect.yolo.backup import resolve_dataset_root_and_splits
+from medetect.yolo.train_util import copy_training_artifacts
 
 model = "yolo26n-obb.pt"
 
 custom_transforms = [
-    # RandomCloudOverlay(r"/mnt/r/training/datasets/cloud_overlays_png_640", alpha_range=(0.1, 0.3), p=0.3),
+    # RandomCloudOverlay(r"datasets/cloud_overlays_png_640", alpha_range=(0.1, 0.3), p=0.3),
     A.GaussNoise(std_range=(0.01, 0.1), mean_range=(0.0, 0.0), p=0.8),
     A.GaussianBlur(blur_limit=(3,3), sigma_range=(0.1, 0.5), p=0.3),
     A.ChromaticAberration(
@@ -48,10 +46,10 @@ custom_transforms = [
 
 train_kwargs: dict = dict(
     # 基本設定
-    data="/root/training/datasets/synthetic_ship_dataset/dataset.yaml",
+    data="datasets/synthetic_ship_dataset/dataset.yaml",
     imgsz=1280,
     # 処理時間関連
-    epochs=50,
+    epochs=1,
     # patience=30,
     batch=2,
     amp=False,
@@ -84,18 +82,7 @@ train_kwargs: dict = dict(
 )
 
 
-def _copy_training_artifacts(save_dir: str | Path, dataset: str | Path) -> None:
-    run_dir = Path(save_dir)
-    dataset_root, _ = resolve_dataset_root_and_splits(dataset)
-    dataset_history = command_history_path(dataset_root)
-    if dataset_history.is_file():
-        shutil.copy(dataset_history, run_dir / dataset_history.name)
-    shutil.copy(Path(__file__), run_dir / "train.py")
-
-
 def train_yolo_model() -> None:
-    results = YOLO(model).train(**train_kwargs)
-    save_dir = getattr(results, "save_dir", None)
-    if save_dir is None:
-        return
-    _copy_training_artifacts(save_dir, train_kwargs["data"])
+    yolo = YOLO(model)
+    yolo.add_callback("on_pretrain_routine_start", copy_training_artifacts)
+    yolo.train(**train_kwargs)
