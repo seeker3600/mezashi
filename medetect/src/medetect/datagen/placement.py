@@ -973,7 +973,7 @@ def _place_cluster(
                 cursor_edge = row_offset + max_proj
                 continue
 
-        cid = _ship_class_id(lh, resolution_m, class_id, size_thresholds)
+        cid = _ship_class_id(lh, resolution_m, class_id, size_thresholds, is_cluster=tight)
         placed.append(
             _RaftShipPlacement(
                 svg_text=svg_text_i,

@@ -192,10 +192,11 @@ def _resolve_ship_dimensions(
     return ship_class, beam_px, length_px, lb_ratio
 
 
-def _size_class_names(thresholds: tuple[float, ...]) -> list[str]:
-    """Return YOLO class name list for a given set of size thresholds.
+def _solo_class_names(thresholds: tuple[float, ...]) -> list[str]:
+    """Return YOLO class names for standalone (non-tight-cluster) ships.
 
     Rules:
+    - 0 thresholds → ["ship"]
     - 1 threshold  → ["ship_small", "ship_large"]
     - 2 thresholds → ["ship_small", "ship_medium", "ship_large"]
     - 3+ thresholds → ["ship_small", "ship_{T0}_{T1}", ..., "ship_large"]
@@ -218,17 +219,39 @@ def _size_class_names(thresholds: tuple[float, ...]) -> list[str]:
     return names
 
 
+def _size_class_names(thresholds: tuple[float, ...]) -> list[str]:
+    """Return full YOLO class name list including tight-cluster variants.
+
+    Solo classes come first, followed by ``<name>_c`` variants for
+    raft-tight cluster ships.  The *cluster offset* is always
+    ``len(solo_names)``, so cluster class IDs = solo_id + len(solo_names).
+    """
+    solo = _solo_class_names(thresholds)
+    return solo + [f"{n}_c" for n in solo]
+
+
 def _ship_class_id(
     length_px: int,
     resolution_m: float,
     class_id: int,
     size_thresholds: tuple[float, ...] | None,
+    *,
+    is_cluster: bool = False,
 ) -> int:
-    """Return the YOLO class ID for a ship based on its physical length."""
-    if size_thresholds is None or len(size_thresholds) == 0:
-        return class_id
-    length_m = length_px * resolution_m
-    sorted_t = sorted(size_thresholds)
-    # bucket index = number of thresholds the length exceeds
-    bucket = sum(1 for t in sorted_t if length_m >= t)
-    return class_id + bucket
+    """Return the YOLO class ID for a ship based on its physical length.
+
+    When *is_cluster* is True the ID is offset by the number of solo classes
+    to select the corresponding ``<name>_c`` cluster variant.
+    """
+    thresholds = size_thresholds or ()
+    n_solo = len(thresholds) + 1  # number of solo size buckets
+    if thresholds:
+        length_m = length_px * resolution_m
+        sorted_t = sorted(thresholds)
+        bucket = sum(1 for t in sorted_t if length_m >= t)
+    else:
+        bucket = 0
+    cid = class_id + bucket
+    if is_cluster:
+        cid += n_solo
+    return cid

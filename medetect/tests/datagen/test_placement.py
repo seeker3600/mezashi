@@ -1265,3 +1265,108 @@ class TestPlaceCluster:
         full_scene_size = self._IMAGE_SIZE * placement_mod._CLUSTER_SCENE_SUPERSAMPLE
         assert all(height < full_scene_size for height, _width in recorded_shapes)
         assert all(width < full_scene_size for _height, width in recorded_shapes)
+
+
+class TestClusterClassId:
+    """クラスター種別（raft_tight / raft_open）による class_id 分岐の検証。"""
+
+    _IMAGE_SIZE = 200
+    _MOCK_SVG = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+        '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+        '</svg>'
+    )
+
+    @pytest.fixture()
+    def scene(self):
+        """全面水域の 200x200 シーン。"""
+        size = self._IMAGE_SIZE
+        return {
+            "water_mask": np.ones((size, size), dtype=bool),
+            "background": np.full((size, size, 3), 60, dtype=np.uint8),
+        }
+
+    def _base_args(self, scene, *, size_thresholds=None):
+        return dict(
+            water_mask=scene["water_mask"],
+            occupancy=np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            svg_metas=None,
+            resolution_m=1.0,
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            size_thresholds=size_thresholds,
+            mixed_prob=0.0,
+        )
+
+    def _setup_mocks(self, monkeypatch: pytest.MonkeyPatch) -> list:
+        """共通モックを設定し、_RaftShipPlacement リストを返す。"""
+        captured = _capture_vector_cluster(monkeypatch)
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: self._MOCK_SVG)
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            lambda *args, **kwargs: ("mock_hull", 6, 24, 4.0),
+        )
+        return captured
+
+    def test_raft_tight_uses_cluster_class_id(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """raft_tight クラスターの船は cluster class_id (1 = ship_c) を使う。"""
+        self._setup_mocks(monkeypatch)
+        labels = _place_cluster(
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0),
+            **self._base_args(scene),
+        )
+        assert len(labels) == 2
+        assert all(int(lbl.split()[0]) == 1 for lbl in labels)
+
+    def test_raft_open_uses_solo_class_id(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """raft_open クラスターの船は solo class_id (0 = ship) を使う。"""
+        self._setup_mocks(monkeypatch)
+        labels = _place_cluster(
+            rng=_ForcedLayoutRandom(7, "partial", base_angle=0.0),
+            **self._base_args(scene),
+        )
+        assert len(labels) > 0
+        assert all(int(lbl.split()[0]) == 0 for lbl in labels)
+
+    def test_raft_tight_with_size_threshold_uses_cluster_offset(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """size_threshold ありの raft_tight は n_solo 分オフセットされた class_id を使う。
+
+        threshold=100m, resolution=1m/px, 船長=24px→24m < 100m
+        → small bucket(0), n_solo=2, cluster_id = 0+2 = 2 (ship_small_c)
+        """
+        self._setup_mocks(monkeypatch)
+        labels = _place_cluster(
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0),
+            **self._base_args(scene, size_thresholds=(100.0,)),
+        )
+        assert len(labels) == 2
+        assert all(int(lbl.split()[0]) == 2 for lbl in labels)
+
+    def test_raft_tight_large_ship_with_size_threshold(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """size_threshold ありの raft_tight で大きい船は large_c class_id を使う。
+
+        threshold=10m, resolution=1m/px, 船長=24px→24m ≥ 10m
+        → large bucket(1), n_solo=2, cluster_id = 1+2 = 3 (ship_large_c)
+        """
+        self._setup_mocks(monkeypatch)
+        labels = _place_cluster(
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0),
+            **self._base_args(scene, size_thresholds=(10.0,)),
+        )
+        assert len(labels) == 2
+        assert all(int(lbl.split()[0]) == 3 for lbl in labels)

@@ -349,24 +349,62 @@ class TestShipClassId:
         assert _ship_class_id(5, 10.0, 0, (80.0, 30.0)) == _ship_class_id(5, 10.0, 0, (30.0, 80.0))
         assert _ship_class_id(9, 10.0, 0, (80.0, 30.0)) == _ship_class_id(9, 10.0, 0, (30.0, 80.0))
 
+    def test_is_cluster_no_threshold_offsets_by_1(self) -> None:
+        """しきい値なし・is_cluster=True は solo クラス数 (1) 分オフセットされる。"""
+        assert _ship_class_id(100, 10.0, 0, None, is_cluster=True) == 1
+
+    def test_is_cluster_with_one_threshold(self) -> None:
+        """しきい値1つ・is_cluster=True は solo クラス数 (2) 分オフセットされる。"""
+        # small solo=0 → small_c=2
+        assert _ship_class_id(5, 10.0, 0, (100.0,), is_cluster=True) == 2
+        # large solo=1 → large_c=3
+        assert _ship_class_id(10, 10.0, 0, (100.0,), is_cluster=True) == 3
+
+    def test_is_cluster_false_is_default(self) -> None:
+        """is_cluster=False はデフォルトと同一結果を返す。"""
+        assert _ship_class_id(5, 10.0, 0, (100.0,), is_cluster=False) == _ship_class_id(5, 10.0, 0, (100.0,))
+
 
 class TestSizeClassNames:
     """_size_class_names の命名ルール検証。"""
 
-    def test_one_threshold_gives_small_large(self) -> None:
-        """しきい値1つは ship_small / ship_large。"""
-        assert _size_class_names((50.0,)) == ["ship_small", "ship_large"]
+    def test_no_threshold_gives_ship_and_cluster(self) -> None:
+        """しきい値なしは ship / ship_c の2クラスを返す。"""
+        assert _size_class_names(()) == ["ship", "ship_c"]
 
-    def test_two_thresholds_gives_medium(self) -> None:
-        """しきい値2つは ship_small / ship_medium / ship_large。"""
-        assert _size_class_names((30.0, 80.0)) == ["ship_small", "ship_medium", "ship_large"]
+    def test_one_threshold_gives_small_large_and_clusters(self) -> None:
+        """しきい値1つは solo 2クラス + cluster 2クラスを返す。"""
+        assert _size_class_names((50.0,)) == [
+            "ship_small", "ship_large",
+            "ship_small_c", "ship_large_c",
+        ]
+
+    def test_two_thresholds_gives_medium_and_clusters(self) -> None:
+        """しきい値2つは solo 3クラス + cluster 3クラスを返す。"""
+        assert _size_class_names((30.0, 80.0)) == [
+            "ship_small", "ship_medium", "ship_large",
+            "ship_small_c", "ship_medium_c", "ship_large_c",
+        ]
 
     def test_three_thresholds_uses_numeric_names(self) -> None:
-        """しきい値3つは境界値数値を使った中間クラス名。"""
+        """しきい値3つは境界値数値を使った中間クラス名（solo+cluster 合計8クラス）。"""
         names = _size_class_names((20.0, 50.0, 100.0))
-        assert names == ["ship_small", "ship_20_50", "ship_50_100", "ship_large"]
+        assert names == [
+            "ship_small", "ship_20_50", "ship_50_100", "ship_large",
+            "ship_small_c", "ship_20_50_c", "ship_50_100_c", "ship_large_c",
+        ]
 
     def test_unsorted_thresholds_produce_sorted_names(self) -> None:
         """しきい値は内部でソートされる。"""
         names = _size_class_names((80.0, 20.0, 50.0))
-        assert names == ["ship_small", "ship_20_50", "ship_50_80", "ship_large"]
+        assert names == [
+            "ship_small", "ship_20_50", "ship_50_80", "ship_large",
+            "ship_small_c", "ship_20_50_c", "ship_50_80_c", "ship_large_c",
+        ]
+
+    def test_cluster_names_are_solo_names_with_c_suffix(self) -> None:
+        """cluster クラス名は solo 名に _c サフィックスを付けたものと一致する。"""
+        names = _size_class_names((30.0, 80.0))
+        solo = names[:3]
+        cluster = names[3:]
+        assert cluster == [f"{n}_c" for n in solo]

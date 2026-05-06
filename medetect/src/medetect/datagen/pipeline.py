@@ -623,11 +623,8 @@ def _write_dataset_yaml(
     lines.append("val: images/autosplit_val.txt")
     lines.append("")
     lines.append("names:")
-    if size_thresholds:
-        names = _size_class_names(size_thresholds)
-        for i, name in enumerate(names):
-            lines.append(f"  {class_id + i}: {name}")
-    else:
-        lines.append(f"  {class_id}: ship")
+    names = _size_class_names(size_thresholds or ())
+    for i, name in enumerate(names):
+        lines.append(f"  {class_id + i}: {name}")
 
     yaml_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

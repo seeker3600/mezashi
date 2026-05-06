@@ -44,36 +44,44 @@ class TestWriteDatasetYaml:
     """_write_dataset_yaml の出力検証。"""
 
     def test_single_class_without_threshold(self, tmp_path: pathlib.Path) -> None:
-        """しきい値なしのとき、単一クラス ship を出力する。"""
+        """しきい値なしのとき、ship / ship_c の2クラスを出力する。"""
         _write_dataset_yaml(tmp_path, 0)
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "  0: ship\n" in content
-        assert "ship_small" not in content
-        assert "ship_large" not in content
+        assert "  1: ship_c\n" in content
 
     def test_two_classes_with_threshold(self, tmp_path: pathlib.Path) -> None:
-        """しきい値ありのとき、2クラスを出力する。"""
+        """しきい値ありのとき、solo 2クラス + cluster 2クラスを出力する。"""
         _write_dataset_yaml(tmp_path, 0, size_thresholds=(100.0,))
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "  0: ship_small\n" in content
         assert "  1: ship_large\n" in content
+        assert "  2: ship_small_c\n" in content
+        assert "  3: ship_large_c\n" in content
 
     def test_three_classes_with_two_thresholds(self, tmp_path: pathlib.Path) -> None:
-        """しきい値2つのとき、ship_small / ship_medium / ship_large を出力する。"""
+        """しきい値2つのとき、solo 3クラス + cluster 3クラスを出力する。"""
         _write_dataset_yaml(tmp_path, 0, size_thresholds=(30.0, 80.0))
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "  0: ship_small\n" in content
         assert "  1: ship_medium\n" in content
         assert "  2: ship_large\n" in content
+        assert "  3: ship_small_c\n" in content
+        assert "  4: ship_medium_c\n" in content
+        assert "  5: ship_large_c\n" in content
 
     def test_four_classes_with_three_thresholds(self, tmp_path: pathlib.Path) -> None:
-        """しきい値3つのとき、境界値を使った中間クラス名を出力する。"""
+        """しきい値3つのとき、境界値を使った solo+cluster 各4クラスを出力する。"""
         _write_dataset_yaml(tmp_path, 0, size_thresholds=(20.0, 50.0, 100.0))
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "  0: ship_small\n" in content
         assert "  1: ship_20_50\n" in content
         assert "  2: ship_50_100\n" in content
         assert "  3: ship_large\n" in content
+        assert "  4: ship_small_c\n" in content
+        assert "  5: ship_20_50_c\n" in content
+        assert "  6: ship_50_100_c\n" in content
+        assert "  7: ship_large_c\n" in content
 
     def test_params_written_as_comments(self, tmp_path: pathlib.Path) -> None:
         """生成パラメータがコメントとして書き込まれる。"""
@@ -97,6 +105,8 @@ class TestWriteDatasetYaml:
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "  3: ship_small\n" in content
         assert "  4: ship_large\n" in content
+        assert "  5: ship_small_c\n" in content
+        assert "  6: ship_large_c\n" in content
 
 
 class TestGenerateDatasetParams:
