@@ -1167,27 +1167,35 @@ def _write_deck_scatter_svg(
         cx = 0.5 + rng.uniform(-half_range, half_range)
 
         # ── Size tier selection ──────────────────────────────────────
-        # Tier 1 (60%): micro texture — stains, tie-downs, drains
-        # Tier 2 (30%): small equipment — vents, reels, foundations
-        # Tier 3 (10%): medium equipment — boxes, small hatches
+        # Tier 1 (45%): micro texture — stains, tie-downs, drains
+        # Tier 2 (35%): small equipment — vents, reels, foundations
+        # Tier 3 (20%): medium equipment — boxes, hatches, containers
+        #
+        # Size targets are chosen so shapes survive Gaussian blur σ≤2 px:
+        #   survive threshold ≈ 3σ = 6 px at beam_px=60 (preview minimum).
+        #   Tier 1 max 0.120 →  7.2 px @ 60 px  (barely visible, intentional texture)
+        #   Tier 2 max 0.180 → 10.8 px @ 60 px  (visible detail)
+        #   Tier 3 max 0.300 → 18.0 px @ 60 px  (clearly visible structure)
         tier_roll = rng.random()
-        if tier_roll < 0.60:
+        if tier_roll < 0.45:
             tier = 1
-            max_sz = min(0.012, hull_hw * 0.20)
-            sz = rng.uniform(max_sz * 0.3, max_sz)
-        elif tier_roll < 0.90:
+            max_sz = min(0.120, hull_hw * 0.30)
+            sz = rng.uniform(max_sz * 0.50, max_sz)
+        elif tier_roll < 0.80:
             tier = 2
-            max_sz = min(0.025, hull_hw * 0.35)
-            sz = rng.uniform(max_sz * 0.4, max_sz)
+            max_sz = min(0.180, hull_hw * 0.50)
+            sz = rng.uniform(max_sz * 0.50, max_sz)
         else:
             tier = 3
-            max_sz = min(0.045, hull_hw * 0.50)
-            sz = rng.uniform(max_sz * 0.5, max_sz)
+            max_sz = min(0.300, hull_hw * 0.75)
+            sz = rng.uniform(max_sz * 0.55, max_sz)
 
-        # ── Colour — hull-toned, subtle offset ──────────────────────
+        # ── Colour — hull-toned with strong contrast ─────────────────
+        # Contrast values represent Δ in [0,255] per RGB channel.
+        # Real deck equipment reads as Δ≥30 (rust/grime) to Δ≥80 (white hatches).
+        # Values are clamped to [0,255] inside detail_css().
         sign = 1 if rng.random() < 0.5 else -1
-        # Smaller tiers = less colour contrast (nearly invisible marks)
-        contrast = {1: (5, 14), 2: (10, 22), 3: (14, 28)}[tier]
+        contrast = {1: (30, 65), 2: (45, 80), 3: (65, 110)}[tier]
         offset = sign * rng.randint(*contrast)
         fill = colors.detail_css(offset)
 
