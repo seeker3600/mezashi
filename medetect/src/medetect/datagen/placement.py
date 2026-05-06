@@ -731,6 +731,7 @@ def _place_cluster(
     tight = layout == "raft_tight"
     heading_jitter = 0.75 if tight else 20.0
     stagger_frac = 0.0 if tight else 0.15
+    tight_stagger_mode = tight and rng.random() < 0.30
 
     base_angle = rng.uniform(0, 360)
     base_angle_rad = math.radians(base_angle)
@@ -756,6 +757,10 @@ def _place_cluster(
     cluster_alpha = rng.uniform(*alpha_range)
     water_tint = _sample_water_tint(background, base_cx, base_cy)
     placed: list[_RaftShipPlacement] = []
+
+    # Cumulative longitudinal drift for stagger mode: sampled once, applied per-ship step
+    stagger_step = rng.uniform(-lh0 * 0.20, lh0 * 0.20) if tight_stagger_mode else 0.0
+    cumulative_stagger = 0.0
 
     pre_occupancy = occupancy.copy()
     cursor_edge = 0.0
@@ -923,11 +928,12 @@ def _place_cluster(
             if not _candidate_valid(cx, cy, hull_geom, bw, lh, angle_rad):
                 break
         elif tight:
+            cumulative_stagger += stagger_step
             base_contact_row = prev_row_offset + prev_max_proj - min_proj
             contact = _contact_candidate(
                 local_hull,
                 base_contact_row,
-                0.0,
+                cumulative_stagger,
                 bw,
                 lh,
                 angle_rad,

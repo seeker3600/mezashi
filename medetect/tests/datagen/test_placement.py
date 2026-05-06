@@ -265,11 +265,24 @@ def _count_connected_components(mask: np.ndarray, min_size: int = 1) -> int:
 class _ForcedLayoutRandom(random.Random):
     """特定の cluster layout を強制する Random 派生。"""
 
-    def __init__(self, seed: int, layout: str, base_angle: float = 0.0) -> None:
+    def __init__(self, seed: int, layout: str, base_angle: float = 0.0, stagger: bool = False) -> None:
         super().__init__(seed)
         self._layout = layout
         self._base_angle = base_angle
+        self._stagger = stagger
         self._uniform_calls = 0
+        self._random_calls = 0
+
+    def random(self):
+        call_idx = self._random_calls
+        self._random_calls += 1
+        # raft_tight のみ: 3 番目の random() 呼び出しが tight_stagger_mode 判定
+        # (call 0: randint 内部, call 1: mixed, call 2: tight_stagger_mode)
+        # stagger=False → 1.0 を返して stagger を無効化 (RNG 状態を消費しない)
+        # stagger=True  → 0.0 を返して stagger を有効化
+        if self._layout == "flush" and call_idx == 2:
+            return 0.0 if self._stagger else 1.0
+        return super().random()
 
     def choices(self, population, weights=None, *, cum_weights=None, k=1):
         pop_list = list(population)
@@ -1370,3 +1383,56 @@ class TestClusterClassId:
         )
         assert len(labels) == 2
         assert all(int(lbl.split()[0]) == 3 for lbl in labels)
+
+    def test_raft_tight_stagger_mode_applies_longitudinal_offset(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tight_stagger_mode が有効なとき、2隻目以降が前後方向にずれて配置される。
+
+        stagger_step は1回だけサンプルされるため、2隻目は base_cy からずれる。
+        """
+        captured = self._setup_mocks(monkeypatch)
+        _place_cluster(
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0, stagger=True),
+            **self._base_args(scene),
+        )
+        assert len(captured) == 2
+        base_cy = 100.0  # find_water_position mock が返す cy
+        assert captured[0].cy == pytest.approx(base_cy)
+        assert abs(captured[1].cy - base_cy) > 0.01
+
+    def test_raft_tight_stagger_mode_creates_monotonic_drift(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tight_stagger_mode が有効なとき、cy が単調に変化する（累積ドリフト）。
+
+        stagger_step を1回サンプルして累積するため、cy のずれは等差的に増える。
+        3隻で ship1.cy < ship2.cy < ship3.cy または逆順になることを検証する。
+        """
+        captured = self._setup_mocks(monkeypatch)
+        _place_cluster(
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0, stagger=True),
+            **{**self._base_args(scene), "cluster_size_range": (3, 3)},
+        )
+        assert len(captured) == 3
+        cy_values = [ship.cy for ship in captured]
+        diffs = [cy_values[k + 1] - cy_values[k] for k in range(len(cy_values) - 1)]
+        # 全差分が同符号 → 単調増加 or 単調減少（累積ドリフトの証拠）
+        assert all(d > 0.01 for d in diffs) or all(d < -0.01 for d in diffs)
+
+    def test_raft_tight_aligned_mode_has_no_longitudinal_offset(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tight_stagger_mode が無効なとき、全船が前後方向に揃って配置される。
+
+        base_angle=0.0 では縦方向が前後軸。stagger なしなので全隻の cy が base_cy に一致する。
+        """
+        captured = self._setup_mocks(monkeypatch)
+        _place_cluster(
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0, stagger=False),
+            **self._base_args(scene),
+        )
+        assert len(captured) == 2
+        base_cy = 100.0
+        assert captured[0].cy == pytest.approx(base_cy)
+        assert captured[1].cy == pytest.approx(base_cy)

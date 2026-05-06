@@ -9,6 +9,7 @@ DESCRIPTION = "Debugging and visual QA utilities for medetect."
 from medetect.debugging import DEFAULT_SHIPGEN_QA_CLASSES, run_shipgen_profile_qa
 from medetect.debugging.cluster_profile import main as cluster_profile_main
 from medetect.debugging.pixel_profile import main as pixel_profile_main
+from medetect.debugging.raft_stagger_preview import render_raft_stagger_grid
 from medetect.debugging.shadow_preview import render_shadow_previews
 from medetect.debugging.ship_preview import DEFAULT_PREVIEW_CLASSES, save_ship_previews
 from medetect.debugging.wake_preview import render_wake_previews
@@ -104,6 +105,18 @@ def main(argv: list[str] | None = None) -> None:
         default=Path("debug_runs/wake-preview"),
     )
 
+    stagger_parser = subparsers.add_parser(
+        "raft-stagger-preview", help="Render raft_tight stagger visual QA grid."
+    )
+    stagger_parser.add_argument(
+        "--output-dir", type=Path, default=Path("debug_runs/stagger-preview")
+    )
+    stagger_parser.add_argument("--count", type=int, default=32)
+    stagger_parser.add_argument("--cols", type=int, default=8)
+    stagger_parser.add_argument("--image-size", type=int, default=256)
+    stagger_parser.add_argument("--resolution-m", type=float, default=3.0)
+    stagger_parser.add_argument("--seed-offset", type=int, default=0)
+
     args = parser.parse_args(argv)
 
     if args.command == "pixel-profile":
@@ -161,6 +174,16 @@ def main(argv: list[str] | None = None) -> None:
         outputs = render_wake_previews(args.output_dir)
         for name, path in outputs.items():
             print(f"{name}: {path}")
+        return
+    if args.command == "raft-stagger-preview":
+        render_raft_stagger_grid(
+            output_dir=args.output_dir,
+            count=args.count,
+            cols=args.cols,
+            image_size=args.image_size,
+            resolution_m=args.resolution_m,
+            seed_offset=args.seed_offset,
+        )
         return
 
 
