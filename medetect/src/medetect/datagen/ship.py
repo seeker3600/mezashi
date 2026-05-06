@@ -192,16 +192,43 @@ def _resolve_ship_dimensions(
     return ship_class, beam_px, length_px, lb_ratio
 
 
+def _size_class_names(thresholds: tuple[float, ...]) -> list[str]:
+    """Return YOLO class name list for a given set of size thresholds.
+
+    Rules:
+    - 1 threshold  → ["ship_small", "ship_large"]
+    - 2 thresholds → ["ship_small", "ship_medium", "ship_large"]
+    - 3+ thresholds → ["ship_small", "ship_{T0}_{T1}", ..., "ship_large"]
+    """
+    n = len(thresholds)
+    if n == 0:
+        return ["ship"]
+    if n == 1:
+        return ["ship_small", "ship_large"]
+    if n == 2:
+        return ["ship_small", "ship_medium", "ship_large"]
+    # 3+ thresholds: name intermediate buckets by their boundary values
+    names = ["ship_small"]
+    sorted_t = sorted(thresholds)
+    for i in range(len(sorted_t) - 1):
+        lo = int(sorted_t[i])
+        hi = int(sorted_t[i + 1])
+        names.append(f"ship_{lo}_{hi}")
+    names.append("ship_large")
+    return names
+
+
 def _ship_class_id(
     length_px: int,
     resolution_m: float,
     class_id: int,
-    size_threshold: float | None,
+    size_thresholds: tuple[float, ...] | None,
 ) -> int:
     """Return the YOLO class ID for a ship based on its physical length."""
-    if size_threshold is None:
+    if size_thresholds is None or len(size_thresholds) == 0:
         return class_id
     length_m = length_px * resolution_m
-    if length_m >= size_threshold:
-        return class_id + 1
-    return class_id
+    sorted_t = sorted(size_thresholds)
+    # bucket index = number of thresholds the length exceeds
+    bucket = sum(1 for t in sorted_t if length_m >= t)
+    return class_id + bucket

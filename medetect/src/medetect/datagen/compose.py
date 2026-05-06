@@ -202,7 +202,7 @@ def _compose_one(
     length_exponent: float = 1.0,
     rng: random.Random,
     max_crop_attempts: int = 20,
-    size_threshold: float | None = None,
+    size_thresholds: tuple[float, ...] | None = None,
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
     debug_bg_color: tuple[int, int, int] | None = None,
@@ -347,7 +347,7 @@ def _compose_one(
                 tile,
                 length_range=ship_length_range,
                 length_exponent=length_exponent,
-                size_threshold=size_threshold,
+                size_thresholds=size_thresholds,
                 mixed_prob=cluster_mixed_prob,
                 shadow_azimuth_rad=tile_shadow_azimuth,
                 shadow_length=tile_shadow_length,
@@ -405,7 +405,7 @@ def _compose_one(
                 float(lh),
                 angle_rad,
             )
-            cid = _ship_class_id(lh, ship_resolution, class_id, size_threshold)
+            cid = _ship_class_id(lh, ship_resolution, class_id, size_thresholds)
             single_ships.append(
                 SingleShipPlacement(
                     cx=cx,

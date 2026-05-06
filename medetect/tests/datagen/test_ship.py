@@ -10,6 +10,7 @@ from medetect.datagen.ship import (
     _natural_lb_ratio,
     _scale_ship_pixel_size,
     _ship_class_id,
+    _size_class_names,
     _svg_lb_weight,
     compute_ship_pixel_size,
 )
@@ -310,17 +311,62 @@ class TestShipClassId:
 
     def test_below_threshold_returns_small(self) -> None:
         """長さがしきい値未満なら small (class_id) を返す。"""
-        assert _ship_class_id(5, 10.0, 0, 100.0) == 0
+        assert _ship_class_id(5, 10.0, 0, (100.0,)) == 0
 
     def test_at_threshold_returns_large(self) -> None:
         """長さがしきい値ちょうどなら large (class_id + 1) を返す。"""
-        assert _ship_class_id(10, 10.0, 0, 100.0) == 1
+        assert _ship_class_id(10, 10.0, 0, (100.0,)) == 1
 
     def test_above_threshold_returns_large(self) -> None:
         """長さがしきい値超なら large (class_id + 1) を返す。"""
-        assert _ship_class_id(15, 10.0, 0, 100.0) == 1
+        assert _ship_class_id(15, 10.0, 0, (100.0,)) == 1
 
     def test_custom_base_class_id(self) -> None:
         """base class_id が 0 以外でも正しく動作する。"""
-        assert _ship_class_id(5, 10.0, 2, 100.0) == 2
-        assert _ship_class_id(15, 10.0, 2, 100.0) == 3
+        assert _ship_class_id(5, 10.0, 2, (100.0,)) == 2
+        assert _ship_class_id(15, 10.0, 2, (100.0,)) == 3
+
+    def test_two_thresholds_three_buckets(self) -> None:
+        """しきい値2つのとき、長さに応じて 0/1/2 のバケットに割り振られる。"""
+        # thresholds: 30m, 80m
+        # 5px * 10m = 50m → 30以上80未満 → bucket 1
+        assert _ship_class_id(5, 10.0, 0, (30.0, 80.0)) == 1
+        # 2px * 10m = 20m → 30未満 → bucket 0
+        assert _ship_class_id(2, 10.0, 0, (30.0, 80.0)) == 0
+        # 9px * 10m = 90m → 80以上 → bucket 2
+        assert _ship_class_id(9, 10.0, 0, (30.0, 80.0)) == 2
+
+    def test_three_thresholds_four_buckets(self) -> None:
+        """しきい値3つのとき、4クラスに割り振られる。"""
+        # thresholds: 20m, 50m, 100m
+        assert _ship_class_id(1, 10.0, 0, (20.0, 50.0, 100.0)) == 0   # 10m < 20
+        assert _ship_class_id(3, 10.0, 0, (20.0, 50.0, 100.0)) == 1   # 30m: [20,50)
+        assert _ship_class_id(7, 10.0, 0, (20.0, 50.0, 100.0)) == 2   # 70m: [50,100)
+        assert _ship_class_id(11, 10.0, 0, (20.0, 50.0, 100.0)) == 3  # 110m ≥ 100
+
+    def test_unsorted_thresholds_behave_same_as_sorted(self) -> None:
+        """しきい値の順序に関わらず同じ結果を返す。"""
+        assert _ship_class_id(5, 10.0, 0, (80.0, 30.0)) == _ship_class_id(5, 10.0, 0, (30.0, 80.0))
+        assert _ship_class_id(9, 10.0, 0, (80.0, 30.0)) == _ship_class_id(9, 10.0, 0, (30.0, 80.0))
+
+
+class TestSizeClassNames:
+    """_size_class_names の命名ルール検証。"""
+
+    def test_one_threshold_gives_small_large(self) -> None:
+        """しきい値1つは ship_small / ship_large。"""
+        assert _size_class_names((50.0,)) == ["ship_small", "ship_large"]
+
+    def test_two_thresholds_gives_medium(self) -> None:
+        """しきい値2つは ship_small / ship_medium / ship_large。"""
+        assert _size_class_names((30.0, 80.0)) == ["ship_small", "ship_medium", "ship_large"]
+
+    def test_three_thresholds_uses_numeric_names(self) -> None:
+        """しきい値3つは境界値数値を使った中間クラス名。"""
+        names = _size_class_names((20.0, 50.0, 100.0))
+        assert names == ["ship_small", "ship_20_50", "ship_50_100", "ship_large"]
+
+    def test_unsorted_thresholds_produce_sorted_names(self) -> None:
+        """しきい値は内部でソートされる。"""
+        names = _size_class_names((80.0, 20.0, 50.0))
+        assert names == ["ship_small", "ship_20_50", "ship_50_80", "ship_large"]

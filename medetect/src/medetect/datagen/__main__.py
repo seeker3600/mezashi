@@ -198,10 +198,14 @@ def main() -> None:
     parser.add_argument(
         "--size_threshold",
         type=float,
+        nargs="+",
         default=None,
+        metavar="METRES",
         help=(
-            "Ship length threshold in metres for two-class labelling. "
-            "Ships shorter than this → ship_small, at or above → ship_large. "
+            "One or more ship-length thresholds in metres for multi-class labelling. "
+            "1 value → ship_small / ship_large. "
+            "2 values → ship_small / ship_medium / ship_large. "
+            "3+ values → ship_small / ship_<lo>_<hi> … / ship_large. "
             "Omit for single 'ship' class (default)."
         ),
     )
@@ -341,7 +345,7 @@ def main() -> None:
         ship_length_range=args.ship_length,
         length_exponent=args.length_exponent,
         seed=args.seed,
-        size_threshold=args.size_threshold,
+        size_thresholds=tuple(args.size_threshold) if args.size_threshold else None,
         wake_prob_scale=args.wake_prob_scale,
         wake_alpha_scale=args.wake_alpha_scale,
         debug_bg_color=args.debug_bg_color,

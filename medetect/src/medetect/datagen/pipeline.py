@@ -18,7 +18,7 @@ from rasterio.windows import Window
 from tqdm import tqdm
 
 from medetect.datagen.scene import DEFAULT_EDGE_HARDNESS
-from medetect.datagen.ship import _SvgMeta, _load_svg_metas
+from medetect.datagen.ship import _SvgMeta, _load_svg_metas, _size_class_names
 from medetect.datagen.water_mask import CoastlineIndex
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class _ComposeTaskConfig:
     ship_alpha: tuple[float, float]
     ship_length_range: tuple[float, float] | None
     length_exponent: float
-    size_threshold: float | None
+    size_thresholds: tuple[float, ...] | None
     wake_prob_scale: float
     wake_alpha_scale: float
     debug_bg_color: tuple[int, int, int] | None
@@ -288,7 +288,7 @@ def generate_dataset(
     ship_length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     seed: int | None = None,
-    size_threshold: float | None = None,
+    size_thresholds: tuple[float, ...] | None = None,
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
     debug_bg_color: tuple[int, int, int] | None = None,
@@ -379,7 +379,7 @@ def generate_dataset(
         ship_alpha=ship_alpha,
         ship_length_range=ship_length_range,
         length_exponent=length_exponent,
-        size_threshold=size_threshold,
+        size_thresholds=size_thresholds,
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
         debug_bg_color=debug_bg_color,
@@ -513,7 +513,9 @@ def generate_dataset(
         ),
         "length_exponent": length_exponent,
         "seed": seed,
-        "size_threshold": size_threshold,
+        "size_thresholds": (
+            list(size_thresholds) if size_thresholds is not None else None
+        ),
         "wake_prob_scale": wake_prob_scale,
         "wake_alpha_scale": wake_alpha_scale,
         "shadow_alpha_scale": shadow_alpha_scale,
@@ -525,7 +527,7 @@ def generate_dataset(
     _write_dataset_yaml(
         output_dir,
         class_id,
-        size_threshold=size_threshold,
+        size_thresholds=size_thresholds,
         params=gen_params,
     )
 
@@ -577,7 +579,7 @@ def _run_compose_task(
         ship_length_range=config.ship_length_range,
         length_exponent=config.length_exponent,
         rng=rng,
-        size_threshold=config.size_threshold,
+        size_thresholds=config.size_thresholds,
         wake_prob_scale=config.wake_prob_scale,
         wake_alpha_scale=config.wake_alpha_scale,
         debug_bg_color=config.debug_bg_color,
@@ -603,7 +605,7 @@ def _write_dataset_yaml(
     output_dir: Path,
     class_id: int,
     *,
-    size_threshold: float | None = None,
+    size_thresholds: tuple[float, ...] | None = None,
     params: dict[str, object] | None = None,
 ) -> None:
     """Write a YOLO dataset YAML config."""
@@ -621,9 +623,10 @@ def _write_dataset_yaml(
     lines.append("val: images/autosplit_val.txt")
     lines.append("")
     lines.append("names:")
-    if size_threshold is not None:
-        lines.append(f"  {class_id}: ship_small")
-        lines.append(f"  {class_id + 1}: ship_large")
+    if size_thresholds:
+        names = _size_class_names(size_thresholds)
+        for i, name in enumerate(names):
+            lines.append(f"  {class_id + i}: {name}")
     else:
         lines.append(f"  {class_id}: ship")
 

@@ -491,7 +491,7 @@ def _place_area_cluster(
     background: NDArray[np.uint8],
     length_range: tuple[float, float] | None,
     length_exponent: float,
-    size_threshold: float | None,
+    size_thresholds: tuple[float, ...] | None,
     mixed: bool,
     shadow_azimuth_rad: float | None = None,
     shadow_length: float | None = None,
@@ -631,7 +631,7 @@ def _place_area_cluster(
                 shadow_items.append((shadow_rgba, shadow_x0, shadow_y0))
 
             cluster_items.append((rotated, x0_scene, y0_scene))
-            cid = _ship_class_id(lh, resolution_m, class_id, size_threshold)
+            cid = _ship_class_id(lh, resolution_m, class_id, size_thresholds)
             placed.append((cx, cy, bw, lh, angle_rad, cid))
             _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
             break
@@ -688,7 +688,7 @@ def _place_cluster(
     background: NDArray[np.uint8],
     length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
-    size_threshold: float | None = None,
+    size_thresholds: tuple[float, ...] | None = None,
     mixed_prob: float = 0.5,
     shadow_azimuth_rad: float | None = None,
     shadow_length: float | None = None,
@@ -720,7 +720,7 @@ def _place_cluster(
             background,
             length_range,
             length_exponent,
-            size_threshold,
+            size_thresholds,
             mixed,
             shadow_azimuth_rad=shadow_azimuth_rad,
             shadow_length=shadow_length,
@@ -973,7 +973,7 @@ def _place_cluster(
                 cursor_edge = row_offset + max_proj
                 continue
 
-        cid = _ship_class_id(lh, resolution_m, class_id, size_threshold)
+        cid = _ship_class_id(lh, resolution_m, class_id, size_thresholds)
         placed.append(
             _RaftShipPlacement(
                 svg_text=svg_text_i,

@@ -53,20 +53,37 @@ class TestWriteDatasetYaml:
 
     def test_two_classes_with_threshold(self, tmp_path: pathlib.Path) -> None:
         """しきい値ありのとき、2クラスを出力する。"""
-        _write_dataset_yaml(tmp_path, 0, size_threshold=100.0)
+        _write_dataset_yaml(tmp_path, 0, size_thresholds=(100.0,))
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "  0: ship_small\n" in content
         assert "  1: ship_large\n" in content
 
+    def test_three_classes_with_two_thresholds(self, tmp_path: pathlib.Path) -> None:
+        """しきい値2つのとき、ship_small / ship_medium / ship_large を出力する。"""
+        _write_dataset_yaml(tmp_path, 0, size_thresholds=(30.0, 80.0))
+        content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
+        assert "  0: ship_small\n" in content
+        assert "  1: ship_medium\n" in content
+        assert "  2: ship_large\n" in content
+
+    def test_four_classes_with_three_thresholds(self, tmp_path: pathlib.Path) -> None:
+        """しきい値3つのとき、境界値を使った中間クラス名を出力する。"""
+        _write_dataset_yaml(tmp_path, 0, size_thresholds=(20.0, 50.0, 100.0))
+        content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
+        assert "  0: ship_small\n" in content
+        assert "  1: ship_20_50\n" in content
+        assert "  2: ship_50_100\n" in content
+        assert "  3: ship_large\n" in content
+
     def test_params_written_as_comments(self, tmp_path: pathlib.Path) -> None:
         """生成パラメータがコメントとして書き込まれる。"""
-        params = {"count": 100, "resolution": 10.0, "size_threshold": 80.0}
-        _write_dataset_yaml(tmp_path, 0, size_threshold=80.0, params=params)
+        params = {"count": 100, "resolution": 10.0, "size_thresholds": 80.0}
+        _write_dataset_yaml(tmp_path, 0, size_thresholds=(80.0,), params=params)
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "# Generation parameters:" in content
         assert "#   count: 100" in content
         assert "#   resolution: 10.0" in content
-        assert "#   size_threshold: 80.0" in content
+        assert "#   size_thresholds: 80.0" in content
 
     def test_no_params_no_comment(self, tmp_path: pathlib.Path) -> None:
         """パラメータなしのとき、コメント行がない。"""
@@ -76,7 +93,7 @@ class TestWriteDatasetYaml:
 
     def test_custom_class_id_with_threshold(self, tmp_path: pathlib.Path) -> None:
         """class_id が 0 以外でも正しい ID で出力される。"""
-        _write_dataset_yaml(tmp_path, 3, size_threshold=50.0)
+        _write_dataset_yaml(tmp_path, 3, size_thresholds=(50.0,))
         content = (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
         assert "  3: ship_small\n" in content
         assert "  4: ship_large\n" in content
@@ -115,7 +132,7 @@ class TestGenerateDatasetParams:
             output_dir: pathlib.Path,
             class_id: int,
             *,
-            size_threshold: float | None = None,
+            size_thresholds: tuple[float, ...] | None = None,
             params: dict[str, object] | None = None,
         ) -> None:
             captured["params"] = dict(params or {})
