@@ -1653,6 +1653,37 @@ def generate_ship_svg(
     return out.getvalue()
 
 
+def _svg_to_png_bytes(svg: str, width_px: int = 64) -> bytes:
+    """Rasterize a shipgen SVG to PNG bytes using the existing render pipeline.
+
+    Parameters
+    ----------
+    svg
+        SVG text produced by :func:`generate_ship_svg`.
+    width_px
+        Output width in pixels; height is derived from the viewBox aspect ratio.
+    """
+    import xml.etree.ElementTree as _ET
+
+    import numpy as np
+    from PIL import Image
+
+    from medetect.datagen.render import rasterize_ship_svg
+
+    root = _ET.fromstring(svg)
+    vb = root.get("viewBox", "0 0 1 1").split()
+    vb_w, vb_h = float(vb[2]), float(vb[3])
+    height_px = max(1, round(width_px * vb_h / vb_w)) if vb_w > 0 else width_px
+
+    rgba: np.ndarray = rasterize_ship_svg(svg, width_px=width_px, height_px=height_px)
+    img = Image.fromarray(rgba, mode="RGBA")
+
+    import io
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def generate_ships(
     output_dir: Path,
     count: int,
@@ -1662,15 +1693,16 @@ def generate_ships(
     hull_noise: float = 0.005,
     n_hull_points: int = 64,
     deck_scatter_density: float = 3.0,
+    filetype: str = "svg",
 ) -> None:
-    """Generate synthetic ship SVG files.
+    """Generate synthetic ship files.
 
     Parameters
     ----------
     output_dir
         Destination directory (created if absent).
     count
-        Number of SVG files to generate.
+        Number of files to generate.
     types
         ``{ship_class: weight}`` mapping.  Equal weights for all classes
         when *None*.
@@ -1682,6 +1714,8 @@ def generate_ships(
         Number of polygon sample points per side.
     deck_scatter_density
         Scatter shape density on deck passed to :func:`generate_ship_svg`.
+    filetype
+        Output format: ``"svg"`` (default) or ``"png"``.
 
     Raises
     ------
@@ -1713,10 +1747,14 @@ def generate_ships(
         )
 
         counters[ship_class] = counters.get(ship_class, 0) + 1
-        filename = f"{ship_class}_{counters[ship_class]:05d}.svg"
-        (output_dir / filename).write_text(svg, encoding="utf-8")
+        if filetype == "png":
+            filename = f"{ship_class}_{counters[ship_class]:05d}.png"
+            (output_dir / filename).write_bytes(_svg_to_png_bytes(svg))
+        else:
+            filename = f"{ship_class}_{counters[ship_class]:05d}.svg"
+            (output_dir / filename).write_text(svg, encoding="utf-8")
 
         if (i + 1) % 100 == 0 or (i + 1) == count:
-            logger.info("Generated %d / %d SVGs", i + 1, count)
+            logger.info("Generated %d / %d %s files", i + 1, count, filetype.upper())
 
     logger.info("Ship counts: %s", dict(sorted(counters.items())))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 from pathlib import Path
 
 logging.basicConfig(
@@ -82,8 +83,25 @@ def main() -> None:
             "0 disables scatter entirely (default: 3.0)."
         ),
     )
+    parser.add_argument(
+        "--override",
+        action="store_true",
+        help="Remove and recreate --output_dir if it already exists.",
+    )
+    parser.add_argument(
+        "--filetype",
+        choices=["svg", "png"],
+        default="svg",
+        help="Output file format: svg (default) or png (for debugging).",
+    )
 
     args = parser.parse_args()
+
+    if args.output_dir.exists():
+        if args.override:
+            shutil.rmtree(args.output_dir)
+        else:
+            parser.error(f"--output_dir already exists: {args.output_dir}. Use --override to overwrite.")
 
     types: dict[str, float] | None = None
     if args.types is not None:
@@ -97,6 +115,7 @@ def main() -> None:
         hull_noise=args.hull_noise,
         n_hull_points=args.n_hull_points,
         deck_scatter_density=args.deck_scatter_density,
+        filetype=args.filetype,
     )
 
 

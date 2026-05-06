@@ -715,3 +715,19 @@ class TestGenerateShips:
         for path in files:
             root = ET.fromstring(path.read_text(encoding="utf-8"))
             assert root.attrib["data-ship-class"] == "debug_rect"
+
+    def test_filetype_png_creates_png_files(self, tmp_path: Path) -> None:
+        """filetype='png' で PNG ファイルが生成される。"""
+        generate_ships(
+            output_dir=tmp_path,
+            count=3,
+            types={"patrol": 1.0},
+            seed=42,
+            filetype="png",
+        )
+        files = list(tmp_path.glob("*.png"))
+        assert len(files) == 3
+        assert not list(tmp_path.glob("*.svg"))
+        # Verify valid PNG header (magic bytes)
+        for f in files:
+            assert f.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
