@@ -63,11 +63,8 @@ def main(argv: list[str] | None = None) -> None:
         choices=["auto", "none", "perimeter", "bow"],
         default="auto",
     )
-    preview_parser.add_argument(
-        "--visible-side",
-        choices=["auto", "none", "port", "starboard"],
-        default="auto",
-    )
+    preview_parser.add_argument("--offnadir-deg", type=float, default=0.0)
+    preview_parser.add_argument("--sensor-az-deg", type=float, default=90.0)
 
     shipgen_qa_parser = subparsers.add_parser("shipgen-qa", help="Run the standard 10-ship beam-profile QA.")
     shipgen_qa_parser.add_argument(
@@ -85,11 +82,8 @@ def main(argv: list[str] | None = None) -> None:
         choices=["auto", "none", "perimeter", "bow"],
         default="none",
     )
-    shipgen_qa_parser.add_argument(
-        "--visible-side",
-        choices=["auto", "none", "port", "starboard"],
-        default="none",
-    )
+    shipgen_qa_parser.add_argument("--offnadir-deg", type=float, default=0.0)
+    shipgen_qa_parser.add_argument("--sensor-az-deg", type=float, default=90.0)
 
     shadow_parser = subparsers.add_parser("shadow-preview", help="Render shadow QA preview images.")
     shadow_parser.add_argument(
@@ -138,7 +132,8 @@ def main(argv: list[str] | None = None) -> None:
             seeds=args.seeds,
             bg_color=args.bg_color,
             trim_mode=_normalize_variant_choice(args.trim_mode),
-            visible_side=_normalize_variant_choice(args.visible_side),
+            offnadir_deg=args.offnadir_deg,
+            sensor_az_ship_deg=args.sensor_az_deg,
         )
         for name, path in outputs.items():
             print(f"{name}: {path}")
@@ -152,7 +147,8 @@ def main(argv: list[str] | None = None) -> None:
             length_px=args.length_px,
             bg_color=args.bg_color,
             trim_mode=_normalize_variant_choice(args.trim_mode),
-            visible_side=_normalize_variant_choice(args.visible_side),
+            offnadir_deg=args.offnadir_deg,
+            sensor_az_ship_deg=args.sensor_az_deg,
         )
         print(f"manifest: {result.manifest_path}")
         print(f"summary: {result.summary_path}")

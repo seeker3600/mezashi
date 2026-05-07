@@ -497,11 +497,12 @@ def _place_area_cluster(
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
     shadow_alpha_scale: float = 1.0,
+    offnadir_max: float = 0.0,
 ) -> list[str]:
     """Place ships in a loose 2D area with fully random headings."""
     labels: list[str] = []
 
-    svg_text_ref = _pick_svg(svg_metas, rng, length_range)
+    svg_text_ref = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
     cls0, bw0, lh0, _ = _resolve_ship_dimensions(
         svg_text_ref,
         resolution_m,
@@ -549,7 +550,7 @@ def _place_area_cluster(
                 scene_scale=scene_scale,
             )
         elif mixed:
-            svg_text_i = _pick_svg(svg_metas, rng, length_range)
+            svg_text_i = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
                 svg_text_i,
                 resolution_m,
@@ -694,6 +695,7 @@ def _place_cluster(
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
     shadow_alpha_scale: float = 1.0,
+    offnadir_max: float = 0.0,
 ) -> list[str]:
     """Place a cluster of ships and return label lines."""
     n_ships = rng.randint(*cluster_size_range)
@@ -726,6 +728,7 @@ def _place_cluster(
             shadow_length=shadow_length,
             shadow_alpha=shadow_alpha,
             shadow_alpha_scale=shadow_alpha_scale,
+            offnadir_max=offnadir_max,
         )
 
     tight = layout == "raft_tight"
@@ -739,7 +742,7 @@ def _place_cluster(
     sin_base = math.sin(base_angle_rad)
     scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
 
-    svg_text = _pick_svg(svg_metas, rng, length_range)
+    svg_text = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
     _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
         svg_text,
         resolution_m,
@@ -902,7 +905,7 @@ def _place_cluster(
                 length_exponent,
             )
         elif mixed:
-            svg_text_i = _pick_svg(svg_metas, rng, length_range)
+            svg_text_i = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
                 svg_text_i,
                 resolution_m,
@@ -911,7 +914,7 @@ def _place_cluster(
                 length_exponent,
             )
         else:
-            svg_text_i = _pick_svg(svg_metas, rng, length_range)
+            svg_text_i = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
             scale = rng.uniform(0.9, 1.1)
             bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
 

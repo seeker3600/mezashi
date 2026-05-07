@@ -531,7 +531,6 @@ class TestSmallShipRareVariants:
             "fishing_longliner",
             rng=random.Random(42),
             trim_mode="perimeter",
-            visible_side="none",
         )
         root = ET.fromstring(svg)
 
@@ -550,7 +549,6 @@ class TestSmallShipRareVariants:
             "fishing_purse_seiner",
             rng=random.Random(42),
             trim_mode="bow",
-            visible_side="none",
         )
         root = ET.fromstring(svg)
 
@@ -573,7 +571,8 @@ class TestSmallShipRareVariants:
             "tug_harbor",
             rng=random.Random(42),
             trim_mode="none",
-            visible_side="starboard",
+            offnadir_deg=20.0,
+            sensor_az_ship_deg=90.0,
         )
         root = ET.fromstring(svg)
 

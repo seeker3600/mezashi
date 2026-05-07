@@ -210,6 +210,7 @@ def _compose_one(
     shadow_length_range: tuple[float, float] = (0.0, 3.75),
     shadow_azimuth_rad: float | None = None,
     coastline_index: CoastlineIndex | None = None,
+    offnadir_max: float = 0.0,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image. Returns ``(tile, labels, n_clusters)``."""
     with rasterio.open(tif_path) as src:
@@ -353,12 +354,17 @@ def _compose_one(
                 shadow_length=tile_shadow_length,
                 shadow_alpha=tile_shadow_alpha,
                 shadow_alpha_scale=shadow_alpha_scale,
+                offnadir_max=offnadir_max,
             )
             labels.extend(new_labels)
             if new_labels:
                 n_clusters += 1
         else:
-            svg_text = _pick_svg(svg_metas, rng, ship_length_range)
+            svg_text = _pick_svg(
+                svg_metas, rng, ship_length_range,
+                rng.uniform(0.0, offnadir_max),
+                rng.uniform(0.0, 360.0),
+            )
             angle_deg = rng.uniform(0, 360)
             angle_rad = math.radians(angle_deg)
             rotated, _cls_name, bw, lh, _lb = _render_ship(

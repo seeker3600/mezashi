@@ -140,6 +140,8 @@ def _pick_svg(
     svg_metas: list[_SvgMeta] | None,
     rng: random.Random,
     length_range: tuple[float, float] | None = None,
+    offnadir_deg: float = 0.0,
+    sensor_az_ship_deg: float = 0.0,
 ) -> str:
     """Return SVG text weighted by lb_ratio suitability for *length_range*."""
     target_m: float | None = (
@@ -169,7 +171,7 @@ def _pick_svg(
         (cls,) = rng.choices(classes, weights=weights, k=1)
     else:
         cls = rng.choice(classes)
-    return generate_ship_svg(cls, rng=rng)
+    return generate_ship_svg(cls, rng=rng, offnadir_deg=offnadir_deg, sensor_az_ship_deg=sensor_az_ship_deg)
 
 
 def _resolve_ship_dimensions(

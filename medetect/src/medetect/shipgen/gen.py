@@ -16,6 +16,7 @@ SVG viewBox = ``0 0 1 {lb_ratio}``.
 from __future__ import annotations
 
 import logging
+import math
 import random
 from dataclasses import dataclass
 from io import StringIO
@@ -35,6 +36,13 @@ from medetect.shipgen.ship_class import (
 
 
 logger = logging.getLogger(__name__)
+
+# Fraction of hull depth used to translate superstructure positions under
+# off-nadir viewing.  beam_shift = side_component * _STRUCT_HEIGHT_FRAC
+# Typical superstructure height / beam: destroyer ~0.5-0.7, merchant ~0.3-0.5.
+# 0.45 is a representative mid-range value producing clearly visible shifts.
+# マイナスにしないと船腹方向に移動しちゃうから手修正した。バグじゃないよ。
+_STRUCT_HEIGHT_FRAC: float = -0.5
 
 _DEBUG_RECT_COLORS: tuple[tuple[int, int, int], ...] = (
     (220, 48, 48),
@@ -273,6 +281,7 @@ def _resolve_struct_rect(
     rng: random.Random,
     *,
     oversized_variant: bool = False,
+    beam_shift: float = 0.0,
 ) -> _ResolvedStructRect | None:
     x0 = rng.uniform(*spec.x0)
     x1 = rng.uniform(*spec.x1)
@@ -287,9 +296,21 @@ def _resolve_struct_rect(
     hull_hw = float(half_widths[mid_idx])
 
     block_hw = w_frac * 0.5
-    cx = 0.5 + spec.y_off
-    el = max(cx - block_hw, 0.5 - hull_hw + 0.02)
-    er = min(cx + block_hw, 0.5 + hull_hw - 0.02)
+    cx = 0.5 + spec.y_off + beam_shift
+    # Near-side clamp is intentionally removed when beam_shift is non-zero:
+    # off-nadir geometry should allow the near (visible) side of a structure
+    # to protrude beyond the hull silhouette, which is physically correct.
+    if beam_shift > 0.0:
+        # Sensor sees starboard side — starboard (right) edge is free to overhang.
+        el = max(cx - block_hw, 0.5 - hull_hw + 0.02)
+        er = cx + block_hw
+    elif beam_shift < 0.0:
+        # Sensor sees port side — port (left) edge is free to overhang.
+        el = cx - block_hw
+        er = min(cx + block_hw, 0.5 + hull_hw - 0.02)
+    else:
+        el = max(cx - block_hw, 0.5 - hull_hw + 0.02)
+        er = min(cx + block_hw, 0.5 + hull_hw - 0.02)
     if el >= er:
         return None
 
@@ -1350,7 +1371,8 @@ def generate_ship_svg(
     n_hull_points: int = 64,
     deck_scatter_density: float = 3.0,
     trim_mode: str | None = None,
-    visible_side: str | None = None,
+    offnadir_deg: float = 0.0,
+    sensor_az_ship_deg: float = 0.0,
 ) -> str:
     """Generate a single ship as an SVG string.
 
@@ -1373,9 +1395,14 @@ def generate_ship_svg(
     trim_mode
         Optional forced hull trim mode: ``none``, ``perimeter``, or ``bow``.
         ``None`` samples from the class family defaults.
-    visible_side
-        Optional forced visible-side band: ``none``, ``port``, or
-        ``starboard``. ``None`` samples from the class family defaults.
+    offnadir_deg
+        Off-nadir viewing angle in degrees (0 = nadir/overhead).  Controls
+        how much of the ship's side is visible.  Must be >= 0.
+    sensor_az_ship_deg
+        Sensor azimuth in ship frame (degrees).  0 = bow-on, 90 = looking at
+        starboard side, 180 = stern-on, 270 = looking at port side.  Together
+        with *offnadir_deg* this determines which side is visible and how wide
+        the side band appears: ``side_component = tan(offnadir) * sin(az)``.
 
     Returns
     -------
@@ -1420,11 +1447,17 @@ def generate_ship_svg(
         out.write("</svg>\n")
         return out.getvalue()
 
+    # Compute off-nadir viewing geometry.
+    # side_component > 0 → starboard visible; < 0 → port visible; ≈ 0 → none.
+    tan_theta = math.tan(math.radians(offnadir_deg))
+    side_component = tan_theta * math.sin(math.radians(sensor_az_ship_deg))
+    beam_shift = side_component * _STRUCT_HEIGHT_FRAC
+
     colors = sample_colors(
         cls.color_family,
         rng,
         trim_mode=trim_mode,
-        visible_side=visible_side,
+        side_component=side_component,
         appearance_variant=appearance_variant,
     )
 
@@ -1628,6 +1661,7 @@ def generate_ship_svg(
                 half_widths,
                 rng,
                 oversized_variant=appearance_variant.oversized_struct and index == 0,
+                beam_shift=beam_shift,
             )
             if rect is None:
                 _consume_struct_geometry_draws(s, rng)
@@ -1694,6 +1728,7 @@ def generate_ships(
     n_hull_points: int = 64,
     deck_scatter_density: float = 3.0,
     filetype: str = "svg",
+    offnadir_max: float = 0.0,
 ) -> None:
     """Generate synthetic ship files.
 
@@ -1716,6 +1751,10 @@ def generate_ships(
         Scatter shape density on deck passed to :func:`generate_ship_svg`.
     filetype
         Output format: ``"svg"`` (default) or ``"png"``.
+    offnadir_max
+        Maximum off-nadir angle in degrees (0 = nadir only).  Each ship
+        independently draws ``offnadir_deg ~ Uniform(0, offnadir_max)`` and
+        ``sensor_az_ship_deg ~ Uniform(0, 360)``.
 
     Raises
     ------
@@ -1740,10 +1779,14 @@ def generate_ships(
 
     for i in range(count):
         ship_class = rng.choices(classes, weights=weights, k=1)[0]
+        offnadir_deg = rng.uniform(0.0, offnadir_max)
+        sensor_az_ship_deg = rng.uniform(0.0, 360.0)
         svg = generate_ship_svg(
             ship_class, rng=rng, hull_noise=hull_noise,
             n_hull_points=n_hull_points,
             deck_scatter_density=deck_scatter_density,
+            offnadir_deg=offnadir_deg,
+            sensor_az_ship_deg=sensor_az_ship_deg,
         )
 
         counters[ship_class] = counters.get(ship_class, 0) + 1

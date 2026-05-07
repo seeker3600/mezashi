@@ -86,7 +86,8 @@ def run_shipgen_profile_qa(
     hull_noise: float = 0.005,
     deck_scatter_density: float = 3.0,
     trim_mode: str | None = "none",
-    visible_side: str | None = "none",
+    offnadir_deg: float = 0.0,
+    sensor_az_ship_deg: float = 0.0,
 ) -> ShipgenQaResult:
     """Render the standard 10-ship QA set and write profile artifacts."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -107,7 +108,8 @@ def run_shipgen_profile_qa(
             hull_noise=hull_noise,
             deck_scatter_density=deck_scatter_density,
             trim_mode=trim_mode,
-            visible_side=visible_side,
+            offnadir_deg=offnadir_deg,
+            sensor_az_ship_deg=sensor_az_ship_deg,
         )
         resolved_trim_mode, resolved_visible_side = _extract_trim_metadata(svg)
         rgba = rasterize_ship_svg(svg, beam_px, length_px)

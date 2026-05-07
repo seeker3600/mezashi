@@ -299,14 +299,14 @@ _TRIM_PRIMARY_WEIGHTS: dict[str, tuple[int, int, int]] = {
 }
 
 
-_TRIM_SIDE_WEIGHTS: dict[str, tuple[int, int, int]] = {
-    "navy_gray": (48, 26, 26),
-    "navy_dark": (52, 24, 24),
-    "fishing_mixed": (36, 32, 32),
-    "fishing_white": (34, 33, 33),
-    "work_mixed": (42, 29, 29),
-    "barge_dull": (54, 23, 23),
-}
+# Fraction of ship hull depth used to scale the visible-side band width.
+# side_width = |side_component| * _HULL_DEPTH_FRAC
+# Typical freeboard/beam ratio: destroyer ~0.33, frigate ~0.29, merchant ~0.10-0.15.
+# 0.20 is a representative mid-range value that produces clearly visible bands.
+_HULL_DEPTH_FRAC: float = 0.20
+
+# Small epsilon to treat side_component as zero (avoids floating-point noise)
+_SIDE_COMPONENT_EPS: float = 1e-3
 
 
 _PERIMETER_TRIM_PALETTES: dict[str, list[tuple[int, int, int]]] = {
@@ -363,20 +363,6 @@ def _resolve_primary_trim_mode(
     weights = _TRIM_PRIMARY_WEIGHTS.get(family_key, (58, 16, 26))
     return rng.choices(["none", "perimeter", "bow"], weights=weights, k=1)[0]
 
-
-def _resolve_visible_side(
-    family_key: str,
-    rng: random.Random,
-    forced: str | None,
-) -> str:
-    allowed = {"none", "port", "starboard"}
-    if forced is not None:
-        if forced not in allowed:
-            msg = f"Unsupported visible_side: {forced!r}"
-            raise ValueError(msg)
-        return forced
-    weights = _TRIM_SIDE_WEIGHTS.get(family_key, (40, 30, 30))
-    return rng.choices(["none", "port", "starboard"], weights=weights, k=1)[0]
 
 
 def _sample_perimeter_trim_color(
@@ -444,13 +430,29 @@ def _sample_hull_trim_style(
     rng: random.Random,
     *,
     trim_mode: str | None = None,
-    visible_side: str | None = None,
+    side_component: float = 0.0,
 ) -> HullTrimStyle:
+    """Sample hull trim style.
+
+    Parameters
+    ----------
+    side_component
+        Off-nadir beam-direction component: ``tan(θ) * sin(φ)`` where θ is the
+        off-nadir angle and φ is the sensor azimuth in ship frame
+        (0°=bow, 90°=starboard).  Positive values → starboard side visible;
+        negative → port side visible; zero → no side band.
+    """
     family_key = _resolve_trim_family(family)
     trim_rng = _fork_rng(rng)
 
     primary_mode = _resolve_primary_trim_mode(family_key, trim_rng, trim_mode)
-    resolved_side = _resolve_visible_side(family_key, trim_rng, visible_side)
+
+    if side_component > _SIDE_COMPONENT_EPS:
+        resolved_side = "starboard"
+    elif side_component < -_SIDE_COMPONENT_EPS:
+        resolved_side = "port"
+    else:
+        resolved_side = "none"
 
     primary_color: tuple[int, int, int] | None = None
     primary_width = 0.0
@@ -470,7 +472,7 @@ def _sample_hull_trim_style(
     side_end = 1.0
     if resolved_side != "none":
         side_color = _sample_side_trim_color(family_key, hull, trim_rng)
-        side_width = trim_rng.uniform(0.028, 0.062)
+        side_width = abs(side_component) * _HULL_DEPTH_FRAC
         side_start = trim_rng.uniform(0.06, 0.18)
         side_end = trim_rng.uniform(0.78, 0.96)
 
@@ -681,7 +683,7 @@ def sample_colors(
     rng: random.Random,
     *,
     trim_mode: str | None = None,
-    visible_side: str | None = None,
+    side_component: float = 0.0,
     appearance_variant: ShipAppearanceVariant | None = None,
 ) -> ShipColors:
     """Sample a colour scheme from the given palette family.
@@ -736,7 +738,7 @@ def sample_colors(
         hull,
         rng,
         trim_mode=trim_mode,
-        visible_side=visible_side,
+        side_component=side_component,
     )
     return ShipColors(hull=hull, struct_base=struct_base, trim=trim)
 

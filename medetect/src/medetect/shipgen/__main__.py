@@ -94,6 +94,16 @@ def main() -> None:
         default="svg",
         help="Output file format: svg (default) or png (for debugging).",
     )
+    parser.add_argument(
+        "--offnadir_max",
+        type=float,
+        default=0.0,
+        help=(
+            "Maximum off-nadir viewing angle in degrees (default: 0.0 = nadir only). "
+            "Each ship independently draws offnadir_deg ~ Uniform(0, offnadir_max) "
+            "and sensor_az_ship_deg ~ Uniform(0, 360)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -116,6 +126,7 @@ def main() -> None:
         n_hull_points=args.n_hull_points,
         deck_scatter_density=args.deck_scatter_density,
         filetype=args.filetype,
+        offnadir_max=args.offnadir_max,
     )
 
 

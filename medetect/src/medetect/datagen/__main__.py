@@ -318,6 +318,17 @@ def main() -> None:
         action="store_true",
         help="Override the output directory if it already exists.",
     )
+    parser.add_argument(
+        "--offnadir_max",
+        type=float,
+        default=0.0,
+        metavar="DEG",
+        help=(
+            "Maximum off-nadir viewing angle in degrees (default: 0.0 = nadir only). "
+            "Each ship independently draws offnadir_deg ~ Uniform(0, offnadir_max) "
+            "and sensor_az_ship_deg ~ Uniform(0, 360)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.false_ratio and args.false_dir is None:
@@ -356,6 +367,7 @@ def main() -> None:
         max_workers=args.workers,
         coastline=args.coastline,
         override=args.override,
+        offnadir_max=args.offnadir_max,
     )
     append_command_history(
         args.output_dir,
