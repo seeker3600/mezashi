@@ -147,11 +147,11 @@ class TestBeamShiftSymmetry:
         vals = _struct_cx_values(svg)
         return sum(vals) / len(vals) if vals else 0.5
 
-    def test_starboard_structs_shift_right(self) -> None:
-        """az=90° のとき構造物は az=270° のときより右にシフトする。"""
+    def test_starboard_structs_shift_left(self) -> None:
+        """az=90° (starboard センサー) のとき構造物はセンサーと反対側（左）にシフトする。"""
         cx_stbd = self._struct_cx_avg(90.0)
         cx_port = self._struct_cx_avg(270.0)
-        assert cx_stbd > cx_port
+        assert cx_stbd < cx_port
 
     def test_beam_shift_sign_symmetry(self) -> None:
         """az=90 と az=270 のシフト量は nadir 基準で逆符号かつほぼ等しい。"""
@@ -160,8 +160,9 @@ class TestBeamShiftSymmetry:
         cx_port = self._struct_cx_avg(270.0)
         shift_stbd = cx_stbd - cx_nadir
         shift_port = cx_port - cx_nadir
-        # 方向が逆
-        assert shift_stbd > 0 and shift_port < 0
+        # starboard センサー → 構造物は左（センサー反対側）にシフト → 負
+        # port センサー → 構造物は右（センサー反対側）にシフト → 正
+        assert shift_stbd < 0 and shift_port > 0
         # 大きさはほぼ等しい（sin(90)=sin(270)=1 なので tan_theta は同じ）
         assert abs(abs(shift_stbd) - abs(shift_port)) < 0.05
 

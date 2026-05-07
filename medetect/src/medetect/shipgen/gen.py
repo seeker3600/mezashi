@@ -41,8 +41,10 @@ logger = logging.getLogger(__name__)
 # off-nadir viewing.  beam_shift = side_component * _STRUCT_HEIGHT_FRAC
 # Typical superstructure height / beam: destroyer ~0.5-0.7, merchant ~0.3-0.5.
 # 0.45 is a representative mid-range value producing clearly visible shifts.
-# マイナスにしないと船腹方向に移動しちゃうから手修正した。バグじゃないよ。
-_STRUCT_HEIGHT_FRAC: float = -0.5
+# Negative: in optical imagery, superstructure tops lean AWAY from the sensor
+# (they protrude above the deck, so they appear on the far side of the hull).
+# e.g. starboard sensor (az=90°) → structs shift left (port-ward).
+_STRUCT_HEIGHT_FRAC: float = -0.45
 
 _DEBUG_RECT_COLORS: tuple[tuple[int, int, int], ...] = (
     (220, 48, 48),

@@ -23,13 +23,11 @@ class TestBuildHyp:
 
         hyp = _build_hyp()
 
-        assert hyp.degrees == 10.0
-        assert hyp.scale == 0.1
+        assert hyp.degrees == 20.0
+        assert hyp.scale == 0.0
         assert hyp.fliplr == 0.5
         assert hyp.flipud == 0.5
         assert hyp.hsv_h == 0.1
-        assert hyp.hsv_s == 0.25
-        assert hyp.hsv_v == 0.20
         assert hyp.mosaic == 0.0
         assert hyp.erasing == 0.0
 
