@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import logging
 from pathlib import Path
+from typing import Any
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +50,24 @@ def _parse_hex_color(s: str) -> tuple[int, int, int]:
     except ValueError as exc:
         msg = f"Expected #RRGGBB, got {s!r}"
         raise argparse.ArgumentTypeError(msg) from exc
+
+
+def _parse_shipgen_kwarg(s: str) -> tuple[str, Any]:
+    """Parse ``"KEY=VALUE"`` into ``(key, value)`` with automatic type coercion.
+
+    The value is parsed with ``ast.literal_eval`` so that Python literals
+    (int, float, bool, None, str) are converted to their native types.  If
+    ``literal_eval`` fails the raw string is used as-is.
+    """
+    if "=" not in s:
+        msg = f"Expected KEY=VALUE, got {s!r}"
+        raise argparse.ArgumentTypeError(msg)
+    key, raw = s.split("=", maxsplit=1)
+    try:
+        value: Any = ast.literal_eval(raw)
+    except (ValueError, SyntaxError):
+        value = raw
+    return key, value
 
 
 def main() -> None:
@@ -329,6 +349,19 @@ def main() -> None:
             "and sensor_az_world_deg ~ Uniform(0, 360) shared by all ships in that tile."
         ),
     )
+    parser.add_argument(
+        "--shipgen",
+        type=_parse_shipgen_kwarg,
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Pass a keyword argument directly to generate_ship_svg(). "
+            "Repeatable. Values are auto-converted via ast.literal_eval "
+            "(int, float, None, bool) or kept as str. "
+            "Example: --shipgen trim_mode=bow --shipgen hull_noise=0.01"
+        ),
+    )
     args = parser.parse_args()
 
     if args.false_ratio and args.false_dir is None:
@@ -368,7 +401,7 @@ def main() -> None:
         coastline=args.coastline,
         override=args.override,
         offnadir_max=args.offnadir_max,
-        shipgen_kwargs={},
+        shipgen_kwargs=dict(args.shipgen),
     )
     append_command_history(
         args.output_dir,
