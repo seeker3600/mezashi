@@ -325,8 +325,8 @@ def main() -> None:
         metavar="DEG",
         help=(
             "Maximum off-nadir viewing angle in degrees (default: 0.0 = nadir only). "
-            "Each ship independently draws offnadir_deg ~ Uniform(0, offnadir_max) "
-            "and sensor_az_ship_deg ~ Uniform(0, 360)."
+            "Each tile independently draws offnadir_deg ~ Uniform(0, offnadir_max) "
+            "and sensor_az_world_deg ~ Uniform(0, 360) shared by all ships in that tile."
         ),
     )
     args = parser.parse_args()
@@ -368,6 +368,7 @@ def main() -> None:
         coastline=args.coastline,
         override=args.override,
         offnadir_max=args.offnadir_max,
+        shipgen_kwargs={},
     )
     append_command_history(
         args.output_dir,

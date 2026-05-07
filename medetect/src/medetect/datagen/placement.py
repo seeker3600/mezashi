@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -497,12 +498,20 @@ def _place_area_cluster(
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
     shadow_alpha_scale: float = 1.0,
-    offnadir_max: float = 0.0,
+    offnadir_deg: float = 0.0,
+    sensor_az_world_deg: float = 0.0,
+    shipgen_kwargs: dict[str, Any] | None = None,
 ) -> list[str]:
     """Place ships in a loose 2D area with fully random headings."""
     labels: list[str] = []
 
-    svg_text_ref = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
+    # Pre-compute i==0 angle so the reference SVG gets a consistent sensor_az.
+    ref_angle_deg = rng.uniform(0, 360)
+    ref_sensor_az_ship_deg = (sensor_az_world_deg - ref_angle_deg) % 360.0
+    svg_text_ref = _pick_svg(
+        svg_metas, rng, length_range, offnadir_deg, ref_sensor_az_ship_deg,
+        shipgen_kwargs=shipgen_kwargs,
+    )
     cls0, bw0, lh0, _ = _resolve_ship_dimensions(
         svg_text_ref,
         resolution_m,
@@ -530,7 +539,10 @@ def _place_area_cluster(
     placed: list[tuple[float, float, int, int, float, int]] = []
 
     for i in range(n_ships):
-        angle_deg = rng.uniform(0, 360)
+        if i == 0:
+            angle_deg = ref_angle_deg
+        else:
+            angle_deg = rng.uniform(0, 360)
         angle_rad = math.radians(angle_deg)
 
         if i == 0:
@@ -550,7 +562,11 @@ def _place_area_cluster(
                 scene_scale=scene_scale,
             )
         elif mixed:
-            svg_text_i = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
+            ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
+            svg_text_i = _pick_svg(
+                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                shipgen_kwargs=shipgen_kwargs,
+            )
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
                 svg_text_i,
                 resolution_m,
@@ -567,7 +583,11 @@ def _place_area_cluster(
                 scene_scale=scene_scale,
             )
         else:
-            svg_text_u = _pick_svg(svg_metas, rng, length_range)
+            ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
+            svg_text_u = _pick_svg(
+                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                shipgen_kwargs=shipgen_kwargs,
+            )
             scale = rng.uniform(0.9, 1.1)
             jit_bw, jit_lh = _scale_ship_pixel_size(bw0, lh0, scale)
             rotated = _rasterize_ship_scene(
@@ -695,7 +715,9 @@ def _place_cluster(
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
     shadow_alpha_scale: float = 1.0,
-    offnadir_max: float = 0.0,
+    offnadir_deg: float = 0.0,
+    sensor_az_world_deg: float = 0.0,
+    shipgen_kwargs: dict[str, Any] | None = None,
 ) -> list[str]:
     """Place a cluster of ships and return label lines."""
     n_ships = rng.randint(*cluster_size_range)
@@ -728,7 +750,9 @@ def _place_cluster(
             shadow_length=shadow_length,
             shadow_alpha=shadow_alpha,
             shadow_alpha_scale=shadow_alpha_scale,
-            offnadir_max=offnadir_max,
+            offnadir_deg=offnadir_deg,
+            sensor_az_world_deg=sensor_az_world_deg,
+            shipgen_kwargs=shipgen_kwargs,
         )
 
     tight = layout == "raft_tight"
@@ -742,7 +766,11 @@ def _place_cluster(
     sin_base = math.sin(base_angle_rad)
     scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
 
-    svg_text = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
+    initial_sensor_az = (sensor_az_world_deg - base_angle) % 360.0
+    svg_text = _pick_svg(
+        svg_metas, rng, length_range, offnadir_deg, initial_sensor_az,
+        shipgen_kwargs=shipgen_kwargs,
+    )
     _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
         svg_text,
         resolution_m,
@@ -905,7 +933,11 @@ def _place_cluster(
                 length_exponent,
             )
         elif mixed:
-            svg_text_i = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
+            ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
+            svg_text_i = _pick_svg(
+                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                shipgen_kwargs=shipgen_kwargs,
+            )
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
                 svg_text_i,
                 resolution_m,
@@ -914,7 +946,11 @@ def _place_cluster(
                 length_exponent,
             )
         else:
-            svg_text_i = _pick_svg(svg_metas, rng, length_range, rng.uniform(0.0, offnadir_max), rng.uniform(0.0, 360.0))
+            ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
+            svg_text_i = _pick_svg(
+                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                shipgen_kwargs=shipgen_kwargs,
+            )
             scale = rng.uniform(0.9, 1.1)
             bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
 

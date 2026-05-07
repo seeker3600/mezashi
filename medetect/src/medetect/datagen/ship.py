@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from medetect.datagen.svg import parse_svg_metadata
 
@@ -142,6 +142,7 @@ def _pick_svg(
     length_range: tuple[float, float] | None = None,
     offnadir_deg: float = 0.0,
     sensor_az_ship_deg: float = 0.0,
+    shipgen_kwargs: dict[str, Any] | None = None,
 ) -> str:
     """Return SVG text weighted by lb_ratio suitability for *length_range*."""
     target_m: float | None = (
@@ -171,7 +172,10 @@ def _pick_svg(
         (cls,) = rng.choices(classes, weights=weights, k=1)
     else:
         cls = rng.choice(classes)
-    return generate_ship_svg(cls, rng=rng, offnadir_deg=offnadir_deg, sensor_az_ship_deg=sensor_az_ship_deg)
+    return generate_ship_svg(
+        cls, rng=rng, offnadir_deg=offnadir_deg, sensor_az_ship_deg=sensor_az_ship_deg,
+        **(shipgen_kwargs or {}),
+    )
 
 
 def _resolve_ship_dimensions(

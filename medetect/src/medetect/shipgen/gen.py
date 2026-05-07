@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 
+from tqdm import tqdm
+
 from numpy.typing import NDArray
 
 from medetect.shipgen.hull import build_hull_points, interpolate_hull
@@ -1131,6 +1133,11 @@ def _write_struct_shadow_svg(
     )
 
 
+# Height fractions (relative to beam) assumed per tier for off-nadir displacement.
+# Tier-1 micro marks sit almost flush; tier-3 containers are taller.
+_SCATTER_HEIGHT_FRAC: dict[int, float] = {1: 0.02, 2: 0.06, 3: 0.12}
+
+
 def _write_deck_scatter_svg(
     out: StringIO,
     lb_ratio: float,
@@ -1141,6 +1148,7 @@ def _write_deck_scatter_svg(
     struct_zones: list[tuple[float, float]] | None = None,
     sun_dx: float = 0.0,
     sun_dy: float = 0.0,
+    side_component: float = 0.0,
 ) -> None:
     """甲板上にランダムな小図形を散布してテクスチャを付加する。
 
@@ -1196,22 +1204,26 @@ def _write_deck_scatter_svg(
         #
         # Size targets are chosen so shapes survive Gaussian blur σ≤2 px:
         #   survive threshold ≈ 3σ = 6 px at beam_px=60 (preview minimum).
-        #   Tier 1 max 0.120 →  7.2 px @ 60 px  (barely visible, intentional texture)
-        #   Tier 2 max 0.180 → 10.8 px @ 60 px  (visible detail)
-        #   Tier 3 max 0.300 → 18.0 px @ 60 px  (clearly visible structure)
+        #   Tier 1 max 0.240 → 14.4 px @ 60 px  (micro texture, clearly visible)
+        #   Tier 2 max 0.360 → 21.6 px @ 60 px  (small equipment)
+        #   Tier 3 max 0.600 → 36.0 px @ 60 px  (medium equipment / containers)
         tier_roll = rng.random()
         if tier_roll < 0.45:
             tier = 1
-            max_sz = min(0.120, hull_hw * 0.30)
+            max_sz = min(0.240, hull_hw * 0.30)
             sz = rng.uniform(max_sz * 0.50, max_sz)
         elif tier_roll < 0.80:
             tier = 2
-            max_sz = min(0.180, hull_hw * 0.50)
+            max_sz = min(0.360, hull_hw * 0.50)
             sz = rng.uniform(max_sz * 0.50, max_sz)
         else:
             tier = 3
-            max_sz = min(0.300, hull_hw * 0.75)
+            max_sz = min(0.600, hull_hw * 0.75)
             sz = rng.uniform(max_sz * 0.55, max_sz)
+
+        # ── Off-nadir displacement — taller objects appear shifted in sensor direction
+        # Uses same sign convention as _STRUCT_HEIGHT_FRAC: objects lean away from sensor.
+        cx += -side_component * _SCATTER_HEIGHT_FRAC[tier]
 
         # ── Colour — hull-toned with strong contrast ─────────────────
         # Contrast values represent Δ in [0,255] per RGB channel.
@@ -1677,6 +1689,7 @@ def generate_ship_svg(
     _write_deck_scatter_svg(
         out, lb_ratio, half_widths, colors, rng, deck_scatter_density,
         struct_zones=struct_zones, sun_dx=sun_dx, sun_dy=sun_dy,
+        side_component=side_component,
     )
     out.write('  </g>\n')
 
@@ -1779,7 +1792,7 @@ def generate_ships(
 
     counters: dict[str, int] = {}
 
-    for i in range(count):
+    for _i in tqdm(range(count), desc="Generating ships", unit="ship"):
         ship_class = rng.choices(classes, weights=weights, k=1)[0]
         offnadir_deg = rng.uniform(0.0, offnadir_max)
         sensor_az_ship_deg = rng.uniform(0.0, 360.0)
@@ -1798,8 +1811,5 @@ def generate_ships(
         else:
             filename = f"{ship_class}_{counters[ship_class]:05d}.svg"
             (output_dir / filename).write_text(svg, encoding="utf-8")
-
-        if (i + 1) % 100 == 0 or (i + 1) == count:
-            logger.info("Generated %d / %d %s files", i + 1, count, filetype.upper())
 
     logger.info("Ship counts: %s", dict(sorted(counters.items())))

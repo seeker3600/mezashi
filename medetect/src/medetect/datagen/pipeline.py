@@ -10,6 +10,7 @@ import random
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import rasterio
@@ -50,6 +51,7 @@ class _ComposeTaskConfig:
     shadow_alpha_scale: float
     shadow_length_range: tuple[float, float]
     offnadir_max: float
+    shipgen_kwargs: dict[str, Any]
 
 
 def _worker_init(
@@ -301,6 +303,7 @@ def generate_dataset(
     coastline: Path | str | None = None,
     override: bool = False,
     offnadir_max: float = 0.0,
+    shipgen_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format."""
     bg_dir = Path(bg_dir) if bg_dir is not None else None
@@ -388,6 +391,7 @@ def generate_dataset(
         shadow_alpha_scale=shadow_alpha_scale,
         shadow_length_range=shadow_length_range,
         offnadir_max=offnadir_max,
+        shipgen_kwargs=shipgen_kwargs or {},
     )
 
     def _record_compose_result(n_ships: int, n_clusters: int) -> None:
@@ -590,6 +594,7 @@ def _run_compose_task(
         shadow_length_range=config.shadow_length_range,
         coastline_index=_worker_coastline_index,
         offnadir_max=config.offnadir_max,
+        shipgen_kwargs=config.shipgen_kwargs,
     )
 
     if result is None:

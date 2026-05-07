@@ -211,6 +211,7 @@ def _compose_one(
     shadow_azimuth_rad: float | None = None,
     coastline_index: CoastlineIndex | None = None,
     offnadir_max: float = 0.0,
+    shipgen_kwargs: dict | None = None,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image. Returns ``(tile, labels, n_clusters)``."""
     with rasterio.open(tif_path) as src:
@@ -330,6 +331,11 @@ def _compose_one(
     tile_shadow_length = rng.uniform(shadow_length_min, shadow_length_max)
     tile_shadow_alpha = _sample_shadow_alpha(rng) if shadow_alpha_scale > 0.0 else 0.0
 
+    # Sample off-nadir geometry once per tile so all ships share the same
+    # sensor viewing angle and world azimuth.
+    tile_offnadir_deg = rng.uniform(0.0, offnadir_max)
+    tile_sensor_az_world_deg = rng.uniform(0.0, 360.0)
+
     for _ in range(n_events):
         is_cluster = rng.random() < cluster_prob
 
@@ -354,18 +360,22 @@ def _compose_one(
                 shadow_length=tile_shadow_length,
                 shadow_alpha=tile_shadow_alpha,
                 shadow_alpha_scale=shadow_alpha_scale,
-                offnadir_max=offnadir_max,
+                offnadir_deg=tile_offnadir_deg,
+                sensor_az_world_deg=tile_sensor_az_world_deg,
+                shipgen_kwargs=shipgen_kwargs,
             )
             labels.extend(new_labels)
             if new_labels:
                 n_clusters += 1
         else:
+            angle_deg = rng.uniform(0, 360)
+            sensor_az_ship_deg = (tile_sensor_az_world_deg - angle_deg) % 360.0
             svg_text = _pick_svg(
                 svg_metas, rng, ship_length_range,
-                rng.uniform(0.0, offnadir_max),
-                rng.uniform(0.0, 360.0),
+                tile_offnadir_deg,
+                sensor_az_ship_deg,
+                shipgen_kwargs=shipgen_kwargs,
             )
-            angle_deg = rng.uniform(0, 360)
             angle_rad = math.radians(angle_deg)
             rotated, _cls_name, bw, lh, _lb = _render_ship(
                 svg_text,
