@@ -1743,7 +1743,7 @@ def generate_ships(
     n_hull_points: int = 64,
     deck_scatter_density: float = 3.0,
     filetype: str = "svg",
-    offnadir_max: float = 0.0,
+    offnadir_range: tuple[float, float] = (0.0, 0.0),
 ) -> None:
     """Generate synthetic ship files.
 
@@ -1766,9 +1766,9 @@ def generate_ships(
         Scatter shape density on deck passed to :func:`generate_ship_svg`.
     filetype
         Output format: ``"svg"`` (default) or ``"png"``.
-    offnadir_max
-        Maximum off-nadir angle in degrees (0 = nadir only).  Each ship
-        independently draws ``offnadir_deg ~ Uniform(0, offnadir_max)`` and
+    offnadir_range
+        ``(min, max)`` off-nadir angle range in degrees (0:0 = nadir only).  Each ship
+        independently draws ``offnadir_deg ~ Uniform(min, max)`` and
         ``sensor_az_ship_deg ~ Uniform(0, 360)``.
 
     Raises
@@ -1794,7 +1794,7 @@ def generate_ships(
 
     for _i in tqdm(range(count), desc="Generating ships", unit="ship"):
         ship_class = rng.choices(classes, weights=weights, k=1)[0]
-        offnadir_deg = rng.uniform(0.0, offnadir_max)
+        offnadir_deg = rng.uniform(*offnadir_range)
         sensor_az_ship_deg = rng.uniform(0.0, 360.0)
         svg = generate_ship_svg(
             ship_class, rng=rng, hull_noise=hull_noise,

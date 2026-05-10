@@ -1,4 +1,4 @@
-"""offnadir_max パラメータがパイプライン全体でクラッシュしないことを確認するテスト。"""
+"""offnadir_range パラメータがパイプライン全体でクラッシュしないことを確認するテスト。"""
 from __future__ import annotations
 
 import random
@@ -55,10 +55,10 @@ class TestPickSvgOffnadir:
 
 
 class TestComposeOneOffnadir:
-    """_compose_one に offnadir_max を渡してもクラッシュしないことを確認する。"""
+    """_compose_one に offnadir_range を渡してもクラッシュしないことを確認する。"""
 
     def test_compose_with_offnadir(self, tmp_path) -> None:
-        """offnadir_max=30 で _compose_one を呼び出してもクラッシュしない。"""
+        """offnadir_range=(0, 30) で _compose_one を呼び出してもクラッシュしない。"""
         pytest.importorskip("rasterio")
         import rasterio
         from rasterio.transform import from_bounds
@@ -97,7 +97,7 @@ class TestComposeOneOffnadir:
             cluster_prob=0.0,
             cluster_size=(2, 3),
             rng=rng,
-            offnadir_max=30.0,
+            offnadir_range=(0.0, 30.0),
         )
         # None は水域不足などで発生しうるが、クラッシュしないことを確認
         assert result is None or isinstance(result, tuple)

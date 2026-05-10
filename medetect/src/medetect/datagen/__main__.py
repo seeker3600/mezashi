@@ -339,13 +339,13 @@ def main() -> None:
         help="Override the output directory if it already exists.",
     )
     parser.add_argument(
-        "--offnadir_max",
-        type=float,
-        default=0.0,
-        metavar="DEG",
+        "--offnadir",
+        type=_parse_float_range,
+        default=(0.0, 0.0),
+        metavar="MIN:MAX",
         help=(
-            "Maximum off-nadir viewing angle in degrees (default: 0.0 = nadir only). "
-            "Each tile independently draws offnadir_deg ~ Uniform(0, offnadir_max) "
+            "Off-nadir viewing angle range in degrees (default: 0:0 = nadir only). "
+            "Each tile independently draws offnadir_deg ~ Uniform(MIN, MAX) "
             "and sensor_az_world_deg ~ Uniform(0, 360) shared by all ships in that tile."
         ),
     )
@@ -400,7 +400,7 @@ def main() -> None:
         max_workers=args.workers,
         coastline=args.coastline,
         override=args.override,
-        offnadir_max=args.offnadir_max,
+        offnadir_range=args.offnadir,
         shipgen_kwargs=dict(args.shipgen),
     )
     append_command_history(

@@ -26,6 +26,15 @@ def _parse_types(raw: list[str]) -> dict[str, float]:
     return result
 
 
+def _parse_float_range(s: str) -> tuple[float, float]:
+    """Parse ``"min:max"`` into ``(float, float)``."""
+    parts = s.split(":")
+    if len(parts) != 2:
+        msg = f"Expected MIN:MAX, got {s!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return float(parts[0]), float(parts[1])
+
+
 def main() -> None:
     public_classes = get_ship_classes()
     debug_classes = sorted(set(get_ship_classes(include_debug=True)) - set(public_classes))
@@ -95,12 +104,13 @@ def main() -> None:
         help="Output file format: svg (default) or png (for debugging).",
     )
     parser.add_argument(
-        "--offnadir_max",
-        type=float,
-        default=0.0,
+        "--offnadir",
+        type=_parse_float_range,
+        default=(0.0, 0.0),
+        metavar="MIN:MAX",
         help=(
-            "Maximum off-nadir viewing angle in degrees (default: 0.0 = nadir only). "
-            "Each ship independently draws offnadir_deg ~ Uniform(0, offnadir_max) "
+            "Off-nadir viewing angle range in degrees (default: 0:0 = nadir only). "
+            "Each ship independently draws offnadir_deg ~ Uniform(MIN, MAX) "
             "and sensor_az_ship_deg ~ Uniform(0, 360)."
         ),
     )
@@ -126,7 +136,7 @@ def main() -> None:
         n_hull_points=args.n_hull_points,
         deck_scatter_density=args.deck_scatter_density,
         filetype=args.filetype,
-        offnadir_max=args.offnadir_max,
+        offnadir_range=args.offnadir,
     )
 
 

@@ -210,7 +210,7 @@ def _compose_one(
     shadow_length_range: tuple[float, float] = (0.0, 3.75),
     shadow_azimuth_rad: float | None = None,
     coastline_index: CoastlineIndex | None = None,
-    offnadir_max: float = 0.0,
+    offnadir_range: tuple[float, float] = (0.0, 0.0),
     shipgen_kwargs: dict | None = None,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image. Returns ``(tile, labels, n_clusters)``."""
@@ -333,7 +333,7 @@ def _compose_one(
 
     # Sample off-nadir geometry once per tile so all ships share the same
     # sensor viewing angle and world azimuth.
-    tile_offnadir_deg = rng.uniform(0.0, offnadir_max)
+    tile_offnadir_deg = rng.uniform(*offnadir_range)
     tile_sensor_az_world_deg = rng.uniform(0.0, 360.0)
 
     for _ in range(n_events):

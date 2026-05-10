@@ -50,7 +50,7 @@ class _ComposeTaskConfig:
     debug_bg_color: tuple[int, int, int] | None
     shadow_alpha_scale: float
     shadow_length_range: tuple[float, float]
-    offnadir_max: float
+    offnadir_range: tuple[float, float]
     shipgen_kwargs: dict[str, Any]
 
 
@@ -302,7 +302,7 @@ def generate_dataset(
     false_ratio: float = 0.0,
     coastline: Path | str | None = None,
     override: bool = False,
-    offnadir_max: float = 0.0,
+    offnadir_range: tuple[float, float] = (0.0, 0.0),
     shipgen_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     """Generate a synthetic ship detection dataset in YOLO OBB format."""
@@ -390,7 +390,7 @@ def generate_dataset(
         debug_bg_color=debug_bg_color,
         shadow_alpha_scale=shadow_alpha_scale,
         shadow_length_range=shadow_length_range,
-        offnadir_max=offnadir_max,
+        offnadir_range=offnadir_range,
         shipgen_kwargs=shipgen_kwargs or {},
     )
 
@@ -593,7 +593,7 @@ def _run_compose_task(
         shadow_alpha_scale=config.shadow_alpha_scale,
         shadow_length_range=config.shadow_length_range,
         coastline_index=_worker_coastline_index,
-        offnadir_max=config.offnadir_max,
+        offnadir_range=config.offnadir_range,
         shipgen_kwargs=config.shipgen_kwargs,
     )
 
