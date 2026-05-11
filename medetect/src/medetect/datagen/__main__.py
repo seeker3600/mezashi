@@ -407,6 +407,7 @@ def main() -> None:
         args.output_dir,
         command="datagen",
         result=stats,
+        overwrite=True,
     )
 
     print(f"Done: {stats}")

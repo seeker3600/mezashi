@@ -21,6 +21,7 @@ def append_command_history(
     cwd: str | Path | None = None,
     status: str = "success",
     result: Any | None = None,
+    overwrite: bool = False,
 ) -> Path:
     root = Path(dataset_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -36,10 +37,25 @@ def append_command_history(
         record["result"] = result
 
     log_path = command_history_path(root)
-    with log_path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(record, default=_json_default))
-        handle.write("\n")
+    mode = "w" if overwrite else "a"
+    with log_path.open(mode, encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(record, indent=2, sort_keys=True, default=_json_default))
+        handle.write("\n\n")
     return log_path
+
+
+def read_command_history(dataset_root: str | Path) -> list[dict[str, Any]]:
+    """Read all records from the command history log for *dataset_root*."""
+    log_path = command_history_path(dataset_root)
+    if not log_path.exists():
+        return []
+    text = log_path.read_text(encoding="utf-8")
+    records: list[dict[str, Any]] = []
+    for chunk in text.split("\n\n"):
+        chunk = chunk.strip()
+        if chunk:
+            records.append(json.loads(chunk))
+    return records
 
 
 def _timestamp_now() -> str:

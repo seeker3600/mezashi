@@ -40,6 +40,7 @@ class TestDatagenCommandLogging:
             output_dir,
             command="datagen",
             result={"images": 3, "ships": 2, "clusters": 1, "skipped": 0},
+            overwrite=True,
         )
 
 

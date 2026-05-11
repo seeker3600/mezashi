@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from medetect.command_history import append_command_history, command_history_path
+from medetect.command_history import append_command_history, command_history_path, read_command_history
 
 
 class TestCommandHistoryPath:
@@ -26,7 +26,7 @@ class TestAppendCommandHistory:
     """append_command_history のテスト。"""
 
     def test_appends_one_json_record_per_execution(self, tmp_path: Path) -> None:
-        """複数回呼ぶと JSONL に1行ずつ追記される。"""
+        """複数回呼ぶと JSONL に1レコードずつ追記される。"""
         dataset_root = tmp_path / "dataset"
         dataset_root.mkdir()
 
@@ -44,11 +44,11 @@ class TestAppendCommandHistory:
             cwd=tmp_path,
         )
 
-        lines = (dataset_root / "command_history.jsonl").read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 2
+        records = read_command_history(dataset_root)
+        assert len(records) == 2
 
-        first_record = json.loads(lines[0])
-        second_record = json.loads(lines[1])
+        first_record = records[0]
+        second_record = records[1]
         assert first_record["command"] == "datagen"
         assert first_record["argv"] == ["medetect-datagen", "--count", "10"]
         assert first_record["cwd"] == str(tmp_path.resolve())
@@ -72,9 +72,85 @@ class TestAppendCommandHistory:
 
         append_command_history(dataset_root, command="valsplit")
 
-        record = json.loads((dataset_root / "command_history.jsonl").read_text(encoding="utf-8"))
+        records = read_command_history(dataset_root)
+        assert len(records) == 1
+        record = records[0]
         assert record["command"] == "valsplit"
         assert record["argv"] == ["medetect-yolo", "valsplit", "--fraction", "0.2"]
         assert record["cwd"] == str(tmp_path.resolve())
         assert record["dataset_root"] == str(dataset_root.resolve())
         assert record["status"] == "success"
+
+    def test_record_keys_are_sorted_and_indented(self, tmp_path: Path) -> None:
+        """キーがアルファベット順・インデント付きで書き込まれる。"""
+        dataset_root = tmp_path / "dataset"
+        dataset_root.mkdir()
+
+        append_command_history(
+            dataset_root,
+            command="datagen",
+            argv=["medetect-datagen"],
+            cwd=tmp_path,
+            result={"ships": 3, "images": 2},
+        )
+
+        raw = (dataset_root / "command_history.jsonl").read_text(encoding="utf-8")
+        # インデント付き（複数行）であること
+        assert "\n  " in raw
+        # json.loads はキーの挿入順を保持するので sort_keys の効果が確認できる
+        record = read_command_history(dataset_root)[0]
+        top_keys = list(record.keys())
+        assert top_keys == sorted(top_keys)
+        result_keys = list(record["result"].keys())
+        assert result_keys == sorted(result_keys)
+
+
+class TestOverwriteCommandHistory:
+    """overwrite=True のときに既存ログをリセットするテスト。"""
+
+    def test_overwrite_replaces_previous_history(self, tmp_path: Path) -> None:
+        """overwrite=True で呼ぶと既存エントリが消えて新しい1件のみになる。"""
+        dataset_root = tmp_path / "dataset"
+        dataset_root.mkdir()
+
+        append_command_history(dataset_root, command="datagen", argv=[], cwd=tmp_path)
+        append_command_history(dataset_root, command="expand-obb", argv=[], cwd=tmp_path)
+
+        # overwrite=True で上書き
+        append_command_history(
+            dataset_root,
+            command="datagen",
+            argv=["medetect-datagen", "--count", "5"],
+            cwd=tmp_path,
+            result={"images": 5, "ships": 3},
+            overwrite=True,
+        )
+
+        records = read_command_history(dataset_root)
+        assert len(records) == 1
+        assert records[0]["command"] == "datagen"
+        assert records[0]["result"] == {"images": 5, "ships": 3}
+
+    def test_overwrite_false_still_appends(self, tmp_path: Path) -> None:
+        """overwrite=False (デフォルト) では追記される。"""
+        dataset_root = tmp_path / "dataset"
+        dataset_root.mkdir()
+
+        append_command_history(dataset_root, command="datagen", argv=[], cwd=tmp_path)
+        append_command_history(
+            dataset_root, command="expand-obb", argv=[], cwd=tmp_path, overwrite=False
+        )
+
+        records = read_command_history(dataset_root)
+        assert len(records) == 2
+
+
+class TestReadCommandHistory:
+    """read_command_history のテスト。"""
+
+    def test_returns_empty_list_when_no_file(self, tmp_path: Path) -> None:
+        """ファイルが存在しない場合は空リストを返す。"""
+        dataset_root = tmp_path / "dataset"
+        dataset_root.mkdir()
+
+        assert read_command_history(dataset_root) == []
