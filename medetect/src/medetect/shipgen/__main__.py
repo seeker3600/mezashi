@@ -111,7 +111,16 @@ def main() -> None:
         help=(
             "Off-nadir viewing angle range in degrees (default: 0:0 = nadir only). "
             "Each ship independently draws offnadir_deg ~ Uniform(MIN, MAX) "
-            "and sensor_az_ship_deg ~ Uniform(0, 360)."
+            "and sensor_az_ship_deg ~ Uniform(0, 360) unless --sensor-az-deg is set."
+        ),
+    )
+    parser.add_argument(
+        "--sensor-az-deg",
+        type=float,
+        default=None,
+        help=(
+            "Optional fixed sensor azimuth in ship frame. 0 = bow-on, 90 = starboard, "
+            "180 = stern-on, 270 = port. When omitted, each ship samples its own azimuth."
         ),
     )
 
@@ -137,6 +146,7 @@ def main() -> None:
         deck_scatter_density=args.deck_scatter_density,
         filetype=args.filetype,
         offnadir_range=args.offnadir,
+        sensor_az_ship_deg=args.sensor_az_deg,
     )
 
 

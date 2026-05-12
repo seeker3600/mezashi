@@ -109,3 +109,40 @@ class TestMainFiletype:
             with pytest.raises(SystemExit) as exc_info:
                 main()
         assert exc_info.value.code == 2
+
+
+class TestMainOffnadirAzimuth:
+    def test_sensor_az_deg_is_forwarded_to_generator(self, tmp_path: Path) -> None:
+        """--sensor-az-deg を指定すると generate_ships へ固定方角が渡る。"""
+        out = tmp_path / "out"
+        args = [
+            "--output_dir", str(out),
+            "--count", "1",
+            "--types", "patrol:1",
+            "--offnadir", "20:20",
+            "--sensor-az-deg", "135",
+        ]
+
+        with patch("medetect.shipgen.__main__.generate_ships") as mock_generate:
+            with patch("sys.argv", ["shipgen"] + args):
+                main()
+
+        assert mock_generate.call_count == 1
+        assert mock_generate.call_args.kwargs["sensor_az_ship_deg"] == pytest.approx(135.0)
+
+    def test_sensor_az_deg_defaults_to_random_sampling(self, tmp_path: Path) -> None:
+        """未指定時は generate_ships 側でランダム方角モードを維持する。"""
+        out = tmp_path / "out"
+        args = [
+            "--output_dir", str(out),
+            "--count", "1",
+            "--types", "patrol:1",
+            "--offnadir", "20:20",
+        ]
+
+        with patch("medetect.shipgen.__main__.generate_ships") as mock_generate:
+            with patch("sys.argv", ["shipgen"] + args):
+                main()
+
+        assert mock_generate.call_count == 1
+        assert mock_generate.call_args.kwargs["sensor_az_ship_deg"] is None

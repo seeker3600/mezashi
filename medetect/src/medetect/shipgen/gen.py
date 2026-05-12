@@ -32,6 +32,8 @@ from medetect.shipgen.ship_class import (
     Detail,
     ShipColors,
     Struct,
+    _HULL_DEPTH_FRAC,
+    _SIDE_COMPONENT_EPS,
     sample_colors,
     sample_ship_appearance_variant,
 )
@@ -39,14 +41,18 @@ from medetect.shipgen.ship_class import (
 
 logger = logging.getLogger(__name__)
 
-# Fraction of hull depth used to translate superstructure positions under
-# off-nadir viewing.  beam_shift = side_component * _STRUCT_HEIGHT_FRAC
-# Typical superstructure height / beam: destroyer ~0.5-0.7, merchant ~0.3-0.5.
-# 0.45 is a representative mid-range value producing clearly visible shifts.
-# Negative: in optical imagery, superstructure tops lean AWAY from the sensor
-# (they protrude above the deck, so they appear on the far side of the hull).
-# e.g. starboard sensor (az=90°) → structs shift left (port-ward).
-_STRUCT_HEIGHT_FRAC: float = -0.45
+# Fraction of beam used as a representative superstructure height for
+# off-nadir projection. Typical superstructure height / beam is roughly
+# 0.5-0.7 for warships and 0.3-0.5 for merchant hulls, so 0.45 is a
+# defensible mid-range value. Projected displacement is then
+# h / B * tan(theta), resolved into beam / length components.
+_STRUCT_HEIGHT_FRAC: float = 0.45
+
+# Bow / stern face visibility should remain local to the hull taper rather
+# than propagating across the full ship length. Taper end-face deck
+# displacement over the smaller of one beam of length or 25% of LOA.
+_END_PROJECTION_LENGTH_FRAC: float = 0.25
+_END_PROJECTION_MAX_BEAMS: float = 1.0
 
 _DEBUG_RECT_COLORS: tuple[tuple[int, int, int], ...] = (
     (220, 48, 48),
@@ -54,6 +60,26 @@ _DEBUG_RECT_COLORS: tuple[tuple[int, int, int], ...] = (
     (54, 104, 224),
     (236, 208, 48),
 )
+
+
+@dataclass(frozen=True)
+class _OffNadirProjection:
+    """Sensor-relative off-nadir components in ship coordinates.
+
+    side_component is positive when the sensor is on the starboard side.
+    length_component is positive when the sensor is on the bow side.
+
+    A positive length-direction image shift moves geometry toward stern because
+    SVG y increases bow -> stern.
+    """
+
+    side_component: float
+    length_component: float
+    visible_side: str
+    visible_end: str
+
+    def shift_away_from_sensor(self, height_frac: float) -> tuple[float, float]:
+        return (-self.side_component * height_frac, self.length_component * height_frac)
 
 # ── SVG formatting helpers ───────────────────────────────────────────────
 
@@ -74,6 +100,42 @@ def _rgb_css(color: tuple[int, int, int]) -> str:
 
 def _debug_rect_points(lb_ratio: float) -> list[tuple[float, float]]:
     return [(0.03, 0.0), (0.97, 0.0), (0.97, lb_ratio), (0.03, lb_ratio)]
+
+
+def _resolve_visible_side(side_component: float) -> str:
+    if side_component > _SIDE_COMPONENT_EPS:
+        return "starboard"
+    if side_component < -_SIDE_COMPONENT_EPS:
+        return "port"
+    return "none"
+
+
+def _resolve_visible_end(length_component: float) -> str:
+    if length_component > _SIDE_COMPONENT_EPS:
+        return "bow"
+    if length_component < -_SIDE_COMPONENT_EPS:
+        return "stern"
+    return "none"
+
+
+def _compute_offnadir_projection(
+    offnadir_deg: float,
+    sensor_az_ship_deg: float,
+) -> _OffNadirProjection:
+    tan_theta = math.tan(math.radians(offnadir_deg))
+    azimuth_rad = math.radians(sensor_az_ship_deg)
+    side_component = tan_theta * math.sin(azimuth_rad)
+    length_component = tan_theta * math.cos(azimuth_rad)
+    return _OffNadirProjection(
+        side_component=side_component,
+        length_component=length_component,
+        visible_side=_resolve_visible_side(side_component),
+        visible_end=_resolve_visible_end(length_component),
+    )
+
+
+def _end_projection_extent(lb_ratio: float) -> float:
+    return min(_END_PROJECTION_MAX_BEAMS, lb_ratio * _END_PROJECTION_LENGTH_FRAC)
 
 
 def _inset_hull_points(
@@ -143,26 +205,40 @@ def _write_hull_edge_band(
 def _project_deck_points(
     hull_pts: list[tuple[float, float]],
     *,
+    lb_ratio: float,
     visible_side: str,
     side_width: float,
+    visible_end: str,
+    end_shift: float,
 ) -> list[tuple[float, float]]:
     """Project the deck top inward on the visible side under off-nadir viewing."""
-    if visible_side == "none" or side_width <= 0.0 or len(hull_pts) < 4:
+    if len(hull_pts) < 4:
         return list(hull_pts)
 
     point_count = len(hull_pts) // 2
     deck_pts = list(hull_pts)
-    if visible_side == "starboard":
+    if visible_side == "starboard" and side_width > 0.0:
         for i in range(point_count):
             x, y = deck_pts[i]
             deck_pts[i] = (max(0.5, x - side_width), y)
-    elif visible_side == "port":
+    elif visible_side == "port" and side_width > 0.0:
         for i in range(point_count, len(deck_pts)):
             x, y = deck_pts[i]
             deck_pts[i] = (min(0.5, x + side_width), y)
-    else:
+    elif visible_side != "none":
         msg = f"Unsupported visible side: {visible_side!r}"
         raise ValueError(msg)
+
+    if visible_end != "none" and abs(end_shift) > 0.0:
+        extent = _end_projection_extent(lb_ratio)
+        if extent > 0.0:
+            for index, (x, y) in enumerate(deck_pts):
+                distance = y if visible_end == "bow" else lb_ratio - y
+                if distance >= extent:
+                    continue
+                weight = 1.0 - distance / extent
+                shifted_y = min(lb_ratio, max(0.0, y + end_shift * weight))
+                deck_pts[index] = (x, shifted_y)
     return deck_pts
 
 
@@ -319,6 +395,7 @@ def _resolve_struct_rect(
     *,
     oversized_variant: bool = False,
     beam_shift: float = 0.0,
+    length_shift: float = 0.0,
 ) -> _ResolvedStructRect | None:
     x0 = rng.uniform(*spec.x0)
     x1 = rng.uniform(*spec.x1)
@@ -328,8 +405,14 @@ def _resolve_struct_rect(
     if oversized_variant:
         x0, x1, w_frac = _apply_oversized_struct_geometry(x0, x1, w_frac)
 
+    base_y0 = x0 * lb_ratio + length_shift
+    base_y1 = x1 * lb_ratio + length_shift
+    visible_y0 = min(lb_ratio, max(0.0, base_y0))
+    visible_y1 = min(lb_ratio, max(visible_y0, base_y1))
+
     n = len(half_widths)
-    mid_idx = min(int((x0 + x1) / 2 * (n - 1)), n - 1)
+    mid_t = 0.5 * (visible_y0 + visible_y1) / max(lb_ratio, 1e-6)
+    mid_idx = min(int(mid_t * (n - 1)), n - 1)
     hull_hw = float(half_widths[mid_idx])
 
     block_hw = w_frac * 0.5
@@ -351,11 +434,25 @@ def _resolve_struct_rect(
     if el >= er:
         return None
 
+    y0 = base_y0
+    y1 = base_y1
+    if length_shift > 0.0:
+        # Sensor is on the bow side, so the far stern edge may overhang.
+        y0 = max(y0, 0.0)
+    elif length_shift < 0.0:
+        # Sensor is on the stern side, so the far bow edge may overhang.
+        y1 = min(y1, lb_ratio)
+    else:
+        y0 = max(y0, 0.0)
+        y1 = min(y1, lb_ratio)
+    if y0 >= y1:
+        return None
+
     return _ResolvedStructRect(
         el=el,
         er=er,
-        y0=x0 * lb_ratio,
-        y1=x1 * lb_ratio,
+        y0=y0,
+        y1=y1,
         brightness_off=spec.brightness_off,
     )
 
@@ -369,13 +466,17 @@ def _consume_struct_geometry_draws(spec: Struct, rng: random.Random) -> None:
 def _estimate_struct_zone(
     spec: Struct,
     *,
+    lb_ratio: float,
     oversized_variant: bool = False,
+    length_shift: float = 0.0,
 ) -> tuple[float, float]:
     x0 = spec.x0[0]
     x1 = spec.x1[1]
     if oversized_variant:
         x0, x1, _ = _apply_oversized_struct_geometry(x0, x1, spec.w[1])
-    return x0, x1
+    y0 = min(lb_ratio, max(0.0, x0 * lb_ratio + length_shift))
+    y1 = min(lb_ratio, max(y0, x1 * lb_ratio + length_shift))
+    return y0 / lb_ratio, y1 / lb_ratio
 
 
 def _write_struct_svg(
@@ -1182,6 +1283,7 @@ def _write_deck_scatter_svg(
     sun_dx: float = 0.0,
     sun_dy: float = 0.0,
     side_component: float = 0.0,
+    length_component: float = 0.0,
 ) -> None:
     """甲板上にランダムな小図形を散布してテクスチャを付加する。
 
@@ -1254,9 +1356,10 @@ def _write_deck_scatter_svg(
             max_sz = min(0.600, hull_hw * 0.75)
             sz = rng.uniform(max_sz * 0.55, max_sz)
 
-        # ── Off-nadir displacement — taller objects appear shifted in sensor direction
-        # Uses same sign convention as _STRUCT_HEIGHT_FRAC: objects lean away from sensor.
-        cx += -side_component * _SCATTER_HEIGHT_FRAC[tier]
+        # ── Off-nadir displacement — taller objects appear shifted away from sensor.
+        height_frac = _SCATTER_HEIGHT_FRAC[tier]
+        cx += -side_component * height_frac
+        cy += length_component * height_frac
 
         # ── Colour — hull-toned with strong contrast ─────────────────
         # Contrast values represent Δ in [0,255] per RGB channel.
@@ -1448,8 +1551,10 @@ def generate_ship_svg(
     sensor_az_ship_deg
         Sensor azimuth in ship frame (degrees).  0 = bow-on, 90 = looking at
         starboard side, 180 = stern-on, 270 = looking at port side.  Together
-        with *offnadir_deg* this determines which side is visible and how wide
-        the side band appears: ``side_component = tan(offnadir) * sin(az)``.
+        with *offnadir_deg* this determines which side / end is visible and
+        how much elevated geometry shifts away from the sensor. The shared
+        projection model uses ``side_component = tan(offnadir) * sin(az)`` and
+        ``length_component = tan(offnadir) * cos(az)``.
 
     Returns
     -------
@@ -1478,6 +1583,7 @@ def generate_ship_svg(
             f'data-ship-class="{ship_class}" '
             f'data-trim-mode="none" '
             f'data-visible-side="none" '
+            f'data-visible-end="none" '
             f'data-lb-ratio="{_f(lb_ratio)}">\n'
         )
         out.write(
@@ -1494,17 +1600,17 @@ def generate_ship_svg(
         out.write("</svg>\n")
         return out.getvalue()
 
-    # Compute off-nadir viewing geometry.
-    # side_component > 0 → starboard visible; < 0 → port visible; ≈ 0 → none.
-    tan_theta = math.tan(math.radians(offnadir_deg))
-    side_component = tan_theta * math.sin(math.radians(sensor_az_ship_deg))
-    beam_shift = side_component * _STRUCT_HEIGHT_FRAC
+    # Resolve sensor-relative off-nadir projection once so deck deformation,
+    # superstructure displacement, and deck scatter all share the same model.
+    projection = _compute_offnadir_projection(offnadir_deg, sensor_az_ship_deg)
+    beam_shift, length_shift = projection.shift_away_from_sensor(_STRUCT_HEIGHT_FRAC)
+    _deck_shift_x, deck_shift_y = projection.shift_away_from_sensor(_HULL_DEPTH_FRAC)
 
     colors = sample_colors(
         cls.color_family,
         rng,
         trim_mode=trim_mode,
-        side_component=side_component,
+        side_component=projection.side_component,
         appearance_variant=appearance_variant,
     )
 
@@ -1515,8 +1621,11 @@ def generate_ship_svg(
     hull_pts = build_hull_points(half_widths, lb_ratio, rng, hull_noise)
     deck_pts = _project_deck_points(
         hull_pts,
+        lb_ratio=lb_ratio,
         visible_side=colors.trim.visible_side,
         side_width=colors.trim.side_width,
+        visible_end=projection.visible_end,
+        end_shift=deck_shift_y,
     )
 
     # Build SVG
@@ -1527,6 +1636,7 @@ def generate_ship_svg(
         f'data-ship-class="{ship_class}" '
         f'data-trim-mode="{colors.trim.primary_mode}" '
         f'data-visible-side="{colors.trim.visible_side}" '
+        f'data-visible-end="{projection.visible_end}" '
         f'data-lb-ratio="{_f(lb_ratio)}">\n'
     )
 
@@ -1698,7 +1808,9 @@ def generate_ship_svg(
     struct_zones = [
         _estimate_struct_zone(
             spec,
+            lb_ratio=lb_ratio,
             oversized_variant=appearance_variant.oversized_struct and index == 0,
+            length_shift=length_shift,
         )
         for index, spec in enumerate(cls.structs)
     ]
@@ -1722,6 +1834,7 @@ def generate_ship_svg(
                 rng,
                 oversized_variant=appearance_variant.oversized_struct and index == 0,
                 beam_shift=beam_shift,
+                length_shift=length_shift,
             )
             if rect is None:
                 _consume_struct_geometry_draws(s, rng)
@@ -1735,7 +1848,8 @@ def generate_ship_svg(
     _write_deck_scatter_svg(
         out, lb_ratio, half_widths, colors, rng, deck_scatter_density,
         struct_zones=struct_zones, sun_dx=sun_dx, sun_dy=sun_dy,
-        side_component=side_component,
+        side_component=projection.side_component,
+        length_component=projection.length_component,
     )
     out.write('  </g>\n')
 
@@ -1790,6 +1904,7 @@ def generate_ships(
     deck_scatter_density: float = 3.0,
     filetype: str = "svg",
     offnadir_range: tuple[float, float] = (0.0, 0.0),
+    sensor_az_ship_deg: float | None = None,
 ) -> None:
     """Generate synthetic ship files.
 
@@ -1815,7 +1930,10 @@ def generate_ships(
     offnadir_range
         ``(min, max)`` off-nadir angle range in degrees (0:0 = nadir only).  Each ship
         independently draws ``offnadir_deg ~ Uniform(min, max)`` and
-        ``sensor_az_ship_deg ~ Uniform(0, 360)``.
+        ``sensor_az_ship_deg ~ Uniform(0, 360)`` unless a fixed azimuth is provided.
+    sensor_az_ship_deg
+        Optional fixed sensor azimuth in ship frame. When omitted, each ship samples
+        its own azimuth uniformly from ``[0, 360)``.
 
     Raises
     ------
@@ -1841,13 +1959,15 @@ def generate_ships(
     for _i in tqdm(range(count), desc="Generating ships", unit="ship"):
         ship_class = rng.choices(classes, weights=weights, k=1)[0]
         offnadir_deg = rng.uniform(*offnadir_range)
-        sensor_az_ship_deg = rng.uniform(0.0, 360.0)
+        resolved_sensor_az_ship_deg = (
+            rng.uniform(0.0, 360.0) if sensor_az_ship_deg is None else sensor_az_ship_deg
+        )
         svg = generate_ship_svg(
             ship_class, rng=rng, hull_noise=hull_noise,
             n_hull_points=n_hull_points,
             deck_scatter_density=deck_scatter_density,
             offnadir_deg=offnadir_deg,
-            sensor_az_ship_deg=sensor_az_ship_deg,
+            sensor_az_ship_deg=resolved_sensor_az_ship_deg,
         )
 
         counters[ship_class] = counters.get(ship_class, 0) + 1

@@ -53,12 +53,26 @@ def _struct_cx_values(svg_text: str) -> list[float]:
     cx_vals: list[float] = []
     for el in root.iter():
         role = el.get("data-role", "")
-        if "struct" in role:
+        if role == "struct":
             x = el.get("x")
             w = el.get("width")
             if x is not None and w is not None:
                 cx_vals.append(float(x) + float(w) / 2.0)
     return cx_vals
+
+
+def _struct_cy_values(svg_text: str) -> list[float]:
+    """Return centre-y of each struct rect found in SVG (estimated as (y + height/2))."""
+    root = ET.fromstring(svg_text)
+    cy_vals: list[float] = []
+    for el in root.iter():
+        role = el.get("data-role", "")
+        if role == "struct":
+            y = el.get("y")
+            h = el.get("height")
+            if y is not None and h is not None:
+                cy_vals.append(float(y) + float(h) / 2.0)
+    return cy_vals
 
 
 class TestSideComponentDirection:
@@ -183,6 +197,34 @@ class TestBeamShiftSymmetry:
         assert abs(abs(shift_stbd) - abs(shift_port)) < 0.05
 
 
+class TestLengthShiftSymmetry:
+    def _struct_cy_avg(self, az: float, offnadir: float = 20.0) -> float:
+        svg = generate_ship_svg(
+            "destroyer",
+            rng=random.Random(42),
+            offnadir_deg=offnadir,
+            sensor_az_ship_deg=az,
+        )
+        vals = _struct_cy_values(svg)
+        return sum(vals) / len(vals) if vals else 0.5
+
+    def test_bow_sensor_structs_shift_aft(self) -> None:
+        """az=0° (bow センサー) のとき構造物はセンサー反対側の aft へシフトする。"""
+        cy_bow = self._struct_cy_avg(0.0)
+        cy_stern = self._struct_cy_avg(180.0)
+        assert cy_bow > cy_stern
+
+    def test_length_shift_sign_symmetry(self) -> None:
+        """az=0 と az=180 のシフト量は nadir 基準で逆符号かつほぼ等しい。"""
+        cy_nadir = self._struct_cy_avg(0.0, offnadir=0.0)
+        cy_bow = self._struct_cy_avg(0.0)
+        cy_stern = self._struct_cy_avg(180.0)
+        shift_bow = cy_bow - cy_nadir
+        shift_stern = cy_stern - cy_nadir
+        assert shift_bow > 0 and shift_stern < 0
+        assert abs(abs(shift_bow) - abs(shift_stern)) < 0.08
+
+
 class TestHullProjection:
     def test_nadir_deck_matches_hull(self) -> None:
         """nadir では deck-top polygon は waterline hull と一致する。"""
@@ -221,6 +263,34 @@ class TestHullProjection:
         deck = _polygon_points_by_role(svg, "deck-top")
         mid_idx = len(hull) * 3 // 4
         assert deck[mid_idx][0] > hull[mid_idx][0]
+
+    def test_bow_offnadir_insets_bow_deck_edge(self) -> None:
+        """bow 可視時は bow 側の deck edge が aft へ入る。"""
+        svg = generate_ship_svg(
+            "destroyer",
+            rng=random.Random(12),
+            offnadir_deg=20.0,
+            sensor_az_ship_deg=0.0,
+        )
+        hull = _polygon_points_by_role(svg, "hull-waterline")
+        deck = _polygon_points_by_role(svg, "deck-top")
+        assert deck[0][1] > hull[0][1]
+        assert deck[-1][1] > hull[-1][1]
+
+    def test_stern_offnadir_insets_stern_deck_edge(self) -> None:
+        """stern 可視時は stern 側の deck edge が bow へ入る。"""
+        svg = generate_ship_svg(
+            "destroyer",
+            rng=random.Random(12),
+            offnadir_deg=20.0,
+            sensor_az_ship_deg=180.0,
+        )
+        hull = _polygon_points_by_role(svg, "hull-waterline")
+        deck = _polygon_points_by_role(svg, "deck-top")
+        stern_starboard_idx = len(hull) // 2 - 1
+        stern_port_idx = len(hull) // 2
+        assert deck[stern_starboard_idx][1] < hull[stern_starboard_idx][1]
+        assert deck[stern_port_idx][1] < hull[stern_port_idx][1]
 
 
 class TestSideComponentEps:
