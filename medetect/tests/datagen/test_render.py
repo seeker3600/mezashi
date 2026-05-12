@@ -222,6 +222,26 @@ class TestRasterizeShipSvg:
         assert result[80, 20, :3].mean() > 200
         assert result[120, 20, 3] == 0
 
+    def test_group_clip_path_masks_child_elements(self) -> None:
+        """clip-path を持つ <g> は子要素を polygon clip 内に制限する。"""
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
+            '  <defs>'
+            '    <clipPath id="left-half">'
+            '      <polygon points="0,0 0.5,0 0.5,1 0,1"/>'
+            '    </clipPath>'
+            '  </defs>'
+            '  <g clip-path="url(#left-half)">'
+            '    <rect x="0" y="0" width="1" height="1" fill="rgb(255,255,255)"/>'
+            '  </g>'
+            '</svg>'
+        )
+
+        result = rasterize_ship_svg(svg, 20, 20)
+
+        assert result[10, 4, 3] == 255
+        assert result[10, 15, 3] == 0
+
 
 class TestDownsampleRgbaPremultipliedExact:
     def test_does_not_bleed_into_neighbor_blocks(self) -> None:

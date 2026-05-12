@@ -26,6 +26,22 @@ def _side_trim_elements(svg_text: str) -> list[ET.Element]:
     return root.findall(f".//*[@data-role='side-trim']")
 
 
+def _polygon_points_by_role(svg_text: str, role: str) -> list[tuple[float, float]]:
+    """Return polygon points for the first element with the requested data-role."""
+    root = ET.fromstring(svg_text)
+    element = root.find(f".//*[@data-role='{role}']")
+    if element is None:
+        raise AssertionError(f"missing polygon role: {role}")
+    points_attr = element.get("points")
+    if points_attr is None:
+        raise AssertionError(f"polygon role has no points: {role}")
+    points: list[tuple[float, float]] = []
+    for pair in points_attr.split():
+        x_str, y_str = pair.split(",", 1)
+        points.append((float(x_str), float(y_str)))
+    return points
+
+
 def _visible_side_attr(svg_text: str) -> str:
     root = ET.fromstring(svg_text)
     return root.get("data-visible-side", "none")
@@ -165,6 +181,46 @@ class TestBeamShiftSymmetry:
         assert shift_stbd < 0 and shift_port > 0
         # 大きさはほぼ等しい（sin(90)=sin(270)=1 なので tan_theta は同じ）
         assert abs(abs(shift_stbd) - abs(shift_port)) < 0.05
+
+
+class TestHullProjection:
+    def test_nadir_deck_matches_hull(self) -> None:
+        """nadir では deck-top polygon は waterline hull と一致する。"""
+        svg = generate_ship_svg(
+            "destroyer",
+            rng=random.Random(11),
+            offnadir_deg=0.0,
+            sensor_az_ship_deg=90.0,
+        )
+        hull = _polygon_points_by_role(svg, "hull-waterline")
+        deck = _polygon_points_by_role(svg, "deck-top")
+        assert deck == pytest.approx(hull)
+
+    def test_starboard_offnadir_insets_starboard_deck_edge(self) -> None:
+        """starboard 可視時は starboard 側の deck edge が内側へ入る。"""
+        svg = generate_ship_svg(
+            "destroyer",
+            rng=random.Random(12),
+            offnadir_deg=20.0,
+            sensor_az_ship_deg=90.0,
+        )
+        hull = _polygon_points_by_role(svg, "hull-waterline")
+        deck = _polygon_points_by_role(svg, "deck-top")
+        mid_idx = len(hull) // 4
+        assert deck[mid_idx][0] < hull[mid_idx][0]
+
+    def test_port_offnadir_insets_port_deck_edge(self) -> None:
+        """port 可視時は port 側の deck edge が内側へ入る。"""
+        svg = generate_ship_svg(
+            "destroyer",
+            rng=random.Random(12),
+            offnadir_deg=20.0,
+            sensor_az_ship_deg=270.0,
+        )
+        hull = _polygon_points_by_role(svg, "hull-waterline")
+        deck = _polygon_points_by_role(svg, "deck-top")
+        mid_idx = len(hull) * 3 // 4
+        assert deck[mid_idx][0] > hull[mid_idx][0]
 
 
 class TestSideComponentEps:

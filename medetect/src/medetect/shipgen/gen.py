@@ -140,6 +140,54 @@ def _write_hull_edge_band(
         )
 
 
+def _project_deck_points(
+    hull_pts: list[tuple[float, float]],
+    *,
+    visible_side: str,
+    side_width: float,
+) -> list[tuple[float, float]]:
+    """Project the deck top inward on the visible side under off-nadir viewing."""
+    if visible_side == "none" or side_width <= 0.0 or len(hull_pts) < 4:
+        return list(hull_pts)
+
+    point_count = len(hull_pts) // 2
+    deck_pts = list(hull_pts)
+    if visible_side == "starboard":
+        for i in range(point_count):
+            x, y = deck_pts[i]
+            deck_pts[i] = (max(0.5, x - side_width), y)
+    elif visible_side == "port":
+        for i in range(point_count, len(deck_pts)):
+            x, y = deck_pts[i]
+            deck_pts[i] = (min(0.5, x + side_width), y)
+    else:
+        msg = f"Unsupported visible side: {visible_side!r}"
+        raise ValueError(msg)
+    return deck_pts
+
+
+def _write_visible_hull_side(
+    out: StringIO,
+    hull_pts: list[tuple[float, float]],
+    deck_pts: list[tuple[float, float]],
+    colors: ShipColors,
+) -> None:
+    """Render the exposed hull side between waterline and projected deck top."""
+    trim = colors.trim
+    side_fill = trim.side_css()
+    if side_fill is None or trim.visible_side == "none" or trim.side_width <= 0.0:
+        return
+    _write_hull_edge_band(
+        out,
+        hull_pts,
+        deck_pts,
+        side=trim.visible_side,
+        fill=side_fill,
+        role="side-trim",
+        side_tag=trim.visible_side,
+    )
+
+
 def _write_trim_cap(
     out: StringIO,
     hull_pts: list[tuple[float, float]],
@@ -174,7 +222,7 @@ def _write_hull_trim(
     hull_pts: list[tuple[float, float]],
     colors: ShipColors,
 ) -> None:
-    """Write sampled hull trim and one-sided visible hull colour bands."""
+    """Write sampled top-surface hull trim."""
     trim = colors.trim
 
     primary_fill = trim.primary_css()
@@ -227,21 +275,6 @@ def _write_hull_trim(
                 t_end=trim.bow_extent,
             )
             _write_trim_cap(out, hull_pts, primary_inner, index=0, fill=primary_fill, role="bow-trim")
-
-    side_fill = trim.side_css()
-    if side_fill is not None and trim.side_width > 0.0 and trim.visible_side != "none":
-        side_inner = _inset_hull_points(hull_pts, trim.side_width)
-        _write_hull_edge_band(
-            out,
-            hull_pts,
-            side_inner,
-            side=trim.visible_side,
-            fill=side_fill,
-            role="side-trim",
-            t_start=trim.side_start,
-            t_end=trim.side_end,
-            side_tag=trim.visible_side,
-        )
 
 
 # ── SVG element writers ──────────────────────────────────────────────────
@@ -1480,6 +1513,11 @@ def generate_ship_svg(
         cls.hull, bow_sharpness, stern_hw, n_hull_points,
     )
     hull_pts = build_hull_points(half_widths, lb_ratio, rng, hull_noise)
+    deck_pts = _project_deck_points(
+        hull_pts,
+        visible_side=colors.trim.visible_side,
+        side_width=colors.trim.side_width,
+    )
 
     # Build SVG
     out = StringIO()
@@ -1498,15 +1536,22 @@ def generate_ship_svg(
         f'    <clipPath id="h">\n'
         f'      <polygon points="{_polygon_attr(hull_pts)}"/>\n'
         f'    </clipPath>\n'
+        f'    <clipPath id="deck">\n'
+        f'      <polygon points="{_polygon_attr(deck_pts)}"/>\n'
+        f'    </clipPath>\n'
         f'  </defs>\n'
     )
 
-    # 1) Hull polygon
+    # 1) Waterline hull + exposed hull side + projected deck top
     out.write(
         f'  <polygon points="{_polygon_attr(hull_pts)}" '
-        f'fill="{colors.hull_css()}"/>\n'
+        f'fill="{colors.hull_css()}" data-role="hull-waterline"/>\n'
     )
-    _write_hull_trim(out, hull_pts, colors)
+    _write_visible_hull_side(out, hull_pts, deck_pts, colors)
+    out.write(
+        f'  <polygon points="{_polygon_attr(deck_pts)}" '
+        f'fill="{colors.hull_css()}" data-role="deck-top"/>\n'
+    )
 
     # 2) Superstructures (with directional shadow)
     # Pick a consistent sun angle for the whole ship
@@ -1525,7 +1570,7 @@ def generate_ship_svg(
     shadow_side_sign = -sun_side_sign
 
     # 1b) Primary hull lighting
-    out.write('  <g clip-path="url(#h)">\n')
+    out.write('  <g clip-path="url(#deck)">\n')
     if shading_style == "broadside_shadow":
         _write_side_lighting(
             out,
@@ -1570,7 +1615,7 @@ def generate_ship_svg(
     out.write('  </g>\n')
 
     # 1c) Secondary lighting counterpart
-    out.write('  <g clip-path="url(#h)">\n')
+    out.write('  <g clip-path="url(#deck)">\n')
     if shading_style == "broadside_shadow":
         _write_side_lighting(
             out,
@@ -1623,17 +1668,17 @@ def generate_ship_svg(
 
     # 1d) Hull colour mottling — large irregular patches break up the
     # flat base colour into multiple tonal zones.
-    out.write('  <g clip-path="url(#h)">\n')
+    out.write('  <g clip-path="url(#deck)">\n')
     _write_hull_mottling(out, lb_ratio, half_widths, rng)
     out.write('  </g>\n')
 
     # 1e) Bow / stern gradient shading — darken toward extremities
-    out.write('  <g clip-path="url(#h)">\n')
+    out.write('  <g clip-path="url(#deck)">\n')
     _write_bow_stern_shading(out, lb_ratio, half_widths, rng)
     out.write('  </g>\n')
 
     # 1f) Very soft hull-side asymmetry shared across all styles
-    out.write('  <g clip-path="url(#h)">\n')
+    out.write('  <g clip-path="url(#deck)">\n')
     _write_side_lighting(
         out,
         lb_ratio,
@@ -1646,6 +1691,7 @@ def generate_ship_svg(
         start_fracs=(0.26, 0.50),
     )
     out.write('  </g>\n')
+    _write_hull_trim(out, deck_pts, colors)
 
     # Compute approximate superstructure exclusion zones early (used by
     # panel divisions, deck wear, and scatter).
@@ -1658,12 +1704,12 @@ def generate_ship_svg(
     ]
 
     # 1g) Deck panel divisions — centreline, seam lines, zone fills
-    out.write('  <g clip-path="url(#h)">\n')
+    out.write('  <g clip-path="url(#deck)">\n')
     _write_deck_panels(out, lb_ratio, half_widths, colors, rng, struct_zones)
     out.write('  </g>\n')
 
     # 1h) Deck surface wear — low-frequency stains and discoloration
-    out.write('  <g clip-path="url(#h)">\n')
+    out.write('  <g clip-path="url(#deck)">\n')
     _write_deck_wear(out, lb_ratio, half_widths, rng, struct_zones)
     out.write('  </g>\n')
 
@@ -1685,7 +1731,7 @@ def generate_ship_svg(
             _write_struct_svg(out, rect, colors, rng, sun_dx)
 
     # 3) Deck scatter — random small shapes clipped to hull for visual texture
-    out.write('  <g clip-path="url(#h)" id="scatter">\n')
+    out.write('  <g clip-path="url(#deck)" id="scatter">\n')
     _write_deck_scatter_svg(
         out, lb_ratio, half_widths, colors, rng, deck_scatter_density,
         struct_zones=struct_zones, sun_dx=sun_dx, sun_dy=sun_dy,

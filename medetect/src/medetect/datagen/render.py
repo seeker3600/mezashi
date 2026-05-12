@@ -13,7 +13,7 @@ from collections.abc import Callable
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from medetect.datagen.svg import parse_svg_metadata
 
@@ -77,6 +77,35 @@ def _find_hull_elements(
             break
 
     return hull_points, drawable_hull
+
+
+def _clip_ref_id(clip_path: str | None) -> str | None:
+    """Extract the referenced clipPath id from ``url(#id)``."""
+    if not clip_path:
+        return None
+    match = re.fullmatch(r"url\(#([^)]+)\)", clip_path.strip())
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _collect_clip_polygons(root: ET.Element) -> dict[str, list[tuple[float, float]]]:
+    """Collect polygon clip paths keyed by id."""
+    clip_polygons: dict[str, list[tuple[float, float]]] = {}
+    for el in root.iter():
+        if _strip_tag(el.tag) != "clipPath":
+            continue
+        clip_id = el.get("id")
+        if clip_id is None:
+            continue
+        for child in el:
+            if _strip_tag(child.tag) != "polygon":
+                continue
+            points = _parse_points(child.get("points", ""))
+            if points:
+                clip_polygons[clip_id] = points
+                break
+    return clip_polygons
 
 
 def extract_hull_polygon(svg_text: str) -> list[tuple[float, float]]:
@@ -260,6 +289,40 @@ def _draw_line(
         _composite_over(img, lambda d: d.line(pts, fill=(r, g, b, a), width=sw))
 
 
+def _render_clip_mask(
+    size: tuple[int, int],
+    points: list[tuple[float, float]],
+    sx: float,
+    sy: float,
+    vb_x: float,
+    vb_y: float,
+    cos_a: float,
+    sin_a: float,
+    cx_center: float,
+    cy_center: float,
+) -> Image.Image:
+    """Rasterize one polygon clip path into an ``L`` mask image."""
+    mask = Image.new("L", size, 0)
+    transformed = [
+        _rotate_point((x - vb_x) * sx, (y - vb_y) * sy, cx_center, cy_center, cos_a, sin_a)
+        for x, y in points
+    ]
+    if len(transformed) >= 3:
+        ImageDraw.Draw(mask).polygon(transformed, fill=255)
+    return mask
+
+
+def _composite_masked_layer(
+    img: Image.Image,
+    layer: Image.Image,
+    mask: Image.Image,
+) -> None:
+    """Composite a rendered layer onto ``img`` after applying a clip mask."""
+    masked = layer.copy()
+    masked.putalpha(ImageChops.multiply(masked.getchannel("A"), mask))
+    img.alpha_composite(masked)
+
+
 _DRAWER = {
     "polygon": _draw_polygon,
     "rect": _draw_rect,
@@ -379,6 +442,8 @@ def _draw_elements(
     sin_a: float,
     cx_center: float,
     cy_center: float,
+    clip_polygons: dict[str, list[tuple[float, float]]],
+    active_mask: Image.Image | None = None,
     skip_element: ET.Element | None = None,
 ) -> None:
     """Recursively render child elements, descending into ``<g>`` groups."""
@@ -386,6 +451,24 @@ def _draw_elements(
         if el is skip_element:
             continue
         tag = _strip_tag(el.tag)
+        clip_id = _clip_ref_id(el.get("clip-path"))
+        element_mask = active_mask
+        if clip_id is not None:
+            clip_points = clip_polygons.get(clip_id)
+            if clip_points:
+                clip_mask = _render_clip_mask(
+                    img.size,
+                    clip_points,
+                    sx,
+                    sy,
+                    vb_x,
+                    vb_y,
+                    cos_a,
+                    sin_a,
+                    cx_center,
+                    cy_center,
+                )
+                element_mask = clip_mask if element_mask is None else ImageChops.multiply(element_mask, clip_mask)
         if tag == "g":
             _draw_elements(
                 img,
@@ -398,12 +481,19 @@ def _draw_elements(
                 sin_a,
                 cx_center,
                 cy_center,
+                clip_polygons,
+                element_mask,
                 skip_element,
             )
         else:
             drawer = _DRAWER.get(tag)
             if drawer is not None:
-                drawer(img, el, sx, sy, vb_x, vb_y, cos_a, sin_a, cx_center, cy_center)
+                if element_mask is None:
+                    drawer(img, el, sx, sy, vb_x, vb_y, cos_a, sin_a, cx_center, cy_center)
+                else:
+                    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+                    drawer(layer, el, sx, sy, vb_x, vb_y, cos_a, sin_a, cx_center, cy_center)
+                    _composite_masked_layer(img, layer, element_mask)
 
 
 def rasterize_ship_svg(
@@ -453,6 +543,7 @@ def rasterize_ship_svg(
 
     root = ET.fromstring(svg_text)
     _hull_points, drawable_hull = _find_hull_elements(root)
+    clip_polygons = _collect_clip_polygons(root)
     vb = root.get("viewBox", "0 0 1 1").split()
     vb_x, vb_y = float(vb[0]), float(vb[1])
     vb_w, vb_h = float(vb[2]), float(vb[3])
@@ -504,6 +595,8 @@ def rasterize_ship_svg(
         sin_a,
         cx_center,
         cy_center,
+        clip_polygons,
+        None,
         drawable_hull if exclude_hull else None,
     )
 
