@@ -9,7 +9,6 @@ dependencies = [
     "flatbuffers>=25.12.19,<26",
     "ml-dtypes>=0.5.4,<0.6",
     "onnx>=1.20.1,<2",
-    "onnxruntime-gpu>=1.24.1,<2",
     "onnxslim>=0.1.85,<0.2",
     "fiftyone>=1.13.3,<2",
 ]
@@ -22,13 +21,20 @@ requires = ["hatchling"]
 channels = ["conda-forge"]
 platforms = ["win-64", "linux-64"]
 
-[tool.pixi.system-requirements]
-cuda = "13.0"
-
 [tool.pixi.pypi-dependencies]
 medetect = { path = ".", editable = true }
 pip-licenses = ">=5.5.1, <6"
 pytest = ">=8,<9"
+
+[tool.pixi.feature.cpu.pypi-dependencies]
+onnxruntime = ">=1.24.1,<2"
+
+[tool.pixi.feature.gpu.pypi-dependencies]
+onnxruntime-gpu = ">=1.24.1,<2"
+
+[tool.pixi.environments]
+default = ["cpu"]
+gpu = ["gpu"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -39,20 +45,11 @@ OPENCV_LOG_LEVEL = "ERROR"
 PYTORCH_ALLOC_CONF = "expandable_segments:True,max_split_size_mb:128"
 PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,max_split_size_mb:128"
 
-[tool.pixi.tasks]
-# flatbuffers, ml-dtypes, onnx, onnxruntime-gpu, onnxslim のみ（[project] dependencies の直接指定パッケージ）。
-# トレーニング用ツール（ultralytics, matplotlib, jupyter 等）はウェブアプリの帰属表示対象外のため除外。
-licenses = "pip-licenses --format=json --with-urls --packages flatbuffers ml-dtypes onnx onnxruntime-gpu onnxslim --output-file=../mefront/scripts/medetect-licenses.json"
-
-[tool.pixi.tasks.autosplit]
+[tool.pixi.feature.cpu.tasks.autosplit]
 args = ["dir"]  # 'datasets/xView_sliced/images/train'
 cmd = "python -c \"from ultralytics.data.split import autosplit; autosplit(r'{{dir}}')\""
 
-[tool.pixi.tasks.resume]
-args = ["pt"]
-cmd = "python -c \"from ultralytics import YOLO; YOLO(r'{{pt}}').train(resume=True)\""
-
-[tool.pixi.tasks.tiff2png]
+[tool.pixi.feature.cpu.tasks.tiff2png]
 args = ["dir"]
 cmd = '''
 for f in "{{dir}}"/*.tif "{{dir}}"/*.tiff; do
@@ -60,11 +57,14 @@ for f in "{{dir}}"/*.tif "{{dir}}"/*.tiff; do
 done
 '''
 
+# flatbuffers, ml-dtypes, onnx, onnxruntime, onnxslim のみ（ウェブアプリの帰属表示対象パッケージ）。
+# トレーニング用ツール（ultralytics, matplotlib, jupyter 等）はウェブアプリの帰属表示対象外のため除外。
+[tool.pixi.feature.cpu.tasks.licenses]
+cmd = "pip-licenses --format=json --with-urls --packages flatbuffers ml-dtypes onnx onnxruntime onnxslim --output-file=../mefront/scripts/medetect-licenses.json"
+
 [tool.pixi.dependencies]
 python = "3.13.*"
 ipykernel = ">=7.2.0,<8"
-pytorch-gpu = "*"
-cuda-version = "13.1.*"
 kaggle = ">=1.8.4,<2"
 ultralytics = ">=8.4.14,<9"
 torchvision = ">=0.25.0,<0.26"
@@ -75,3 +75,23 @@ planetary-computer = ">=1.0.0,<2"
 shapely = ">=2.1.2,<3"
 pyshp = ">=3.0.3,<4"
 scalene = ">=1.5.51,<2"
+
+[tool.pixi.feature.cpu.dependencies]
+pytorch = "*"
+
+[tool.pixi.feature.gpu.dependencies]
+pytorch-gpu = "*"
+cuda-version = "13.1.*"
+
+[tool.pixi.feature.gpu.tasks.check-gpu]
+cmd = "python -c \"import torch; print(torch.__version__); print(torch.cuda.is_available())\""
+
+[tool.pixi.feature.gpu.tasks.resume]
+args = ["pt"]
+cmd = "python -c \"from ultralytics import YOLO; YOLO(r'{{pt}}').train(resume=True)\""
+
+[tool.pixi.feature.gpu.tasks.licenses-gpu]
+cmd = "pip-licenses --format=json --with-urls --packages flatbuffers ml-dtypes onnx onnxruntime-gpu onnxslim --output-file=../mefront/scripts/medetect-licenses.json"
+
+[tool.pixi.feature.gpu.system-requirements]
+cuda = "13.0"
