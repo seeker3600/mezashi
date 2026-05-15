@@ -544,6 +544,8 @@ class TestDatagenCli:
         assert "--shadow_elevation" not in help_text
         assert "placement events per image" in help_text
         assert "single ships only" in help_text
+        assert "reusing the same ship" in help_text
+        assert "ship uniform" in help_text
 
     def test_debug_bg_color_is_forwarded(
         self,

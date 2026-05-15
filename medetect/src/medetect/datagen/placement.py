@@ -583,15 +583,10 @@ def _place_area_cluster(
                 scene_scale=scene_scale,
             )
         else:
-            ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
-            svg_text_u = _pick_svg(
-                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
-                shipgen_kwargs=shipgen_kwargs,
-            )
             scale = rng.uniform(0.9, 1.1)
             jit_bw, jit_lh = _scale_ship_pixel_size(bw0, lh0, scale)
             rotated = _rasterize_ship_scene(
-                svg_text_u,
+                svg_text_ref,
                 jit_bw,
                 jit_lh,
                 angle_deg=angle_deg,
@@ -946,11 +941,7 @@ def _place_cluster(
                 length_exponent,
             )
         else:
-            ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
-            svg_text_i = _pick_svg(
-                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
-                shipgen_kwargs=shipgen_kwargs,
-            )
+            svg_text_i = svg_text
             scale = rng.uniform(0.9, 1.1)
             bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
 

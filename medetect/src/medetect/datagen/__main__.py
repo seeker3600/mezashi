@@ -140,8 +140,9 @@ def main() -> None:
         default=0.5,
         help=(
             "Probability that a cluster contains mixed ship types and sizes "
-            "rather than uniform sister ships (default: 0.5). "
-            "0.0 = always uniform (same size), 1.0 = always mixed."
+            "rather than reusing the same ship with slight size jitter "
+            "(default: 0.5). "
+            "0.0 = always same-ship uniform, 1.0 = always mixed."
         ),
     )
     parser.add_argument(

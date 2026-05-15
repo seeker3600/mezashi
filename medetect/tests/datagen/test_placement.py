@@ -356,6 +356,19 @@ def _capture_vector_cluster(monkeypatch: pytest.MonkeyPatch) -> list:
     return captured
 
 
+def _svg_sequence_factory(svg_texts: list[str]):
+    """呼び出しごとに異なる SVG 文字列を返す _pick_svg モックを作る。"""
+    calls = {"count": 0}
+
+    def _mock_pick_svg(*args, **kwargs) -> str:
+        del args, kwargs
+        index = min(calls["count"], len(svg_texts) - 1)
+        calls["count"] += 1
+        return svg_texts[index]
+
+    return _mock_pick_svg
+
+
 class TestTightClusterBridgeGeometry:
     def test_bridge_geometry_only_fills_internal_gap(self) -> None:
         """tight cluster bridge は外周リングではなく内部ギャップだけを埋める。"""
@@ -664,6 +677,106 @@ class TestPlaceCluster:
         assert len(labels) == 2
         assert recorded_sizes[0] == (2, 18)
         assert recorded_sizes[1][0] == MIN_SHIP_BEAM_PX
+
+    def test_uniform_area_cluster_reuses_reference_svg(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """均一散開クラスターは先頭船の SVG を後続船でも再利用する。"""
+        svg_calls: list[str] = []
+
+        monkeypatch.setattr(
+            placement_mod,
+            "_pick_svg",
+            _svg_sequence_factory(["svg-ref", "svg-second", "svg-third"]),
+        )
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (100, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            lambda *args, **kwargs: ("mock_hull", 6, 24, 4.0),
+        )
+
+        def _mock_rasterize_ship_scene(
+            svg_text: str,
+            beam_px: int,
+            length_px: int,
+            *,
+            angle_deg: float,
+            blur_sigma: float,
+            scene_scale: int,
+        ) -> np.ndarray:
+            del beam_px, length_px, angle_deg, blur_sigma, scene_scale
+            svg_calls.append(svg_text)
+            return np.zeros((24 * 4, 6 * 4, 4), dtype=np.uint8)
+
+        monkeypatch.setattr(placement_mod, "_rasterize_ship_scene", _mock_rasterize_ship_scene)
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(11, "gapped", base_angle=0.0),
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=0.0,
+        )
+
+        assert len(labels) == 3
+        assert svg_calls == ["svg-ref", "svg-ref", "svg-ref"]
+
+    def test_uniform_tight_cluster_reuses_reference_svg(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """均一 tight クラスターは先頭船の SVG を後続船でも再利用する。"""
+        captured = _capture_vector_cluster(monkeypatch)
+
+        monkeypatch.setattr(
+            placement_mod,
+            "_pick_svg",
+            _svg_sequence_factory(["svg-ref", "svg-second", "svg-third"]),
+        )
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            lambda *args, **kwargs: ("mock_hull", 6, 24, 4.0),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_local_hull_geometry",
+            lambda svg_text, bw, lh, angle_deg: box(0.0, 0.0, float(bw), float(lh)),
+        )
+        monkeypatch.setattr(placement_mod, "extract_hull_fill", lambda svg_text: (200, 200, 200, 255))
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0),
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=0.0,
+        )
+
+        assert len(labels) == 3
+        assert len(captured) == 3
+        assert [ship.svg_text for ship in captured] == ["svg-ref", "svg-ref", "svg-ref"]
 
     @pytest.mark.parametrize(
         ("sizes", "description"),
