@@ -95,3 +95,6 @@ cmd = "python -c \"from ultralytics import YOLO; YOLO(r'{{pt}}').train(resume=Tr
 
 [tool.pixi.feature.gpu.tasks.licenses-gpu]
 cmd = "pip-licenses --format=json --with-urls --packages flatbuffers ml-dtypes onnx onnxruntime-gpu onnxslim --output-file=../mefront/scripts/medetect-licenses.json"
+
+[dependency-groups]
+gpu = ["simsimd>=6.5.16,<7"]
