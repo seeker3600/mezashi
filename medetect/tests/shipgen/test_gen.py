@@ -3,7 +3,10 @@ from __future__ import annotations
 import random
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
+import medetect.shipgen.gen as shipgen_gen
+import medetect.shipgen.hull as hull_mod
 import numpy as np
 import pytest
 
@@ -64,6 +67,24 @@ def _ship_area_from_svg(svg: str) -> float:
     root = ET.fromstring(svg)
     hull_polygon = next(root.iter(f"{{{SVG_NS}}}polygon"))
     return _polygon_area(_parse_points(hull_polygon.attrib["points"]))
+
+
+def _hull_half_widths_from_svg(svg: str) -> np.ndarray:
+    root = ET.fromstring(svg)
+    hull_polygon = next(
+        polygon
+        for polygon in root.iter(f"{{{SVG_NS}}}polygon")
+        if polygon.attrib.get("data-role") == "hull-waterline"
+    )
+    points = _parse_points(hull_polygon.attrib["points"])
+    n = len(points) // 2
+    half_widths = []
+    for i in range(n):
+        rx, ry = points[i]
+        lx, ly = points[2 * n - 1 - i]
+        assert ry == pytest.approx(ly)
+        half_widths.append((rx - lx) * 0.5)
+    return np.asarray(half_widths, dtype=np.float64)
 
 
 def _struct_rect_colors(svg: str) -> list[tuple[int, int, int]]:
@@ -156,6 +177,45 @@ class TestBuildHullPoints:
         assert max(xs) <= 1.0
         assert min(ys) >= 0.0
         assert max(ys) <= 8.0 + 0.01
+
+
+class TestHullTraitVariants:
+    def test_pointed_bow_trait_narrows_forebody(self) -> None:
+        """pointed bow trait は前方の船幅をさらに絞る。"""
+        hw = interpolate_hull("fishing", 0.55, 0.12, 128)
+
+        modified = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(pointed_bow=True, straight_sides=False, square_stern=False),
+        )
+
+        fore_index = len(hw) // 8
+        assert modified[fore_index] < hw[fore_index] * 0.85
+
+    def test_straight_sides_trait_reduces_midbody_curvature(self) -> None:
+        """straight sides trait は船腹中央の幅変動を減らす。"""
+        hw = interpolate_hull("fishing_wide", 0.45, 0.16, 128)
+
+        modified = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(pointed_bow=False, straight_sides=True, square_stern=False),
+        )
+
+        mid_slice = slice(len(hw) // 4, (len(hw) * 3) // 4)
+        assert float(np.std(modified[mid_slice])) < float(np.std(hw[mid_slice])) * 0.70
+
+    def test_square_stern_trait_broadens_transom(self) -> None:
+        """square stern trait は船尾の半幅を広く保つ。"""
+        hw = interpolate_hull("workboat", 0.40, 0.16, 128)
+
+        modified = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(pointed_bow=False, straight_sides=False, square_stern=True),
+        )
+
+        aft_band = modified[(len(hw) * 5) // 8:(len(hw) * 7) // 8]
+        assert modified[-1] >= hw[-1] + 0.08
+        assert modified[-1] >= float(np.max(aft_band)) * 0.82
 
 
 # ── Colour system ────────────────────────────────────────────────────────
@@ -297,6 +357,32 @@ class TestShipColors:
 
         assert sum(gap >= 60.0 for gap in gaps) <= max_large_gap
         assert dark_hull_bright_struct <= max_dark_hull_bright_struct
+
+    def test_low_contrast_variant_reduces_visible_struct_gap(self) -> None:
+        """low contrast variant は構造物の見かけ輝度差を抑える。"""
+        plain_gaps: list[float] = []
+        subdued_gaps: list[float] = []
+        variant = SimpleNamespace(
+            small_ship=False,
+            oversized_struct=False,
+            bright_white_struct=False,
+            low_contrast_struct=True,
+        )
+
+        for seed in range(128):
+            plain = sample_colors("work_mixed", random.Random(seed))
+            subdued = sample_colors(
+                "work_mixed",
+                random.Random(seed),
+                appearance_variant=variant,
+            )
+            plain_fill = _parse_rgb(plain.struct_css(brightness_off=28, rng=random.Random(seed)))
+            subdued_fill = _parse_rgb(subdued.struct_css(brightness_off=28, rng=random.Random(seed)))
+            plain_gaps.append(_luminance(plain_fill) - _luminance(plain.hull))
+            subdued_gaps.append(_luminance(subdued_fill) - _luminance(subdued.hull))
+
+        assert float(np.mean(subdued_gaps)) <= float(np.mean(plain_gaps)) - 10.0
+        assert sum(gap >= 30.0 for gap in subdued_gaps) <= 16
 
 
 # ── SVG generation ───────────────────────────────────────────────────────
@@ -452,6 +538,30 @@ class TestSmallShipRareVariants:
         assert oversized_only >= 1
         assert bright_only >= 1
 
+    @pytest.mark.parametrize(
+        ("ship_class", "min_subdued", "max_subdued"),
+        [
+            ("fishing_longliner", 24, 144),
+            ("fishing_purse_seiner", 24, 144),
+            ("workboat", 24, 144),
+        ],
+    )
+    def test_selected_civilian_classes_include_low_contrast_struct_variants(
+        self,
+        ship_class: str,
+        min_subdued: int,
+        max_subdued: int,
+    ) -> None:
+        """対象 civilian class では低コントラスト構造物が一定頻度で出る。"""
+        variants = [
+            sample_ship_appearance_variant(SHIP_CLASSES[ship_class], random.Random(seed))
+            for seed in range(512)
+        ]
+
+        subdued = sum(variant.low_contrast_struct for variant in variants)
+
+        assert min_subdued <= subdued <= max_subdued
+
     def test_small_fishing_white_superstructures_glow_only_rarely(self) -> None:
         """小型の白系漁船で白く光る構造物はたまにしか出ない。"""
         bright = 0
@@ -584,6 +694,60 @@ class TestSmallShipRareVariants:
         assert root.attrib["data-trim-mode"] == "none"
         assert root.attrib["data-visible-side"] == "starboard"
         assert side_polygons
+
+    @pytest.mark.parametrize(
+        "ship_class",
+        ["fishing_longliner", "fishing_purse_seiner", "workboat"],
+    )
+    def test_selected_civilian_classes_emit_combined_and_partial_hull_traits(
+        self,
+        ship_class: str,
+    ) -> None:
+        """対象 civilian class では hull trait の複合形と部分差分が両方出る。"""
+        trait_values = []
+        for seed in range(384):
+            svg = generate_ship_svg(ship_class, rng=random.Random(seed), hull_noise=0.0)
+            root = ET.fromstring(svg)
+            trait_values.append(root.attrib["data-hull-traits"])
+
+        combined = sum(value == "pointed_bow,straight_sides,square_stern" for value in trait_values)
+        partial = sum(value not in {"none", "pointed_bow,straight_sides,square_stern"} for value in trait_values)
+
+        assert 16 <= combined <= 128
+        assert partial >= 24
+
+    def test_non_target_classes_keep_hull_traits_disabled(self) -> None:
+        """非対象 class では hull trait metadata が none のまま。"""
+        svg = generate_ship_svg("destroyer", rng=random.Random(42), hull_noise=0.0)
+        root = ET.fromstring(svg)
+
+        assert root.attrib["data-hull-traits"] == "none"
+
+    def test_generate_ship_svg_uses_sampled_hull_traits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """generate_ship_svg は sampled hull traits を hull geometry に反映する。"""
+        base_svg = generate_ship_svg("workboat", rng=random.Random(42), hull_noise=0.0)
+
+        monkeypatch.setattr(
+            shipgen_gen,
+            "sample_hull_trait_variant",
+            lambda _cls, _rng: SimpleNamespace(
+                pointed_bow=True,
+                straight_sides=True,
+                square_stern=True,
+            ),
+            raising=False,
+        )
+
+        variant_svg = generate_ship_svg("workboat", rng=random.Random(42), hull_noise=0.0)
+
+        base_hw = _hull_half_widths_from_svg(base_svg)
+        variant_hw = _hull_half_widths_from_svg(variant_svg)
+        fore_index = len(base_hw) // 8
+        mid_slice = slice(len(base_hw) // 4, (len(base_hw) * 3) // 4)
+
+        assert variant_hw[fore_index] < base_hw[fore_index] * 0.90
+        assert float(np.std(variant_hw[mid_slice])) < float(np.std(base_hw[mid_slice])) * 0.75
+        assert variant_hw[-1] >= base_hw[-1] + 0.08
 
     def test_rendered_profiles_do_not_show_bilateral_outline(self) -> None:
         """描画後の船幅断面で両縁だけが同方向に強調されない。"""

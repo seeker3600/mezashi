@@ -26,8 +26,13 @@ from tqdm import tqdm
 
 from numpy.typing import NDArray
 
-from medetect.shipgen.hull import build_hull_points, interpolate_hull
+from medetect.shipgen.hull import (
+    apply_hull_trait_variant,
+    build_hull_points,
+    interpolate_hull,
+)
 from medetect.shipgen.ship_class import (
+    HullTraitVariant,
     SHIP_CLASSES,
     Detail,
     ShipColors,
@@ -35,6 +40,7 @@ from medetect.shipgen.ship_class import (
     _HULL_DEPTH_FRAC,
     _SIDE_COMPONENT_EPS,
     sample_colors,
+    sample_hull_trait_variant,
     sample_ship_appearance_variant,
 )
 
@@ -96,6 +102,23 @@ def _polygon_attr(pts: list[tuple[float, float]]) -> str:
 def _rgb_css(color: tuple[int, int, int]) -> str:
     r, g, b = color
     return f"rgb({r},{g},{b})"
+
+
+def _format_hull_trait_metadata(variant: HullTraitVariant | object | None) -> str:
+    if isinstance(variant, HullTraitVariant):
+        return variant.metadata_value()
+
+    if variant is None:
+        return "none"
+
+    traits: list[str] = []
+    if bool(getattr(variant, "pointed_bow", False)):
+        traits.append("pointed_bow")
+    if bool(getattr(variant, "straight_sides", False)):
+        traits.append("straight_sides")
+    if bool(getattr(variant, "square_stern", False)):
+        traits.append("square_stern")
+    return ",".join(traits) if traits else "none"
 
 
 def _debug_rect_points(lb_ratio: float) -> list[tuple[float, float]]:
@@ -1571,6 +1594,7 @@ def generate_ship_svg(
     bow_sharpness = rng.uniform(*cls.bow)
     stern_hw = rng.uniform(*cls.stern_hw)
     appearance_variant = sample_ship_appearance_variant(cls, rng)
+    hull_trait_variant = sample_hull_trait_variant(cls, rng)
 
     if ship_class == "debug_rect":
         hull_pts = _debug_rect_points(lb_ratio)
@@ -1584,6 +1608,7 @@ def generate_ship_svg(
             f'data-trim-mode="none" '
             f'data-visible-side="none" '
             f'data-visible-end="none" '
+            f'data-hull-traits="none" '
             f'data-lb-ratio="{_f(lb_ratio)}">\n'
         )
         out.write(
@@ -1618,6 +1643,7 @@ def generate_ship_svg(
     half_widths = interpolate_hull(
         cls.hull, bow_sharpness, stern_hw, n_hull_points,
     )
+    half_widths = apply_hull_trait_variant(half_widths, hull_trait_variant)
     hull_pts = build_hull_points(half_widths, lb_ratio, rng, hull_noise)
     deck_pts = _project_deck_points(
         hull_pts,
@@ -1637,6 +1663,7 @@ def generate_ship_svg(
         f'data-trim-mode="{colors.trim.primary_mode}" '
         f'data-visible-side="{colors.trim.visible_side}" '
         f'data-visible-end="{projection.visible_end}" '
+        f'data-hull-traits="{_format_hull_trait_metadata(hull_trait_variant)}" '
         f'data-lb-ratio="{_f(lb_ratio)}">\n'
     )
 

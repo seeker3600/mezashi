@@ -280,6 +280,22 @@ _SMALL_SHIP_STRUCT_HULL_GAPS: dict[str, float] = {
 }
 
 
+_LOW_CONTRAST_STRUCT_HULL_GAPS: dict[str, float] = {
+    "fishing_mixed": 18.0,
+    "fishing_white": 14.0,
+    "work_mixed": 16.0,
+    "barge_dull": 14.0,
+}
+
+
+_LOW_CONTRAST_STRUCT_BRIGHTNESS_BIAS_RANGES: dict[str, tuple[int, int]] = {
+    "fishing_mixed": (-20, -12),
+    "fishing_white": (-22, -14),
+    "work_mixed": (-22, -14),
+    "barge_dull": (-18, -10),
+}
+
+
 _STRUCT_FAMILY_ALIASES: dict[str, str] = {
     "blue_variants": "fishing_mixed",
     "red_orange": "work_mixed",
@@ -555,6 +571,26 @@ class ShipAppearanceVariant:
     small_ship: bool = False
     oversized_struct: bool = False
     bright_white_struct: bool = False
+    low_contrast_struct: bool = False
+
+
+@dataclass(frozen=True)
+class HullTraitVariant:
+    """Optional hull-shape traits for one ship instance."""
+
+    pointed_bow: bool = False
+    straight_sides: bool = False
+    square_stern: bool = False
+
+    def metadata_value(self) -> str:
+        traits: list[str] = []
+        if self.pointed_bow:
+            traits.append("pointed_bow")
+        if self.straight_sides:
+            traits.append("straight_sides")
+        if self.square_stern:
+            traits.append("square_stern")
+        return ",".join(traits) if traits else "none"
 
 
 def _sample_bright_white_small_ship_struct(
@@ -591,6 +627,48 @@ def _apply_small_ship_struct_base_variant(
     return _cap_luminance(toned, _luminance(hull) + max_gap)
 
 
+def _apply_low_contrast_struct_base_variant(
+    family: str,
+    hull: tuple[int, int, int],
+    struct_base: tuple[int, int, int],
+    rng: random.Random,
+    appearance_variant: ShipAppearanceVariant | None,
+) -> tuple[int, int, int]:
+    if appearance_variant is None or not appearance_variant.low_contrast_struct:
+        return struct_base
+    if appearance_variant.bright_white_struct:
+        return struct_base
+
+    family_key = _STRUCT_FAMILY_ALIASES.get(family, family)
+    hull_muted = _desaturate_toward_gray(hull, rng.uniform(0.45, 0.75))
+    struct_muted = _desaturate_toward_gray(struct_base, rng.uniform(0.35, 0.65))
+    toned = _mix_rgb(struct_muted, hull_muted, rng.uniform(0.55, 0.78))
+    toned = _jitter_rgb(toned, rng, 2)
+
+    max_gap = _LOW_CONTRAST_STRUCT_HULL_GAPS.get(family_key, 16.0)
+    toned = _cap_luminance(toned, _luminance(hull) + max_gap)
+    min_luminance = max(0.0, _luminance(hull) - 8.0)
+    toned_luminance = _luminance(toned)
+    if toned_luminance < min_luminance:
+        toned = _lift_rgb(toned, int(round(min_luminance - toned_luminance)))
+    return toned
+
+
+def _sample_struct_brightness_bias(
+    family: str,
+    rng: random.Random,
+    appearance_variant: ShipAppearanceVariant | None,
+) -> int:
+    if appearance_variant is None or not appearance_variant.low_contrast_struct:
+        return 0
+    if appearance_variant.bright_white_struct:
+        return 0
+
+    family_key = _STRUCT_FAMILY_ALIASES.get(family, family)
+    low, high = _LOW_CONTRAST_STRUCT_BRIGHTNESS_BIAS_RANGES.get(family_key, (-18, -10))
+    return rng.randint(low, high)
+
+
 def sample_ship_appearance_variant(
     ship_class: ShipClass,
     rng: random.Random,
@@ -601,14 +679,52 @@ def sample_ship_appearance_variant(
         ship_class.rare_oversized_struct_prob > 0.0
         or ship_class.rare_bright_white_struct_prob > 0.0
     )
-    if not has_small_ship_variant:
+    has_low_contrast_variant = ship_class.low_contrast_struct_prob > 0.0
+    if not has_small_ship_variant and not has_low_contrast_variant:
         return ShipAppearanceVariant()
 
     forked = _fork_rng(rng)
     return ShipAppearanceVariant(
-        small_ship=True,
-        oversized_struct=forked.random() < ship_class.rare_oversized_struct_prob,
-        bright_white_struct=forked.random() < ship_class.rare_bright_white_struct_prob,
+        small_ship=has_small_ship_variant,
+        oversized_struct=(
+            forked.random() < ship_class.rare_oversized_struct_prob
+            if has_small_ship_variant else False
+        ),
+        bright_white_struct=(
+            forked.random() < ship_class.rare_bright_white_struct_prob
+            if has_small_ship_variant else False
+        ),
+        low_contrast_struct=forked.random() < ship_class.low_contrast_struct_prob,
+    )
+
+
+def sample_hull_trait_variant(
+    ship_class: ShipClass,
+    rng: random.Random,
+) -> HullTraitVariant:
+    """Resolve optional hull-shape traits without advancing the main RNG."""
+
+    has_hull_traits = (
+        ship_class.hull_trait_pointed_bow_prob > 0.0
+        or ship_class.hull_trait_straight_sides_prob > 0.0
+        or ship_class.hull_trait_square_stern_prob > 0.0
+        or ship_class.hull_trait_combined_prob > 0.0
+    )
+    if not has_hull_traits:
+        return HullTraitVariant()
+
+    forked = _fork_rng(rng)
+    if forked.random() < ship_class.hull_trait_combined_prob:
+        return HullTraitVariant(
+            pointed_bow=True,
+            straight_sides=True,
+            square_stern=True,
+        )
+
+    return HullTraitVariant(
+        pointed_bow=forked.random() < ship_class.hull_trait_pointed_bow_prob,
+        straight_sides=forked.random() < ship_class.hull_trait_straight_sides_prob,
+        square_stern=forked.random() < ship_class.hull_trait_square_stern_prob,
     )
 
 
@@ -619,6 +735,7 @@ class ShipColors:
     hull: tuple[int, int, int]
     struct_base: tuple[int, int, int]
     trim: HullTrimStyle = field(default_factory=HullTrimStyle)
+    struct_brightness_bias: int = 0
 
     def hull_css(self) -> str:
         r, g, b = self.hull
@@ -630,9 +747,10 @@ class ShipColors:
         rng: random.Random | None = None,
     ) -> str:
         jitter = rng.randint(-5, 5) if rng else 0
-        r = _clamp(self.struct_base[0] + brightness_off + jitter)
-        g = _clamp(self.struct_base[1] + brightness_off + jitter)
-        b = _clamp(self.struct_base[2] + brightness_off + jitter)
+        offset = self.struct_brightness_bias + brightness_off + jitter
+        r = _clamp(self.struct_base[0] + offset)
+        g = _clamp(self.struct_base[1] + offset)
+        b = _clamp(self.struct_base[2] + offset)
         return f"rgb({r},{g},{b})"
 
     def detail_css(self, offset: int) -> str:
@@ -669,9 +787,10 @@ class ShipColors:
         """
         dark = rng.uniform(0.84, 0.94) if rng else 0.89
         jitter = rng.randint(-4, 4) if rng else 0
-        r = _clamp(self.struct_base[0] + brightness_off + jitter)
-        g = _clamp(self.struct_base[1] + brightness_off + jitter)
-        b = _clamp(self.struct_base[2] + brightness_off + jitter)
+        offset = self.struct_brightness_bias + brightness_off + jitter
+        r = _clamp(self.struct_base[0] + offset)
+        g = _clamp(self.struct_base[1] + offset)
+        b = _clamp(self.struct_base[2] + offset)
         sr = _clamp(int(r * dark))
         sg = _clamp(int(g * dark))
         sb = _clamp(int(b * dark + 4))  # slight blue for sky ambient in shadow
@@ -733,6 +852,21 @@ def sample_colors(
         rng,
         appearance_variant,
     )
+    struct_brightness_bias = 0
+    if appearance_variant is not None and appearance_variant.low_contrast_struct:
+        appearance_rng = _fork_rng(rng)
+        struct_base = _apply_low_contrast_struct_base_variant(
+            family,
+            hull,
+            struct_base,
+            appearance_rng,
+            appearance_variant,
+        )
+        struct_brightness_bias = _sample_struct_brightness_bias(
+            family,
+            appearance_rng,
+            appearance_variant,
+        )
     trim = _sample_hull_trim_style(
         family,
         hull,
@@ -740,7 +874,12 @@ def sample_colors(
         trim_mode=trim_mode,
         side_component=side_component,
     )
-    return ShipColors(hull=hull, struct_base=struct_base, trim=trim)
+    return ShipColors(
+        hull=hull,
+        struct_base=struct_base,
+        trim=trim,
+        struct_brightness_bias=struct_brightness_bias,
+    )
 
 
 # ── Structural element data classes ──────────────────────────────────────
@@ -791,6 +930,11 @@ class ShipClass:
     debug_only: bool = False
     rare_oversized_struct_prob: float = 0.0
     rare_bright_white_struct_prob: float = 0.0
+    low_contrast_struct_prob: float = 0.0
+    hull_trait_pointed_bow_prob: float = 0.0
+    hull_trait_straight_sides_prob: float = 0.0
+    hull_trait_square_stern_prob: float = 0.0
+    hull_trait_combined_prob: float = 0.0
 
 
 # ── Ship class registry ──────────────────────────────────────────────────
@@ -1235,6 +1379,11 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("tire_fender", x=(0.88, 0.94), y=0.90, size=0.012, prob=0.3),
             Detail("pipe", x=(0.60, 0.72), y=0.22, size=0.008, prob=0.25),
         ),
+        low_contrast_struct_prob=0.18,
+        hull_trait_pointed_bow_prob=0.10,
+        hull_trait_straight_sides_prob=0.12,
+        hull_trait_square_stern_prob=0.10,
+        hull_trait_combined_prob=0.14,
     ),
     "fishing_longliner": ShipClass(
         hull="fishing",
@@ -1265,7 +1414,12 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("vent", x=(0.35, 0.40), y=0.35, size=0.012, prob=0.35),
         ),
         rare_oversized_struct_prob=0.02,
-        rare_bright_white_struct_prob=0.02,
+        rare_bright_white_struct_prob=0.01,
+        low_contrast_struct_prob=0.18,
+        hull_trait_pointed_bow_prob=0.10,
+        hull_trait_straight_sides_prob=0.10,
+        hull_trait_square_stern_prob=0.10,
+        hull_trait_combined_prob=0.14,
     ),
     # ─── Wide / stubby vessels (5–50 m, low L/B) ───
     "tug_harbor": ShipClass(
@@ -1473,6 +1627,11 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.02,
+        low_contrast_struct_prob=0.16,
+        hull_trait_pointed_bow_prob=0.08,
+        hull_trait_straight_sides_prob=0.14,
+        hull_trait_square_stern_prob=0.12,
+        hull_trait_combined_prob=0.16,
     ),
     "landing_craft": ShipClass(
         hull="barge",

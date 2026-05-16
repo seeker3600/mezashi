@@ -160,6 +160,41 @@ def interpolate_hull(
     return np.interp(t, xs, hws)
 
 
+def apply_hull_trait_variant(
+    half_widths: NDArray[np.float64],
+    variant: object | None,
+) -> NDArray[np.float64]:
+    """Apply optional hull-shape traits to an interpolated half-width profile."""
+    hw = np.array(half_widths, dtype=np.float64, copy=True)
+    if hw.size == 0 or variant is None:
+        return hw
+
+    if bool(getattr(variant, "pointed_bow", False)):
+        bow_end = max(3, int(round((hw.size - 1) * 0.22)))
+        bow_scale = np.linspace(0.55, 1.0, bow_end + 1)
+        hw[:bow_end + 1] *= bow_scale
+
+    if bool(getattr(variant, "straight_sides", False)):
+        start = max(1, int(round((hw.size - 1) * 0.24)))
+        end = max(start + 2, int(round((hw.size - 1) * 0.82)))
+        mid = hw[start:end + 1]
+        plateau = float(np.quantile(mid, 0.88))
+        hw[start:end + 1] = np.clip(0.25 * mid + 0.75 * plateau, 0.0, 0.5)
+
+    if bool(getattr(variant, "square_stern", False)):
+        stern_start = max(1, int(round((hw.size - 1) * 0.82)))
+        aft_ref_start = max(0, int(round((hw.size - 1) * 0.55)))
+        aft_ref_end = max(aft_ref_start + 1, int(round((hw.size - 1) * 0.78)))
+        aft_ref = float(np.quantile(hw[aft_ref_start:aft_ref_end + 1], 0.80))
+        target = min(0.5, max(hw[-1] + 0.08, aft_ref * 0.92))
+        ramp_start = max(hw[stern_start], target * 0.94)
+        ramp = np.linspace(ramp_start, target, hw.size - stern_start)
+        hw[stern_start:] = np.maximum(hw[stern_start:], ramp)
+        hw[-1] = max(hw[-1], target)
+
+    return np.clip(hw, 0.0, 0.5)
+
+
 def build_hull_points(
     half_widths: NDArray[np.float64],
     lb_ratio: float,
