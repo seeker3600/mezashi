@@ -265,11 +265,19 @@ def _count_connected_components(mask: np.ndarray, min_size: int = 1) -> int:
 class _ForcedLayoutRandom(random.Random):
     """特定の cluster layout を強制する Random 派生。"""
 
-    def __init__(self, seed: int, layout: str, base_angle: float = 0.0, stagger: bool = False) -> None:
+    def __init__(
+        self,
+        seed: int,
+        layout: str,
+        base_angle: float = 0.0,
+        stagger: bool = False,
+        zero_centered_uniform_max: float = 2.0,
+    ) -> None:
         super().__init__(seed)
         self._layout = layout
         self._base_angle = base_angle
         self._stagger = stagger
+        self._zero_centered_uniform_max = zero_centered_uniform_max
         self._uniform_calls = 0
         self._random_calls = 0
 
@@ -299,7 +307,7 @@ class _ForcedLayoutRandom(random.Random):
         if self._uniform_calls == 0 and a == 0 and b == 360:
             self._uniform_calls += 1
             return self._base_angle
-        if a < 0 < b and max(abs(a), abs(b)) <= 2.0:
+        if a < 0 < b and max(abs(a), abs(b)) <= self._zero_centered_uniform_max:
             self._uniform_calls += 1
             return 0.0
         self._uniform_calls += 1
@@ -837,6 +845,74 @@ class TestPlaceCluster:
         overlap_area = captured[0].hull_geom.intersection(captured[1].hull_geom).area
         _min_a, max_a = _geometry_projection_extents(captured[0].hull_geom, 1.0, 0.0)
         min_b, _max_b = _geometry_projection_extents(captured[1].hull_geom, 1.0, 0.0)
+        penetration_px = max_a - min_b
+
+        assert gap <= 1e-6 or overlap_area > 0.0, description
+        assert penetration_px <= 1.0, description
+
+    @pytest.mark.parametrize(
+        ("sizes", "description"),
+        [
+            ([(6, 24), (6, 24)], "equal-length"),
+            ([(4, 18), (14, 72)], "mixed-length"),
+        ],
+    )
+    def test_raft_open_contact_heavy_hulls_touch_with_mixed_lengths(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+        sizes: list[tuple[int, int]],
+        description: str,
+    ) -> None:
+        """contact-heavy raft_open では長さ差があっても hull 接触を維持する。"""
+        captured = _capture_vector_cluster(monkeypatch)
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: "mock-svg")
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory(sizes),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_local_hull_geometry",
+            lambda svg_text, bw, lh, angle_deg: box(0.0, 0.0, float(bw), float(lh)),
+        )
+        monkeypatch.setattr(placement_mod, "extract_hull_fill", lambda svg_text: (200, 200, 200, 255))
+
+        base_angle = 0.5
+        rng = _ForcedLayoutRandom(
+            7,
+            "partial",
+            base_angle=base_angle,
+            zero_centered_uniform_max=20.0,
+        )
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=rng,
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+            raft_open_contact_prob=1.0,
+        )
+
+        assert len(labels) == 2
+        assert len(captured) == 2
+
+        gap = captured[0].hull_geom.distance(captured[1].hull_geom)
+        overlap_area = captured[0].hull_geom.intersection(captured[1].hull_geom).area
+        axis_x = math.cos(math.radians(base_angle))
+        axis_y = math.sin(math.radians(base_angle))
+        _min_a, max_a = _geometry_projection_extents(captured[0].hull_geom, axis_x, axis_y)
+        min_b, _max_b = _geometry_projection_extents(captured[1].hull_geom, axis_x, axis_y)
         penetration_px = max_a - min_b
 
         assert gap <= 1e-6 or overlap_area > 0.0, description

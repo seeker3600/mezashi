@@ -706,6 +706,7 @@ def _place_cluster(
     length_exponent: float = 1.0,
     size_thresholds: tuple[float, ...] | None = None,
     mixed_prob: float = 0.5,
+    raft_open_contact_prob: float = 0.5,
     shadow_azimuth_rad: float | None = None,
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
@@ -751,6 +752,10 @@ def _place_cluster(
         )
 
     tight = layout == "raft_tight"
+    raft_open_contact_heavy = (
+        layout == "raft_open"
+        and rng.random() < max(0.0, min(1.0, raft_open_contact_prob))
+    )
     heading_jitter = 0.75 if tight else 20.0
     stagger_frac = 0.0 if tight else 0.15
     tight_stagger_mode = tight and rng.random() < 0.30
@@ -794,6 +799,13 @@ def _place_cluster(
     prev_max_proj = 0.0
     prev_proj_half = 0.0
     prev_hull: BaseGeometry | None = None
+
+    def _raft_open_contact_staggers(initial_stagger: float) -> list[float]:
+        candidates = [initial_stagger]
+        for candidate in (initial_stagger * 0.5, 0.0):
+            if all(abs(candidate - existing) > 1e-6 for existing in candidates):
+                candidates.append(candidate)
+        return candidates
 
     def _candidate_geometry(
         local_hull: BaseGeometry,
@@ -975,8 +987,47 @@ def _place_cluster(
                 break
             row_offset, cx, cy, hull_geom = contact
         else:
-            if i == 0:
-                gap_px = 0.0
+            stagger_px = rng.uniform(-lh * stagger_frac, lh * stagger_frac)
+            base_contact_row = cursor_edge - min_proj
+
+            if raft_open_contact_heavy:
+                contact_choice: tuple[float, float, float, float, BaseGeometry] | None = None
+                for candidate_stagger in _raft_open_contact_staggers(stagger_px):
+                    if prev_hull is None:
+                        break
+                    contact = _contact_candidate(
+                        local_hull,
+                        base_contact_row,
+                        candidate_stagger,
+                        bw,
+                        lh,
+                        angle_rad,
+                        min_proj,
+                        proj_half,
+                        strict=False,
+                    )
+                    if contact is None:
+                        continue
+                    candidate_row, candidate_cx, candidate_cy, candidate_hull = contact
+                    if not _candidate_valid(candidate_cx, candidate_cy, candidate_hull, bw, lh, angle_rad):
+                        continue
+                    contact_choice = (
+                        candidate_row,
+                        candidate_stagger,
+                        candidate_cx,
+                        candidate_cy,
+                        candidate_hull,
+                    )
+                    break
+
+                if contact_choice is not None:
+                    row_offset, stagger_px, cx, cy, hull_geom = contact_choice
+                else:
+                    row_offset = base_contact_row
+                    cx, cy, hull_geom = _candidate_geometry(local_hull, row_offset, stagger_px)
+                    if not _candidate_valid(cx, cy, hull_geom, bw, lh, angle_rad):
+                        cursor_edge = row_offset + max_proj
+                        continue
             else:
                 gap_mode = rng.random()
                 if gap_mode < 1 / 3:
@@ -986,28 +1037,26 @@ def _place_cluster(
                 else:
                     gap_px = rng.uniform(bw * 0.2, bw * 0.8)
 
-            stagger_px = rng.uniform(-lh * stagger_frac, lh * stagger_frac)
-            base_contact_row = cursor_edge - min_proj
-            if prev_hull is not None and gap_px <= 1.0:
-                contact = _contact_candidate(
-                    local_hull,
-                    base_contact_row,
-                    stagger_px,
-                    bw,
-                    lh,
-                    angle_rad,
-                    min_proj,
-                    proj_half,
-                    strict=False,
-                )
-                row_offset = (contact[0] if contact is not None else base_contact_row) + gap_px
-            else:
-                row_offset = base_contact_row + gap_px
+                if prev_hull is not None and gap_px <= 1.0:
+                    contact = _contact_candidate(
+                        local_hull,
+                        base_contact_row,
+                        stagger_px,
+                        bw,
+                        lh,
+                        angle_rad,
+                        min_proj,
+                        proj_half,
+                        strict=False,
+                    )
+                    row_offset = (contact[0] if contact is not None else base_contact_row) + gap_px
+                else:
+                    row_offset = base_contact_row + gap_px
 
-            cx, cy, hull_geom = _candidate_geometry(local_hull, row_offset, stagger_px)
-            if not _candidate_valid(cx, cy, hull_geom, bw, lh, angle_rad):
-                cursor_edge = row_offset + max_proj
-                continue
+                cx, cy, hull_geom = _candidate_geometry(local_hull, row_offset, stagger_px)
+                if not _candidate_valid(cx, cy, hull_geom, bw, lh, angle_rad):
+                    cursor_edge = row_offset + max_proj
+                    continue
 
         cid = _ship_class_id(lh, resolution_m, class_id, size_thresholds, is_cluster=tight)
         placed.append(
