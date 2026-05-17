@@ -50,6 +50,11 @@ from medetect.datagen.svg import parse_svg_metadata
 _CLUSTER_SCENE_SUPERSAMPLE: int = 4
 _CLUSTER_RESAMPLE_PAD_OUTPUT_PX: int = 3
 
+_BerthSegment = tuple[tuple[float, float], tuple[float, float]]
+_BERTH_RUN_CONNECT_TOL_PX = 2.5
+_BERTH_RUN_MAX_TURN_COS = math.cos(math.radians(20.0))
+_BERTH_LAND_CLEARANCE_PX = 0.25
+
 
 def _rgba_scene_rect(
     layer: NDArray[np.uint8],
@@ -97,6 +102,23 @@ class _RaftShipPlacement:
     class_id: int
     hull_geom: BaseGeometry
     hull_fill: tuple[int, int, int, int]
+
+
+_BerthFrame = tuple[float, float, float, float, float, float, float, float, float]
+
+
+@dataclass(frozen=True)
+class _BerthRunSegment:
+    segment: _BerthSegment
+    frame: _BerthFrame
+    start_s: float
+    end_s: float
+
+
+@dataclass(frozen=True)
+class _BerthRun:
+    segments: tuple[_BerthRunSegment, ...]
+    length: float
 
 
 def find_water_position(
@@ -265,6 +287,76 @@ def _stamp_geometry_occupancy(
     for poly in _iter_polygon_geometries(stamped):
         ImageDraw.Draw(img).polygon(list(poly.exterior.coords), fill=255)
     occupancy[:] = np.array(img) > 0
+
+
+def _geometry_hits_mask(
+    mask: NDArray[np.bool_],
+    geometry: BaseGeometry,
+) -> bool:
+    """Return True when a polygonal geometry overlaps any True pixels in mask."""
+    if geometry.is_empty:
+        return False
+
+    min_x, min_y, max_x, max_y = geometry.bounds
+    x0 = max(0, math.floor(min_x) - 1)
+    y0 = max(0, math.floor(min_y) - 1)
+    x1 = min(mask.shape[1], math.ceil(max_x) + 2)
+    y1 = min(mask.shape[0], math.ceil(max_y) + 2)
+    if x0 >= x1 or y0 >= y1:
+        return False
+
+    patch_mask = mask[y0:y1, x0:x1]
+    if not patch_mask.any():
+        return False
+
+    img = Image.new("L", (x1 - x0, y1 - y0), 0)
+    draw = ImageDraw.Draw(img)
+    for poly in _iter_polygon_geometries(geometry):
+        exterior = [(x - x0, y - y0) for x, y in poly.exterior.coords]
+        draw.polygon(exterior, fill=255)
+    geom_mask = np.array(img) > 0
+    return bool((geom_mask & patch_mask).any())
+
+
+def _geometry_intrudes_land(
+    water_mask: NDArray[np.bool_],
+    hull_geom: BaseGeometry,
+    clearance_px: float = _BERTH_LAND_CLEARANCE_PX,
+) -> bool:
+    """Return True when the hull interior penetrates land beyond a contact tolerance."""
+    inner_geom = hull_geom.buffer(-clearance_px, join_style=2) if clearance_px > 0 else hull_geom
+    if inner_geom.is_empty:
+        inner_geom = hull_geom.representative_point().buffer(0.05)
+    land_mask = ~water_mask
+    return _geometry_hits_mask(land_mask, inner_geom)
+
+
+def _resolve_berth_land_intrusion(
+    water_mask: NDArray[np.bool_],
+    hull_geom: BaseGeometry,
+    cx: float,
+    cy: float,
+    water_nx: float,
+    water_ny: float,
+    *,
+    max_shift_px: float,
+    step_px: float = 0.25,
+) -> tuple[float, float, BaseGeometry] | None:
+    """Push a berth candidate offshore until it clears land intrusion.
+
+    This keeps dock contact whenever possible while preventing visible land
+    penetration on curved or pixel-stepped shorelines.
+    """
+    if not _geometry_intrudes_land(water_mask, hull_geom):
+        return cx, cy, hull_geom
+
+    steps = max(1, math.ceil(max_shift_px / max(step_px, 1e-6)))
+    for index in range(1, steps + 1):
+        shift = min(max_shift_px, index * step_px)
+        shifted_geom = affinity.translate(hull_geom, xoff=water_nx * shift, yoff=water_ny * shift)
+        if not _geometry_intrudes_land(water_mask, shifted_geom):
+            return cx + water_nx * shift, cy + water_ny * shift, shifted_geom
+    return None
 
 
 def _render_vector_raft_cluster(
@@ -476,6 +568,514 @@ def _obb_on_water(
         if 0 <= xi < w_mask and 0 <= yi < h_mask and water_mask[yi, xi]:
             on_water += 1
     return on_water >= required
+
+
+def _obb_on_berth_water(
+    water_mask: NDArray[np.bool_],
+    cx: float,
+    cy: float,
+    w: int,
+    h: int,
+    angle_rad: float,
+    water_nx: float,
+    water_ny: float,
+) -> bool:
+    """Return True if a berthed OBB keeps its offshore side over water.
+
+    Unlike open-water placement, dock-side corners are allowed to graze land so
+    long as the ship centre and both offshore corners stay on water.
+    """
+    if not _mask_contains(water_mask, cx, cy):
+        return False
+
+    corners = compute_obb_corners(float(cx), float(cy), float(w), float(h), angle_rad)
+    corner_samples: list[tuple[float, bool]] = []
+    on_water = 1
+    for x, y in corners:
+        wet = _mask_contains(water_mask, x, y)
+        if wet:
+            on_water += 1
+        corner_samples.append((((x - cx) * water_nx) + ((y - cy) * water_ny), wet))
+
+    offshore = sorted(corner_samples, key=lambda item: item[0], reverse=True)[:2]
+    if len(offshore) < 2 or not all(wet for _score, wet in offshore):
+        return False
+    return on_water >= 3
+
+
+def _mask_contains(
+    mask: NDArray[np.bool_],
+    x: float,
+    y: float,
+) -> bool:
+    xi, yi = round(x), round(y)
+    return 0 <= yi < mask.shape[0] and 0 <= xi < mask.shape[1] and bool(mask[yi, xi])
+
+
+def _angle_deg_from_stern_direction(
+    stern_dx: float,
+    stern_dy: float,
+) -> float:
+    return math.degrees(math.atan2(-stern_dx, stern_dy))
+
+
+def _segment_endpoint_distance(
+    point_a: tuple[float, float],
+    point_b: tuple[float, float],
+) -> float:
+    return math.hypot(point_a[0] - point_b[0], point_a[1] - point_b[1])
+
+
+def _berth_segment_frame(
+    segment: _BerthSegment,
+    water_mask: NDArray[np.bool_],
+) -> _BerthFrame | None:
+    (x0, y0), (x1, y1) = segment
+    dx = x1 - x0
+    dy = y1 - y0
+    seg_len = math.hypot(dx, dy)
+    if seg_len < 1e-6:
+        return None
+
+    tx = dx / seg_len
+    ty = dy / seg_len
+    mid_x = (x0 + x1) / 2.0
+    mid_y = (y0 + y1) / 2.0
+    sample_dist = 2.0
+    candidates = [(-ty, tx), (ty, -tx)]
+
+    best: tuple[float, float] | None = None
+    best_score = -1
+    for nx, ny in candidates:
+        water_score = 0
+        land_score = 0
+        for offset in (sample_dist, sample_dist * 2.0, sample_dist * 3.0):
+            if _mask_contains(water_mask, mid_x + nx * offset, mid_y + ny * offset):
+                water_score += 1
+            if _mask_contains(water_mask, mid_x - nx * offset, mid_y - ny * offset):
+                land_score += 1
+        score = water_score - land_score
+        if water_score > 0 and score > best_score:
+            best = (nx, ny)
+            best_score = score
+
+    if best is None or best_score <= 0:
+        return None
+
+    nx, ny = best
+    return x0, y0, tx, ty, nx, ny, seg_len, mid_x, mid_y
+
+
+def _orient_berth_segment_for_connection(
+    segment: _BerthSegment,
+    endpoint: tuple[float, float],
+) -> _BerthSegment | None:
+    if _segment_endpoint_distance(segment[0], endpoint) <= _BERTH_RUN_CONNECT_TOL_PX:
+        return segment
+    if _segment_endpoint_distance(segment[1], endpoint) <= _BERTH_RUN_CONNECT_TOL_PX:
+        return (segment[1], segment[0])
+    return None
+
+
+def _merge_berth_segments(
+    berth_segments: list[_BerthSegment],
+    water_mask: NDArray[np.bool_],
+) -> list[_BerthSegment]:
+    """Return connected berth segments with stable orientation preserved."""
+    merged: list[_BerthSegment] = []
+    current_run: list[tuple[_BerthSegment, _BerthFrame]] = []
+
+    for raw_segment in berth_segments:
+        segment = raw_segment
+        if current_run:
+            oriented = _orient_berth_segment_for_connection(raw_segment, current_run[-1][0][1])
+            if oriented is not None:
+                segment = oriented
+
+        frame = _berth_segment_frame(segment, water_mask)
+        if frame is None:
+            if current_run:
+                merged.extend(run_segment for run_segment, _run_frame in current_run)
+                current_run = []
+            continue
+
+        if not current_run:
+            current_run = [(segment, frame)]
+            continue
+
+        prev_segment, prev_frame = current_run[-1]
+        connected = _segment_endpoint_distance(segment[0], prev_segment[1]) <= _BERTH_RUN_CONNECT_TOL_PX
+        tangent_ok = (prev_frame[2] * frame[2]) + (prev_frame[3] * frame[3]) >= _BERTH_RUN_MAX_TURN_COS
+        normal_ok = (prev_frame[4] * frame[4]) + (prev_frame[5] * frame[5]) > 0.0
+        if connected and tangent_ok and normal_ok:
+            current_run.append((segment, frame))
+            continue
+
+        merged.extend(run_segment for run_segment, _run_frame in current_run)
+        current_run = [(segment, frame)]
+
+    if current_run:
+        merged.extend(run_segment for run_segment, _run_frame in current_run)
+    return merged if merged else list(berth_segments)
+
+
+def _build_berth_runs(
+    berth_segments: list[_BerthSegment],
+    water_mask: NDArray[np.bool_],
+) -> list[_BerthRun]:
+    """Group connected shoreline segments into berth runs while preserving bends."""
+    runs: list[_BerthRun] = []
+    current_run: list[tuple[_BerthSegment, _BerthFrame]] = []
+
+    def _flush_run() -> None:
+        nonlocal current_run
+        if not current_run:
+            return
+        start_s = 0.0
+        run_segments: list[_BerthRunSegment] = []
+        for run_segment, run_frame in current_run:
+            seg_len = run_frame[6]
+            run_segments.append(
+                _BerthRunSegment(
+                    segment=run_segment,
+                    frame=run_frame,
+                    start_s=start_s,
+                    end_s=start_s + seg_len,
+                )
+            )
+            start_s += seg_len
+        runs.append(_BerthRun(tuple(run_segments), start_s))
+        current_run = []
+
+    for raw_segment in berth_segments:
+        segment = raw_segment
+        if current_run:
+            oriented = _orient_berth_segment_for_connection(raw_segment, current_run[-1][0][1])
+            if oriented is not None:
+                segment = oriented
+
+        frame = _berth_segment_frame(segment, water_mask)
+        if frame is None:
+            _flush_run()
+            continue
+
+        if not current_run:
+            current_run = [(segment, frame)]
+            continue
+
+        prev_segment, prev_frame = current_run[-1]
+        connected = _segment_endpoint_distance(segment[0], prev_segment[1]) <= _BERTH_RUN_CONNECT_TOL_PX
+        tangent_ok = (prev_frame[2] * frame[2]) + (prev_frame[3] * frame[3]) >= _BERTH_RUN_MAX_TURN_COS
+        normal_ok = (prev_frame[4] * frame[4]) + (prev_frame[5] * frame[5]) > 0.0
+        if connected and tangent_ok and normal_ok:
+            current_run.append((segment, frame))
+            continue
+
+        _flush_run()
+        current_run = [(segment, frame)]
+
+    _flush_run()
+    return runs
+
+
+def _sample_berth_run(
+    run: _BerthRun,
+    distance_s: float,
+) -> tuple[float, float, float, float, float, float] | None:
+    """Sample point and local frame at arclength distance along a berth run."""
+    if not run.segments:
+        return None
+
+    target_s = max(0.0, min(distance_s, run.length))
+    last_index = len(run.segments) - 1
+    for index, run_segment in enumerate(run.segments):
+        if target_s <= run_segment.end_s or index == last_index:
+            x0, y0, tan_x, tan_y, water_nx, water_ny, seg_len, _mid_x, _mid_y = run_segment.frame
+            local_s = max(0.0, min(seg_len, target_s - run_segment.start_s))
+            return (
+                x0 + tan_x * local_s,
+                y0 + tan_y * local_s,
+                tan_x,
+                tan_y,
+                water_nx,
+                water_ny,
+            )
+    return None
+
+
+def _place_berthed_cluster(
+    berth_water_mask: NDArray[np.bool_],
+    occupancy: NDArray[np.bool_],
+    berth_segments: list[_BerthSegment],
+    svg_metas: list[_SvgMeta] | None,
+    resolution_m: float,
+    rng: random.Random,
+    n_ships: int,
+    alpha_range: tuple[float, float],
+    class_id: int,
+    image_size: int,
+    background: NDArray[np.uint8],
+    length_range: tuple[float, float] | None,
+    length_exponent: float,
+    size_thresholds: tuple[float, ...] | None,
+    mixed: bool,
+    berth_stern: bool,
+    blur_sigma: float,
+    shadow_azimuth_rad: float | None = None,
+    shadow_length: float | None = None,
+    shadow_alpha: float = 0.0,
+    shadow_alpha_scale: float = 1.0,
+    offnadir_deg: float = 0.0,
+    sensor_az_world_deg: float = 0.0,
+    shipgen_kwargs: dict[str, Any] | None = None,
+) -> list[str]:
+    labels: list[str] = []
+    if not berth_segments:
+        return labels
+
+    runs = _build_berth_runs(berth_segments, berth_water_mask)
+    rng.shuffle(runs)
+    cluster_alpha = rng.uniform(*alpha_range)
+    ship_gap = 4.0
+    scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
+
+    for run in runs:
+        if run.length <= 1e-6:
+            continue
+
+        mid_sample = _sample_berth_run(run, run.length / 2.0)
+        if mid_sample is None:
+            continue
+        mid_x, mid_y, mid_tan_x, mid_tan_y, mid_water_nx, mid_water_ny = mid_sample
+        mid_stern_dx = -mid_water_nx if berth_stern else mid_tan_x
+        mid_stern_dy = -mid_water_ny if berth_stern else mid_tan_y
+        mid_angle_deg = _angle_deg_from_stern_direction(mid_stern_dx, mid_stern_dy)
+        ship_sensor_az = (sensor_az_world_deg - mid_angle_deg) % 360.0
+        canonical_angle_deg = _angle_deg_from_stern_direction(-1.0, 0.0) if berth_stern else 0.0
+
+        if not mixed:
+            svg_text_ref = _pick_svg(
+                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                shipgen_kwargs=shipgen_kwargs,
+            )
+            _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
+                svg_text_ref,
+                resolution_m,
+                rng,
+                length_range,
+                length_exponent,
+            )
+
+        ship_specs: list[
+            tuple[
+                str,
+                int,
+                int,
+                BaseGeometry,
+                tuple[int, int, int, int],
+                float,
+                float,
+                float,
+            ]
+        ] = []
+        total_span = 0.0
+        for index in range(n_ships):
+            if mixed:
+                svg_text_i = _pick_svg(
+                    svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                    shipgen_kwargs=shipgen_kwargs,
+                )
+                _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
+                    svg_text_i,
+                    resolution_m,
+                    rng,
+                    length_range,
+                    length_exponent,
+                )
+            else:
+                svg_text_i = svg_text_ref
+                if index == 0:
+                    bw, lh = bw0, lh0
+                else:
+                    scale = rng.uniform(0.9, 1.1)
+                    bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
+
+            canonical_hull = _local_hull_geometry(svg_text_i, bw, lh, canonical_angle_deg)
+            min_t, max_t = _geometry_projection_extents(canonical_hull, 0.0, 1.0)
+            min_n, _max_n = _geometry_projection_extents(canonical_hull, 1.0, 0.0)
+            ship_specs.append(
+                (
+                    svg_text_i,
+                    bw,
+                    lh,
+                    extract_hull_fill(svg_text_i),
+                    min_t,
+                    max_t,
+                    -min_n,
+                )
+            )
+            total_span += max_t - min_t
+
+        active_ship_specs = list(ship_specs)
+        total_span = sum(max_t - min_t for *_prefix, min_t, max_t, _water_offset in active_ship_specs)
+        total_span += max(0, len(active_ship_specs) - 1) * ship_gap
+        while active_ship_specs and total_span > run.length:
+            active_ship_specs.pop()
+            total_span = sum(max_t - min_t for *_prefix, min_t, max_t, _water_offset in active_ship_specs)
+            total_span += max(0, len(active_ship_specs) - 1) * ship_gap
+
+        if not active_ship_specs:
+            continue
+
+        cursor = (run.length - total_span) / 2.0
+        staged_occupancy = occupancy.copy()
+        placed: list[_RaftShipPlacement] = []
+        valid = True
+        for svg_text_i, bw, lh, hull_fill, min_t, max_t, water_offset in active_ship_specs:
+            center_s = cursor - min_t
+            sampled = _sample_berth_run(run, center_s)
+            if sampled is None:
+                valid = False
+                break
+
+            run_x, run_y, tan_x, tan_y, water_nx, water_ny = sampled
+            stern_dx = -water_nx if berth_stern else tan_x
+            stern_dy = -water_ny if berth_stern else tan_y
+            angle_deg = _angle_deg_from_stern_direction(stern_dx, stern_dy)
+            angle_rad = math.radians(angle_deg)
+            local_hull = _local_hull_geometry(svg_text_i, bw, lh, angle_deg)
+            cx = run_x + water_nx * water_offset
+            cy = run_y + water_ny * water_offset
+            hull_geom = _translate_hull_geometry(local_hull, cx, cy)
+            resolved = _resolve_berth_land_intrusion(
+                berth_water_mask,
+                hull_geom,
+                cx,
+                cy,
+                water_nx,
+                water_ny,
+                max_shift_px=max(6.0, water_offset + _BERTH_LAND_CLEARANCE_PX),
+            )
+            if resolved is None:
+                valid = False
+                break
+
+            cx, cy, hull_geom = resolved
+            min_x, min_y, max_x, max_y = hull_geom.bounds
+            if min_x < 0.0 or min_y < 0.0 or max_x > image_size or max_y > image_size:
+                valid = False
+                break
+            if not _obb_on_berth_water(
+                berth_water_mask,
+                cx,
+                cy,
+                bw,
+                lh,
+                angle_rad,
+                water_nx,
+                water_ny,
+            ):
+                valid = False
+                break
+            cx0, cy0, cx1, cy1 = _obb_aabb_bounds(
+                cx, cy, bw, lh, angle_rad, image_size, padding=0.0,
+            )
+            if staged_occupancy[cy0:cy1, cx0:cx1].any():
+                valid = False
+                break
+
+            placed.append(
+                _RaftShipPlacement(
+                    svg_text=svg_text_i,
+                    cx=float(cx),
+                    cy=float(cy),
+                    bw=bw,
+                    lh=lh,
+                    angle_deg=angle_deg,
+                    angle_rad=angle_rad,
+                    class_id=_ship_class_id(
+                        lh,
+                        resolution_m,
+                        class_id,
+                        size_thresholds,
+                    ),
+                    hull_geom=hull_geom,
+                    hull_fill=hull_fill,
+                )
+            )
+            _stamp_geometry_occupancy(staged_occupancy, hull_geom)
+            cursor = center_s + max_t + ship_gap
+
+        if not valid or not placed:
+            continue
+
+        occupancy[:] = staged_occupancy
+        water_tint = _sample_water_tint(background, round(mid_x), round(mid_y))
+        rendered_cluster = _render_vector_raft_cluster(
+            placed,
+            image_size,
+            blur_sigma,
+            scene_scale,
+            join_tolerance=0.0,
+            shadow_azimuth_rad=shadow_azimuth_rad,
+            shadow_length=shadow_length,
+            shadow_alpha=shadow_alpha,
+            shadow_alpha_scale=shadow_alpha_scale,
+        )
+        shadow_alpha_factor = shadow_alpha * shadow_alpha_scale
+        if (
+            isinstance(rendered_cluster, tuple)
+            and len(rendered_cluster) == 2
+            and isinstance(rendered_cluster[1], RgbaLayerPatch)
+        ):
+            shadow_patch, cluster_patch = rendered_cluster
+            if shadow_alpha_factor > 0.0 and shadow_patch is not None:
+                _darken_rgba_patch(
+                    background,
+                    shadow_patch,
+                    shadow_alpha_factor,
+                    clip_mask=berth_water_mask,
+                )
+            _blend_rgba_patch(
+                background,
+                cluster_patch,
+                cluster_alpha,
+                water_tint,
+            )
+        else:
+            shadow_layer: NDArray[np.uint8]
+            cluster_layer: NDArray[np.uint8]
+            if isinstance(rendered_cluster, tuple):
+                shadow_layer, cluster_layer = rendered_cluster
+            else:
+                shadow_layer = np.zeros((image_size, image_size, 4), dtype=np.uint8)
+                cluster_layer = rendered_cluster
+            if shadow_alpha_factor > 0.0:
+                _darken_rgba_layer(
+                    background,
+                    shadow_layer,
+                    shadow_alpha_factor,
+                    clip_mask=berth_water_mask,
+                )
+            _blend_rgba_layer(
+                background,
+                cluster_layer,
+                cluster_alpha,
+                water_tint,
+            )
+
+        for ship in placed:
+            corners = compute_obb_corners(
+                float(ship.cx),
+                float(ship.cy),
+                float(ship.bw),
+                float(ship.lh),
+                ship.angle_rad,
+            )
+            labels.append(format_obb_label(ship.class_id, corners, image_size, image_size))
+        return labels
+
+    return labels
 
 
 def _place_area_cluster(
@@ -707,6 +1307,10 @@ def _place_cluster(
     size_thresholds: tuple[float, ...] | None = None,
     mixed_prob: float = 0.5,
     raft_open_contact_prob: float = 0.5,
+    berth_prob: float = 0.25,
+    berth_stern_prob: float = 0.5,
+    berth_water_mask: NDArray[np.bool_] | None = None,
+    berth_segments: list[_BerthSegment] | None = None,
     shadow_azimuth_rad: float | None = None,
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
@@ -719,6 +1323,40 @@ def _place_cluster(
     n_ships = rng.randint(*cluster_size_range)
     labels: list[str] = []
     mixed = rng.random() < mixed_prob
+
+    if (
+        berth_water_mask is not None
+        and berth_segments
+        and rng.random() < max(0.0, min(1.0, berth_prob))
+    ):
+        berthed_labels = _place_berthed_cluster(
+            berth_water_mask,
+            occupancy,
+            berth_segments,
+            svg_metas,
+            resolution_m,
+            rng,
+            n_ships,
+            alpha_range,
+            class_id,
+            image_size,
+            background,
+            length_range,
+            length_exponent,
+            size_thresholds,
+            mixed,
+            berth_stern=rng.random() < max(0.0, min(1.0, berth_stern_prob)),
+            blur_sigma=blur_sigma,
+            shadow_azimuth_rad=shadow_azimuth_rad,
+            shadow_length=shadow_length,
+            shadow_alpha=shadow_alpha,
+            shadow_alpha_scale=shadow_alpha_scale,
+            offnadir_deg=offnadir_deg,
+            sensor_az_world_deg=sensor_az_world_deg,
+            shipgen_kwargs=shipgen_kwargs,
+        )
+        if berthed_labels:
+            return berthed_labels
 
     layout = rng.choices(
         ["raft_tight", "raft_open", "area_scattered"],

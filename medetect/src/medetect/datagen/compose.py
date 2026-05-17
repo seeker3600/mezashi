@@ -11,6 +11,8 @@ import numpy as np
 import rasterio
 from numpy.typing import NDArray
 from PIL import Image
+from rasterio.crs import CRS
+from rasterio.warp import transform_bounds, transform_geom
 from rasterio.windows import Window
 
 import medetect.datagen.pipeline as _pipeline
@@ -19,6 +21,7 @@ from medetect.datagen.obb import compute_obb_corners, format_obb_label
 from medetect.datagen.placement import (
     _RaftShipPlacement,
     _geometry_projection_extents,
+    _place_berthed_cluster,
     _place_area_cluster,
     _place_cluster,
     _render_vector_raft_cluster,
@@ -64,6 +67,7 @@ _write_dataset_yaml = _pipeline._write_dataset_yaml
 logger = logging.getLogger(__name__)
 
 _DARK_TILE_THRESHOLD: float = 10.0
+_COASTLINE_CRS = CRS.from_epsg(4326)
 
 __all__ = [
     "SingleShipPlacement",
@@ -102,6 +106,74 @@ def __getattr__(name: str):
     if name in {"_worker_svg_metas", "_worker_coastline_index"}:
         return getattr(_pipeline, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _iter_line_geometries(geometry):
+    """Yield linear components from a Shapely geometry."""
+    if geometry.is_empty:
+        return
+    geom_type = getattr(geometry, "geom_type", "")
+    if geom_type in {"LineString", "LinearRing"}:
+        yield geometry
+        return
+    if geom_type == "Polygon":
+        yield geometry.exterior
+        for interior in geometry.interiors:
+            yield interior
+        return
+    for child in getattr(geometry, "geoms", ()):  # MultiLineString / GeometryCollection
+        yield from _iter_line_geometries(child)
+
+
+def _coastline_to_pixel_segments(
+    coastline_geoms: list,
+    transform: object,
+    width: int,
+    height: int,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Project coastline geometries into image-space line segments."""
+    inv_transform = ~transform
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for geometry in coastline_geoms:
+        for line in _iter_line_geometries(geometry):
+            coords = list(getattr(line, "coords", ()))
+            for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+                px0, py0 = inv_transform * (x0, y0)
+                px1, py1 = inv_transform * (x1, y1)
+                if (
+                    max(px0, px1) < -1.0
+                    or max(py0, py1) < -1.0
+                    or min(px0, px1) > width + 1.0
+                    or min(py0, py1) > height + 1.0
+                ):
+                    continue
+                segments.append(((float(px0), float(py0)), (float(px1), float(py1))))
+    return segments
+
+
+def _reproject_coastline_geometries(
+    coastline_geoms: list,
+    src_crs: object,
+    dst_crs: object,
+) -> list:
+    """Reproject Shapely coastline geometries between CRS definitions."""
+    if not coastline_geoms:
+        return []
+
+    src_crs_obj = CRS.from_user_input(src_crs)
+    dst_crs_obj = CRS.from_user_input(dst_crs)
+    if src_crs_obj == dst_crs_obj:
+        return list(coastline_geoms)
+
+    from shapely.geometry import mapping, shape
+
+    reprojected = []
+    for geometry in coastline_geoms:
+        geom_json = transform_geom(src_crs_obj, dst_crs_obj, mapping(geometry))
+        transformed = shape(geom_json)
+        if not transformed.is_empty:
+            reprojected.append(transformed)
+    return reprojected
 
 
 def augment_tile(
@@ -200,6 +272,8 @@ def _compose_one(
     ship_alpha: tuple[float, float] = (0.7, 0.95),
     ship_length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
+    berth_prob: float = 0.25,
+    berth_stern_prob: float = 0.5,
     rng: random.Random,
     max_crop_attempts: int = 20,
     size_thresholds: tuple[float, ...] | None = None,
@@ -273,6 +347,9 @@ def _compose_one(
 
             water_mask &= ~make_nodata_mask(tile)
 
+            berth_water_mask: NDArray[np.bool_] | None = None
+            berth_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+
             if coastline_index is not None:
                 window = Window(col, row, src_tile, src_tile)
                 tile_transform = src.window_transform(window)
@@ -292,7 +369,21 @@ def _compose_one(
                     image_size,
                     tile_transform,
                 )
-                coastline_geoms = coastline_index.query(tile_bounds)
+                query_bounds = tile_bounds
+                if src.crs is not None and src.crs != _COASTLINE_CRS:
+                    query_bounds = transform_bounds(
+                        src.crs,
+                        _COASTLINE_CRS,
+                        *tile_bounds,
+                        densify_pts=21,
+                    )
+                coastline_geoms = coastline_index.query(query_bounds)
+                if coastline_geoms and src.crs is not None:
+                    coastline_geoms = _reproject_coastline_geometries(
+                        coastline_geoms,
+                        _COASTLINE_CRS,
+                        src.crs,
+                    )
                 coastline_mask = make_water_mask_from_coastline(
                     coastline_geoms,
                     tile,
@@ -301,6 +392,13 @@ def _compose_one(
                     image_size,
                 )
                 water_mask &= coastline_mask
+                berth_water_mask = water_mask.copy()
+                berth_segments = _coastline_to_pixel_segments(
+                    coastline_geoms,
+                    tile_transform,
+                    image_size,
+                    image_size,
+                )
 
             water_mask = erode_mask(water_mask, erode_coast)
 
@@ -360,6 +458,10 @@ def _compose_one(
                 shadow_length=tile_shadow_length,
                 shadow_alpha=tile_shadow_alpha,
                 shadow_alpha_scale=shadow_alpha_scale,
+                berth_prob=berth_prob,
+                berth_stern_prob=berth_stern_prob,
+                berth_water_mask=berth_water_mask,
+                berth_segments=berth_segments,
                 offnadir_deg=tile_offnadir_deg,
                 sensor_az_world_deg=tile_sensor_az_world_deg,
                 shipgen_kwargs=shipgen_kwargs,
@@ -368,6 +470,37 @@ def _compose_one(
             if new_labels:
                 n_clusters += 1
         else:
+            if berth_water_mask is not None and berth_segments and rng.random() < max(0.0, min(1.0, berth_prob)):
+                berthed_labels = _place_berthed_cluster(
+                    berth_water_mask,
+                    occupancy,
+                    berth_segments,
+                    svg_metas,
+                    ship_resolution,
+                    rng,
+                    1,
+                    ship_alpha,
+                    class_id,
+                    image_size,
+                    tile,
+                    ship_length_range,
+                    length_exponent,
+                    size_thresholds,
+                    False,
+                    berth_stern=rng.random() < max(0.0, min(1.0, berth_stern_prob)),
+                    blur_sigma=blur_sigma,
+                    shadow_azimuth_rad=tile_shadow_azimuth,
+                    shadow_length=tile_shadow_length,
+                    shadow_alpha=tile_shadow_alpha,
+                    shadow_alpha_scale=shadow_alpha_scale,
+                    offnadir_deg=tile_offnadir_deg,
+                    sensor_az_world_deg=tile_sensor_az_world_deg,
+                    shipgen_kwargs=shipgen_kwargs,
+                )
+                if berthed_labels:
+                    labels.extend(berthed_labels)
+                    continue
+
             angle_deg = rng.uniform(0, 360)
             sensor_az_ship_deg = (tile_sensor_az_world_deg - angle_deg) % 360.0
             svg_text = _pick_svg(

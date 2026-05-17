@@ -6,6 +6,7 @@ import random
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw
+from shapely import affinity
 
 import medetect.datagen.placement as placement_mod
 from medetect.datagen.ship import MIN_SHIP_BEAM_PX
@@ -362,6 +363,50 @@ def _capture_vector_cluster(monkeypatch: pytest.MonkeyPatch) -> list:
 
     monkeypatch.setattr(placement_mod, "_render_vector_raft_cluster", _mock_render_vector_cluster)
     return captured
+
+
+def _rect_local_hull_geometry(
+    svg_text: str,
+    bw: int,
+    lh: int,
+    angle_deg: float,
+):
+    """軸整列矩形 hull を ship local geometry として返す。"""
+    del svg_text
+    geometry = box(-bw / 2.0, -lh / 2.0, bw / 2.0, lh / 2.0)
+    return affinity.rotate(geometry, angle_deg, origin=(0.0, 0.0), use_radians=False)
+
+
+def _shore_x_at_y(
+    points: list[tuple[float, float]],
+    y: float,
+) -> float:
+    if y <= points[0][1]:
+        return points[0][0]
+    if y >= points[-1][1]:
+        return points[-1][0]
+
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if y0 <= y <= y1 or y1 <= y <= y0:
+            if y1 == y0:
+                return float(x1)
+            t = (y - y0) / (y1 - y0)
+            return float(x0 + (x1 - x0) * t)
+    return float(points[-1][0])
+
+
+def _count_land_boundary_samples(
+    geometry,
+    points: list[tuple[float, float]],
+    samples: int = 96,
+) -> int:
+    hits = 0
+    boundary = geometry.exterior
+    for distance in np.linspace(0.0, float(boundary.length), samples, endpoint=False):
+        sample = boundary.interpolate(float(distance))
+        if sample.x < _shore_x_at_y(points, sample.y) - 0.25:
+            hits += 1
+    return hits
 
 
 def _svg_sequence_factory(svg_texts: list[str]):
@@ -1217,6 +1262,357 @@ class TestPlaceCluster:
         full_scene_size = self._IMAGE_SIZE * placement_mod._CLUSTER_SCENE_SUPERSAMPLE
         assert all(height < full_scene_size for height, _width in recorded_shapes)
         assert all(width < full_scene_size for _height, width in recorded_shapes)
+
+
+class TestBerthPlacement:
+    """岸線に沿う berth 配置の姿勢を検証する。"""
+
+    _IMAGE_SIZE = 200
+
+    @pytest.fixture()
+    def vertical_shore_scene(self):
+        """左が陸、右が水の縦岸線シーン。"""
+        size = self._IMAGE_SIZE
+        water_mask = np.zeros((size, size), dtype=bool)
+        water_mask[:, 40:] = True
+        return {
+            "water_mask": water_mask,
+            "occupancy": np.zeros((size, size), dtype=bool),
+            "background": np.full((size, size, 3), 60, dtype=np.uint8),
+        }
+
+    @pytest.fixture()
+    def horizontal_shore_scene(self):
+        """上が陸、下が水の横岸線シーン。"""
+        size = self._IMAGE_SIZE
+        water_mask = np.zeros((size, size), dtype=bool)
+        water_mask[40:, :] = True
+        return {
+            "water_mask": water_mask,
+            "occupancy": np.zeros((size, size), dtype=bool),
+            "background": np.full((size, size, 3), 60, dtype=np.uint8),
+        }
+
+    @pytest.fixture()
+    def curved_shore_scene(self):
+        """緩く右へ曲がる岸線シーン。"""
+        size = self._IMAGE_SIZE
+        water_mask = np.zeros((size, size), dtype=bool)
+        points = [(40.0, 20.0), (46.0, 100.0), (56.0, 180.0)]
+        shore_x = np.full(size, points[0][0], dtype=float)
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            y_start = max(0, int(math.floor(min(y0, y1))))
+            y_stop = min(size - 1, int(math.ceil(max(y0, y1))))
+            for y in range(y_start, y_stop + 1):
+                if y1 == y0:
+                    shore_x[y] = x1
+                    continue
+                t = (y - y0) / (y1 - y0)
+                shore_x[y] = x0 + (x1 - x0) * t
+        shore_x[: int(points[0][1])] = points[0][0]
+        shore_x[int(points[-1][1]) :] = points[-1][0]
+        for y, x in enumerate(shore_x):
+            water_mask[y, max(0, int(math.ceil(x))) :] = True
+        return {
+            "water_mask": water_mask,
+            "occupancy": np.zeros((size, size), dtype=bool),
+            "background": np.full((size, size, 3), 60, dtype=np.uint8),
+            "segments": [
+                ((40.0, 20.0), (46.0, 100.0)),
+                ((46.0, 100.0), (56.0, 180.0)),
+            ],
+            "points": points,
+        }
+
+    @pytest.fixture()
+    def bulged_shore_scene(self):
+        """中間で海側へ張り出す岸線シーン。"""
+        size = self._IMAGE_SIZE
+        water_mask = np.zeros((size, size), dtype=bool)
+        points = [(40.0, 20.0), (50.0, 100.0), (56.0, 180.0)]
+        shore_x = np.full(size, points[0][0], dtype=float)
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            y_start = max(0, int(math.floor(min(y0, y1))))
+            y_stop = min(size - 1, int(math.ceil(max(y0, y1))))
+            for y in range(y_start, y_stop + 1):
+                if y1 == y0:
+                    shore_x[y] = x1
+                    continue
+                t = (y - y0) / (y1 - y0)
+                shore_x[y] = x0 + (x1 - x0) * t
+        shore_x[: int(points[0][1])] = points[0][0]
+        shore_x[int(points[-1][1]) :] = points[-1][0]
+        for y, x in enumerate(shore_x):
+            water_mask[y, max(0, int(math.ceil(x))) :] = True
+        return {
+            "water_mask": water_mask,
+            "occupancy": np.zeros((size, size), dtype=bool),
+            "background": np.full((size, size, 3), 60, dtype=np.uint8),
+            "segments": [
+                ((40.0, 20.0), (50.0, 100.0)),
+                ((50.0, 100.0), (56.0, 180.0)),
+            ],
+            "points": points,
+        }
+
+    @pytest.fixture()
+    def dock_touch_scene(self):
+        """dock 側 corner が少し陸へはみ出す berth シーン。"""
+        size = self._IMAGE_SIZE
+        water_mask = np.zeros((size, size), dtype=bool)
+        water_mask[:, 44:] = True
+        return {
+            "water_mask": water_mask,
+            "occupancy": np.zeros((size, size), dtype=bool),
+            "background": np.full((size, size, 3), 60, dtype=np.uint8),
+        }
+
+    def _setup_mocks(self, monkeypatch: pytest.MonkeyPatch) -> list:
+        captured = _capture_vector_cluster(monkeypatch)
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: "mock-svg")
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(8, 32), (8, 32), (8, 32)]),
+        )
+        monkeypatch.setattr(placement_mod, "_local_hull_geometry", _rect_local_hull_geometry)
+        monkeypatch.setattr(placement_mod, "extract_hull_fill", lambda svg_text: (200, 200, 200, 255))
+        return captured
+
+    def test_berth_alongside_cluster_aligns_with_vertical_shore(
+        self,
+        vertical_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """横づけ berth は岸線に平行に並び、船腹を岸へ向ける。"""
+        captured = self._setup_mocks(monkeypatch)
+
+        labels = _place_cluster(
+            vertical_shore_scene["water_mask"],
+            vertical_shore_scene["occupancy"],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(3),
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=vertical_shore_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+            berth_prob=1.0,
+            berth_stern_prob=0.0,
+            berth_water_mask=vertical_shore_scene["water_mask"],
+            berth_segments=[((40.0, 20.0), (40.0, 180.0))],
+        )
+
+        assert len(labels) == 3
+        assert len(captured) == 3
+
+        xs = [ship.cx for ship in captured]
+        ys = [ship.cy for ship in captured]
+        assert max(xs) - min(xs) < 3.0
+        assert max(ys) - min(ys) > 30.0
+
+        tangent = np.array([0.0, 1.0])
+        for ship in captured:
+            stern_dir = np.array([-math.sin(ship.angle_rad), math.cos(ship.angle_rad)])
+            assert abs(float(np.dot(stern_dir, tangent))) > 0.95
+            min_x, _min_y, _max_x, _max_y = ship.hull_geom.bounds
+            assert 39.0 <= min_x <= 45.0
+
+    def test_berth_stern_to_cluster_points_stern_toward_horizontal_shore(
+        self,
+        horizontal_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ともづけ berth は船尾が岸へ向き、岸線に沿って並ぶ。"""
+        captured = self._setup_mocks(monkeypatch)
+
+        labels = _place_cluster(
+            horizontal_shore_scene["water_mask"],
+            horizontal_shore_scene["occupancy"],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(5),
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=horizontal_shore_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+            berth_prob=1.0,
+            berth_stern_prob=1.0,
+            berth_water_mask=horizontal_shore_scene["water_mask"],
+            berth_segments=[((20.0, 40.0), (180.0, 40.0))],
+        )
+
+        assert len(labels) == 3
+        assert len(captured) == 3
+
+        xs = [ship.cx for ship in captured]
+        ys = [ship.cy for ship in captured]
+        assert max(xs) - min(xs) > 20.0
+        assert max(ys) - min(ys) < 3.0
+
+        land_dir = np.array([0.0, -1.0])
+        for ship in captured:
+            stern_dir = np.array([-math.sin(ship.angle_rad), math.cos(ship.angle_rad)])
+            assert float(np.dot(stern_dir, land_dir)) > 0.95
+            _min_x, min_y, _max_x, _max_y = ship.hull_geom.bounds
+            assert 39.0 <= min_y <= 45.0
+
+    def test_berth_alongside_cluster_accepts_connected_curved_segments(
+        self,
+        curved_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """緩く曲がる連続 shore run にも横づけ cluster を載せられる。"""
+        captured = self._setup_mocks(monkeypatch)
+
+        labels = placement_mod._place_berthed_cluster(
+            curved_shore_scene["water_mask"],
+            curved_shore_scene["occupancy"],
+            curved_shore_scene["segments"],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(13),
+            n_ships=3,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=curved_shore_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            length_exponent=1.0,
+            size_thresholds=None,
+            mixed=False,
+            berth_stern=False,
+            blur_sigma=0.0,
+        )
+
+        assert len(labels) == 3
+        assert len(captured) == 3
+
+        ordered = sorted(captured, key=lambda ship: ship.cy)
+        xs = [ship.cx for ship in ordered]
+        ys = [ship.cy for ship in ordered]
+        assert max(ys) - min(ys) > 50.0
+        assert xs[-1] - xs[0] > 4.0
+
+    def test_berth_cluster_auto_truncates_to_fit_short_shore(
+        self,
+        vertical_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """berth cluster は shore run に収まる隻数まで自動で短縮される。"""
+        captured = self._setup_mocks(monkeypatch)
+
+        labels = placement_mod._place_berthed_cluster(
+            vertical_shore_scene["water_mask"],
+            vertical_shore_scene["occupancy"],
+            [((40.0, 64.0), (40.0, 136.0))],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(17),
+            n_ships=3,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=vertical_shore_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            length_exponent=1.0,
+            size_thresholds=None,
+            mixed=False,
+            berth_stern=False,
+            blur_sigma=0.0,
+        )
+
+        assert len(labels) == 2
+        assert len(captured) == 2
+        ys = [ship.cy for ship in captured]
+        assert max(ys) - min(ys) > 20.0
+
+    def test_berth_curved_run_avoids_land_intrusion(
+        self,
+        bulged_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """曲がった shore run でも hull は land 側へ侵入しない。"""
+        captured = self._setup_mocks(monkeypatch)
+
+        labels = placement_mod._place_berthed_cluster(
+            bulged_shore_scene["water_mask"],
+            bulged_shore_scene["occupancy"],
+            bulged_shore_scene["segments"],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(21),
+            n_ships=1,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=bulged_shore_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            length_exponent=1.0,
+            size_thresholds=None,
+            mixed=False,
+            berth_stern=False,
+            blur_sigma=0.0,
+        )
+
+        assert len(labels) == 1
+        assert len(captured) == 1
+        assert _count_land_boundary_samples(captured[0].hull_geom, bulged_shore_scene["points"]) == 0
+
+    def test_berth_pushes_dockside_intrusion_out_to_contact(
+        self,
+        dock_touch_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """dock 側へ侵入する berth 候補は沖側へ逃がして接触へ戻す。"""
+        captured = self._setup_mocks(monkeypatch)
+
+        labels = placement_mod._place_berthed_cluster(
+            dock_touch_scene["water_mask"],
+            dock_touch_scene["occupancy"],
+            [((40.0, 20.0), (40.0, 180.0))],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(19),
+            n_ships=1,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=dock_touch_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            length_exponent=1.0,
+            size_thresholds=None,
+            mixed=False,
+            berth_stern=False,
+            blur_sigma=0.0,
+        )
+
+        assert len(labels) == 1
+        assert len(captured) == 1
+        min_x, _min_y, _max_x, _max_y = captured[0].hull_geom.bounds
+        assert min_x >= 43.75
+
+
+class TestClusterRenderHelpers:
+    """cluster renderer と area cluster の補助挙動を検証する。"""
+
+    _IMAGE_SIZE = 200
+
+    @pytest.fixture()
+    def scene(self):
+        size = self._IMAGE_SIZE
+        return {
+            "water_mask": np.ones((size, size), dtype=bool),
+            "background": np.full((size, size, 3), 60, dtype=np.uint8),
+        }
 
     def test_vector_cluster_zero_blur_sigma_skips_extra_blur(
         self,

@@ -192,6 +192,25 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--berth_prob",
+        type=float,
+        default=0.25,
+        help=(
+            "When coastline input is available, probability of trying shoreline berth placement "
+            "for each placement event (default: 0.25). Berthed clusters may shorten automatically "
+            "to fit the local shoreline run. 0.0 disables berth placement."
+        ),
+    )
+    parser.add_argument(
+        "--berth_stern_prob",
+        type=float,
+        default=0.5,
+        help=(
+            "When a berth placement is selected, probability of using stern-to-land instead of "
+            "alongside mooring (default: 0.5). Only applies with --coastline."
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -389,6 +408,8 @@ def main() -> None:
         ship_alpha=args.ship_alpha,
         ship_length_range=args.ship_length,
         length_exponent=args.length_exponent,
+        berth_prob=args.berth_prob,
+        berth_stern_prob=args.berth_stern_prob,
         seed=args.seed,
         size_thresholds=tuple(args.size_threshold) if args.size_threshold else None,
         wake_prob_scale=args.wake_prob_scale,

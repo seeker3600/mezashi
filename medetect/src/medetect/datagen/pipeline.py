@@ -44,6 +44,8 @@ class _ComposeTaskConfig:
     ship_alpha: tuple[float, float]
     ship_length_range: tuple[float, float] | None
     length_exponent: float
+    berth_prob: float
+    berth_stern_prob: float
     size_thresholds: tuple[float, ...] | None
     wake_prob_scale: float
     wake_alpha_scale: float
@@ -290,6 +292,8 @@ def generate_dataset(
     ship_alpha: tuple[float, float] = (0.7, 0.95),
     ship_length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
+    berth_prob: float = 0.25,
+    berth_stern_prob: float = 0.5,
     seed: int | None = None,
     size_thresholds: tuple[float, ...] | None = None,
     wake_prob_scale: float = 1.0,
@@ -384,6 +388,8 @@ def generate_dataset(
         ship_alpha=ship_alpha,
         ship_length_range=ship_length_range,
         length_exponent=length_exponent,
+        berth_prob=berth_prob,
+        berth_stern_prob=berth_stern_prob,
         size_thresholds=size_thresholds,
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
@@ -519,6 +525,9 @@ def generate_dataset(
             else None
         ),
         "length_exponent": length_exponent,
+        "berth_prob": berth_prob,
+        "berth_stern_prob": berth_stern_prob,
+        "berth_cluster_auto_truncate": True,
         "seed": seed,
         "size_thresholds": (
             list(size_thresholds) if size_thresholds is not None else None
@@ -585,6 +594,8 @@ def _run_compose_task(
         ship_alpha=config.ship_alpha,
         ship_length_range=config.ship_length_range,
         length_exponent=config.length_exponent,
+        berth_prob=config.berth_prob,
+        berth_stern_prob=config.berth_stern_prob,
         rng=rng,
         size_thresholds=config.size_thresholds,
         wake_prob_scale=config.wake_prob_scale,

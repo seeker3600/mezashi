@@ -6,6 +6,8 @@ import math
 
 import numpy as np
 import pytest
+import rasterio
+from rasterio.warp import transform, transform_bounds
 
 import medetect.datagen.compose as compose_mod
 
@@ -558,3 +560,311 @@ class TestComposeShadows:
         assert result is not None
         assert shadow_patch_biases == [1.0, 1.08]
         assert shadow_blend_factors == [pytest.approx(0.18), pytest.approx(0.18)]
+
+
+class TestComposeBerth:
+    """_compose_one の berth 配線と単船挙動を検証する。"""
+
+    def test_coastline_query_uses_wgs84_tile_bounds(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """coastline query は raster CRS ではなく EPSG:4326 bounds を使う。"""
+        captured: dict[str, tuple[float, float, float, float]] = {}
+
+        class _StaticCoastlineIndex:
+            def query(self, bounds):
+                captured["bounds"] = tuple(bounds)
+                return []
+
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(
+            compose_mod,
+            "make_water_mask_from_rgb",
+            lambda tile: np.ones(tile.shape[:2], dtype=bool),
+        )
+
+        rng = random.Random(0)
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=1.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            berth_prob=1.0,
+            coastline_index=_StaticCoastlineIndex(),
+            rng=rng,
+        )
+
+        assert result is not None
+        with rasterio.open(water_tif) as src:
+            src_tile = 64
+            expected_rng = random.Random(0)
+            col = expected_rng.randint(0, src.width - src_tile)
+            row = expected_rng.randint(0, src.height - src_tile)
+            tile_transform = src.window_transform(rasterio.windows.Window(col, row, src_tile, src_tile))
+            tile_bounds = rasterio.transform.array_bounds(64, 64, tile_transform)
+            expected_bounds = transform_bounds(
+                src.crs,
+                "EPSG:4326",
+                *tile_bounds,
+                densify_pts=21,
+            )
+
+        assert "bounds" in captured
+        assert captured["bounds"] == pytest.approx(expected_bounds)
+
+    def test_reproject_coastline_geometry_to_tile_crs_produces_segments(
+        self,
+        water_tif: pathlib.Path,
+    ) -> None:
+        """EPSG:4326 coastline geometry を tile CRS に戻すと pixel segment 化できる。"""
+        from shapely.geometry import LineString
+
+        with rasterio.open(water_tif) as src:
+            xs = [100.0, 100.0]
+            ys = [100.0, 300.0]
+            lon, lat = transform(src.crs, "EPSG:4326", xs, ys)
+            geoms = compose_mod._reproject_coastline_geometries(
+                [LineString(zip(lon, lat, strict=False))],
+                "EPSG:4326",
+                src.crs,
+            )
+
+            assert len(geoms) == 1
+            reproj_coords = list(geoms[0].coords)
+            assert reproj_coords[0][0] == pytest.approx(xs[0], abs=1e-3)
+            assert reproj_coords[0][1] == pytest.approx(ys[0], abs=1e-3)
+            assert reproj_coords[1][0] == pytest.approx(xs[1], abs=1e-3)
+            assert reproj_coords[1][1] == pytest.approx(ys[1], abs=1e-3)
+
+            segments = compose_mod._coastline_to_pixel_segments(
+                geoms,
+                src.transform,
+                src.width,
+                src.height,
+            )
+
+        assert segments
+
+    def test_cluster_forwards_berth_inputs_to_place_cluster(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """cluster 分岐では berth 入力が _place_cluster にそのまま渡る。"""
+        from shapely.geometry import LineString
+
+        captured: dict[str, object] = {}
+
+        class _StaticCoastlineIndex:
+            def query(self, bounds):
+                min_x, min_y, _max_x, max_y = bounds
+                return [LineString([(min_x, min_y), (min_x, max_y)])]
+
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
+        monkeypatch.setattr(
+            compose_mod,
+            "make_water_mask_from_coastline",
+            lambda *args, **kwargs: np.ones((64, 64), dtype=bool),
+        )
+        monkeypatch.setattr(
+            compose_mod,
+            "_coastline_to_pixel_segments",
+            lambda *args, **kwargs: [((12.0, 8.0), (12.0, 56.0))],
+        )
+
+        def _capture_place_cluster(*args, **kwargs):
+            del args
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(compose_mod, "_place_cluster", _capture_place_cluster)
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(1, 1),
+            cluster_prob=1.0,
+            cluster_size=(3, 3),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=1.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            berth_prob=1.0,
+            berth_stern_prob=0.75,
+            coastline_index=_StaticCoastlineIndex(),
+            rng=random.Random(2),
+        )
+
+        assert result is not None
+        assert captured["berth_prob"] == pytest.approx(1.0)
+        assert captured["berth_stern_prob"] == pytest.approx(0.75)
+        assert isinstance(captured["berth_water_mask"], np.ndarray)
+        assert captured["berth_water_mask"].shape == (64, 64)
+        assert captured["berth_segments"]
+
+    def test_cluster_forwards_connected_polyline_segments_to_place_cluster(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """複数頂点の coastline polyline は連続 segment 列として placement に渡る。"""
+        from shapely.geometry import LineString
+
+        captured: dict[str, object] = {}
+
+        class _StaticCoastlineIndex:
+            def query(self, bounds):
+                min_x, min_y, max_x, max_y = bounds
+                span_x = max_x - min_x
+                mid_y = (min_y + max_y) / 2.0
+                shore_x0 = min_x + span_x * 0.20
+                shore_x1 = min_x + span_x * 0.24
+                return [LineString([(shore_x0, min_y), (shore_x0, mid_y), (shore_x1, max_y)])]
+
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
+        monkeypatch.setattr(
+            compose_mod,
+            "make_water_mask_from_coastline",
+            lambda *args, **kwargs: np.ones((64, 64), dtype=bool),
+        )
+
+        def _capture_place_cluster(*args, **kwargs):
+            del args
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(compose_mod, "_place_cluster", _capture_place_cluster)
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(1, 1),
+            cluster_prob=1.0,
+            cluster_size=(3, 3),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=1.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            berth_prob=1.0,
+            coastline_index=_StaticCoastlineIndex(),
+            rng=random.Random(4),
+        )
+
+        assert result is not None
+        berth_segments = captured["berth_segments"]
+        assert isinstance(berth_segments, list)
+        assert len(berth_segments) == 2
+        assert berth_segments[0][1] == pytest.approx(berth_segments[1][0])
+
+    def test_single_berth_skips_wake_and_uses_berth_helper(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """単船 berth は berth helper を使い、wake を描かない。"""
+        from shapely.geometry import LineString
+
+        wake_calls: list[str] = []
+        berth_calls: list[dict[str, object]] = []
+
+        class _StaticCoastlineIndex:
+            def query(self, bounds):
+                del bounds
+                return [LineString([(0.0, 0.0), (100.0, 0.0)])]
+
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
+        monkeypatch.setattr(
+            compose_mod,
+            "make_water_mask_from_coastline",
+            lambda *args, **kwargs: np.ones((64, 64), dtype=bool),
+        )
+        monkeypatch.setattr(
+            compose_mod,
+            "_coastline_to_pixel_segments",
+            lambda *args, **kwargs: [((8.0, 12.0), (56.0, 12.0))],
+        )
+        monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: "<svg/>")
+        monkeypatch.setattr(
+            compose_mod,
+            "_render_ship",
+            lambda *args, **kwargs: (np.zeros((12, 6, 4), dtype=np.uint8), "mock", 6, 12, 2.0),
+        )
+        monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: (24, 24))
+        monkeypatch.setattr(
+            compose_mod,
+            "_sample_water_tint",
+            lambda *args, **kwargs: np.array([40.0, 50.0, 60.0], dtype=np.float32),
+        )
+        monkeypatch.setattr(compose_mod, "pick_motion_state", lambda rng: None)
+        monkeypatch.setattr(compose_mod, "render_wake", lambda *args, **kwargs: wake_calls.append("wake"))
+        monkeypatch.setattr(compose_mod, "blend_ship", lambda *args, **kwargs: None)
+
+        def _capture_berth_helper(*args, **kwargs):
+            berth_calls.append(
+                {
+                    "n_ships": args[6],
+                    "berth_stern": kwargs["berth_stern"],
+                }
+            )
+            return ["berthed-label"]
+
+        monkeypatch.setattr(compose_mod, "_place_berthed_cluster", _capture_berth_helper)
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(1, 1),
+            cluster_prob=0.0,
+            cluster_size=(3, 3),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=1.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            berth_prob=1.0,
+            berth_stern_prob=1.0,
+            coastline_index=_StaticCoastlineIndex(),
+            rng=random.Random(3),
+        )
+
+        assert result is not None
+        _tile, labels, n_clusters = result
+        assert labels == ["berthed-label"]
+        assert n_clusters == 0
+        assert wake_calls == []
+        assert len(berth_calls) == 1
+        assert berth_calls[0]["n_ships"] == 1
+        assert berth_calls[0]["berth_stern"] is True

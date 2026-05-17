@@ -244,6 +244,64 @@ class TestGenerateDatasetParams:
         assert stats["ships"] == 2
         assert stats["clusters"] == 0
 
+    def test_berth_params_are_forwarded_to_config_and_yaml(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """berth 系パラメータは compose config と dataset.yaml params に残る。"""
+        bg_dir = tmp_path / "bg"
+        bg_dir.mkdir()
+        (bg_dir / "scene_visual.tif").write_bytes(b"placeholder")
+
+        captured: dict[str, object] = {}
+        seen_config: list[object] = []
+
+        def _capture_yaml(
+            output_dir: pathlib.Path,
+            class_id: int,
+            *,
+            size_thresholds: tuple[float, ...] | None = None,
+            params: dict[str, object] | None = None,
+        ) -> None:
+            del output_dir, class_id, size_thresholds
+            captured["params"] = dict(params or {})
+
+        def _capture_compose_task(
+            *,
+            index: int,
+            task_seed: int,
+            tif_path: pathlib.Path | None,
+            img_out: pathlib.Path,
+            lbl_out: pathlib.Path,
+            config: object,
+        ) -> tuple[int, int]:
+            del index, task_seed, tif_path, img_out, lbl_out
+            seen_config.append(config)
+            return 0, 0
+
+        monkeypatch.setattr(pipeline_mod, "_write_dataset_yaml", _capture_yaml)
+        monkeypatch.setattr(pipeline_mod, "_run_compose_task", _capture_compose_task)
+        monkeypatch.setattr(pipeline_mod, "_worker_init", lambda *args, **kwargs: None)
+
+        pipeline_mod.generate_dataset(
+            bg_dir=bg_dir,
+            output_dir=tmp_path / "out",
+            count=1,
+            berth_prob=0.8,
+            berth_stern_prob=0.2,
+            max_workers=0,
+        )
+
+        assert len(seen_config) == 1
+        assert seen_config[0].berth_prob == pytest.approx(0.8)
+        assert seen_config[0].berth_stern_prob == pytest.approx(0.2)
+        params = captured["params"]
+        assert isinstance(params, dict)
+        assert params["berth_prob"] == pytest.approx(0.8)
+        assert params["berth_stern_prob"] == pytest.approx(0.2)
+        assert params["berth_cluster_auto_truncate"] is True
+
 
 class TestFalseSourceGrid:
     """_false_source_grid のグリッド計算テスト。"""
@@ -623,3 +681,42 @@ class TestDatagenCli:
         assert captured["edge_hardness"] == pytest.approx(0.25)
         assert "water_tint_strength" not in captured
         assert "cluster_blend_strength" not in captured
+
+    def test_berth_params_are_forwarded(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """berth 系パラメータは CLI から generate_dataset へ渡る。"""
+        import sys
+
+        import medetect.datagen.__main__ as datagen_main
+
+        captured: dict[str, object] = {}
+
+        def _capture_generate_dataset(**kwargs):
+            captured.update(kwargs)
+            return {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+
+        monkeypatch.setattr(datagen_main, "generate_dataset", _capture_generate_dataset)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "medetect.datagen",
+                "--bg_dir",
+                "bg",
+                "--output_dir",
+                "out",
+                "--count",
+                "1",
+                "--berth_prob",
+                "0.8",
+                "--berth_stern_prob",
+                "0.2",
+            ],
+        )
+
+        datagen_main.main()
+
+        assert captured["berth_prob"] == pytest.approx(0.8)
+        assert captured["berth_stern_prob"] == pytest.approx(0.2)

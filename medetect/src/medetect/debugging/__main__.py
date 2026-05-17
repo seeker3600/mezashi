@@ -7,6 +7,7 @@ from pathlib import Path
 DESCRIPTION = "Debugging and visual QA utilities for medetect."
 
 from medetect.debugging import DEFAULT_SHIPGEN_QA_CLASSES, run_shipgen_profile_qa
+from medetect.debugging.berth_preview import render_berth_previews
 from medetect.debugging.cluster_profile import main as cluster_profile_main
 from medetect.debugging.pixel_profile import main as pixel_profile_main
 from medetect.debugging.raft_stagger_preview import render_raft_stagger_grid
@@ -92,6 +93,13 @@ def main(argv: list[str] | None = None) -> None:
         default=Path("debug_runs/shadow-preview"),
     )
 
+    berth_parser = subparsers.add_parser("berth-preview", help="Render berth QA preview images.")
+    berth_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("debug_runs/berth-implementation-qa"),
+    )
+
     wake_parser = subparsers.add_parser("wake-preview", help="Render wake QA preview images.")
     wake_parser.add_argument(
         "--output-dir",
@@ -163,6 +171,11 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "shadow-preview":
         outputs = render_shadow_previews(args.output_dir)
+        for name, path in outputs.items():
+            print(f"{name}: {path}")
+        return
+    if args.command == "berth-preview":
+        outputs = render_berth_previews(args.output_dir)
         for name, path in outputs.items():
             print(f"{name}: {path}")
         return
