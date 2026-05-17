@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
 import math
 import os
 import random
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,46 @@ logger = logging.getLogger(__name__)
 
 _worker_svg_metas: list[_SvgMeta] | None = None
 _worker_coastline_index: CoastlineIndex | None = None
+
+_DebugProfile = dict[str, dict[str, float | int]]
+_ComposeTaskResult = tuple[int, int] | tuple[int, int, _DebugProfile]
+
+
+def _new_debug_profile() -> _DebugProfile:
+    return {"counts": {}, "timings": {}}
+
+
+def _merge_debug_profile(
+    target: _DebugProfile,
+    source: _DebugProfile | None,
+) -> None:
+    if source is None:
+        return
+    for section in ("counts", "timings"):
+        source_values = source.get(section, {})
+        if not source_values:
+            continue
+        target_values = target.setdefault(section, {})
+        for key, value in source_values.items():
+            target_values[key] = target_values.get(key, 0) + value
+
+
+def _write_debug_profile(path: Path, profile: _DebugProfile) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(profile, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _unpack_compose_result(
+    result: _ComposeTaskResult,
+) -> tuple[int, int, _DebugProfile | None]:
+    if len(result) == 2:
+        n_ships, n_clusters = result
+        return n_ships, n_clusters, None
+    n_ships, n_clusters, debug_profile = result
+    return n_ships, n_clusters, debug_profile
 
 
 @dataclass(frozen=True)
@@ -54,6 +96,8 @@ class _ComposeTaskConfig:
     shadow_length_range: tuple[float, float]
     offnadir_range: tuple[float, float]
     shipgen_kwargs: dict[str, Any]
+    debug_profile_path: Path | None
+    debug_require_berth: bool
 
 
 def _worker_init(
@@ -308,10 +352,13 @@ def generate_dataset(
     override: bool = False,
     offnadir_range: tuple[float, float] = (0.0, 0.0),
     shipgen_kwargs: dict[str, Any] | None = None,
-) -> dict[str, int]:
+    debug_profile_path: Path | str | None = None,
+    debug_require_berth: bool = False,
+) -> dict[str, Any]:
     """Generate a synthetic ship detection dataset in YOLO OBB format."""
     bg_dir = Path(bg_dir) if bg_dir is not None else None
     output_dir = Path(output_dir)
+    debug_profile_path = Path(debug_profile_path) if debug_profile_path is not None else None
 
     if output_dir.exists():
         if not override:
@@ -361,6 +408,9 @@ def generate_dataset(
         if not coastline_path.exists():
             msg = f"Coastline shapefile not found: {coastline_path}"
             raise FileNotFoundError(msg)
+    if debug_require_berth and coastline_path is None:
+        msg = "debug_require_berth requires coastline"
+        raise ValueError(msg)
 
     task_tifs = [rng.choice(visual_files) for _ in range(synth_count)]
     task_seeds = [rng.randint(0, 2**32 - 1) for _ in range(synth_count)]
@@ -371,7 +421,8 @@ def generate_dataset(
         msg = f"max_workers must be >= 0, got {max_workers}"
         raise ValueError(msg)
 
-    stats = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+    stats: dict[str, Any] = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+    debug_profile = _new_debug_profile() if debug_profile_path is not None else None
 
     task_config = _ComposeTaskConfig(
         image_size=image_size,
@@ -398,9 +449,17 @@ def generate_dataset(
         shadow_length_range=shadow_length_range,
         offnadir_range=offnadir_range,
         shipgen_kwargs=shipgen_kwargs or {},
+        debug_profile_path=debug_profile_path,
+        debug_require_berth=debug_require_berth,
     )
 
-    def _record_compose_result(n_ships: int, n_clusters: int) -> None:
+    def _record_compose_result(
+        n_ships: int,
+        n_clusters: int,
+        compose_profile: _DebugProfile | None = None,
+    ) -> None:
+        if debug_profile is not None:
+            _merge_debug_profile(debug_profile, compose_profile)
         if n_ships < 0:
             stats["skipped"] += 1
             return
@@ -418,7 +477,7 @@ def generate_dataset(
         ) as pbar:
             for index, tif_path in enumerate(task_tifs):
                 try:
-                    n_ships, n_clusters = _run_compose_task(
+                    result = _run_compose_task(
                         index=index,
                         task_seed=task_seeds[index],
                         tif_path=tif_path,
@@ -426,7 +485,8 @@ def generate_dataset(
                         lbl_out=lbl_out,
                         config=task_config,
                     )
-                    _record_compose_result(n_ships, n_clusters)
+                    n_ships, n_clusters, compose_profile = _unpack_compose_result(result)
+                    _record_compose_result(n_ships, n_clusters, compose_profile)
                 except Exception:
                     logger.warning(
                         "Failed to compose %s — skipping",
@@ -473,8 +533,8 @@ def generate_dataset(
                 pending.discard(future)
                 _index, tif_path = future_info.pop(future)
                 try:
-                    n_ships, n_clusters = future.result()
-                    _record_compose_result(n_ships, n_clusters)
+                    n_ships, n_clusters, compose_profile = _unpack_compose_result(future.result())
+                    _record_compose_result(n_ships, n_clusters, compose_profile)
                 except Exception:
                     logger.warning(
                         "Failed to compose %s — skipping",
@@ -560,6 +620,11 @@ def generate_dataset(
             start_index=synth_count,
         )
 
+    if debug_profile is not None and debug_profile_path is not None:
+        stats["debug_profile"] = debug_profile
+        _write_debug_profile(debug_profile_path, debug_profile)
+        logger.info("Debug profile written: %s", debug_profile_path)
+
     logger.info("Dataset complete: %s", stats)
     return stats
 
@@ -572,11 +637,13 @@ def _run_compose_task(
     img_out: Path,
     lbl_out: Path,
     config: _ComposeTaskConfig,
-) -> tuple[int, int]:
+) -> _ComposeTaskResult:
     """Worker function for one dataset image."""
     from medetect.datagen.compose import _compose_one
 
     rng = random.Random(task_seed)
+    task_profile = _new_debug_profile() if config.debug_profile_path is not None else None
+    compose_started = time.perf_counter()
     result = _compose_one(
         tif_path=tif_path,
         svg_metas=_worker_svg_metas,
@@ -606,9 +673,21 @@ def _run_compose_task(
         coastline_index=_worker_coastline_index,
         offnadir_range=config.offnadir_range,
         shipgen_kwargs=config.shipgen_kwargs,
+        debug_profile=task_profile,
+        debug_require_berth=config.debug_require_berth,
     )
 
+    if task_profile is not None:
+        counts = task_profile.setdefault("counts", {})
+        timings = task_profile.setdefault("timings", {})
+        counts["compose_tasks"] = counts.get("compose_tasks", 0) + 1
+        timings["compose_task_sec"] = timings.get("compose_task_sec", 0.0) + (
+            time.perf_counter() - compose_started
+        )
+
     if result is None:
+        if task_profile is not None:
+            return -1, -1, task_profile
         return -1, -1
 
     tile, labels, n_clusters = result
@@ -618,6 +697,8 @@ def _run_compose_task(
         "\n".join(labels) + ("\n" if labels else ""),
         encoding="utf-8",
     )
+    if task_profile is not None:
+        return len(labels), n_clusters, task_profile
     return len(labels), n_clusters
 
 

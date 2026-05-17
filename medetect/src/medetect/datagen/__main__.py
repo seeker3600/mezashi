@@ -382,12 +382,32 @@ def main() -> None:
             "Example: --shipgen trim_mode=bow --shipgen hull_noise=0.01"
         ),
     )
+    parser.add_argument(
+        "--debug_profile_json",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help=(
+            "Write aggregated debug timing/count stats as JSON. "
+            "Useful for berth profiling; combine with --workers 0 for stable single-process timings."
+        ),
+    )
+    parser.add_argument(
+        "--debug_require_berth",
+        action="store_true",
+        help=(
+            "Debug only: keep sampling crops until coastline-derived berth segments are present. "
+            "Requires --coastline."
+        ),
+    )
     args = parser.parse_args()
 
     if args.false_ratio and args.false_dir is None:
         parser.error("--false_ratio requires --false_dir")
     if args.false_dir and not (0.0 < args.false_ratio < 1.0):
         parser.error("--false_ratio must be in (0, 1) when --false_dir is set")
+    if args.debug_require_berth and args.coastline is None:
+        parser.error("--debug_require_berth requires --coastline")
 
     stats = generate_dataset(
         bg_dir=args.bg_dir,
@@ -424,6 +444,8 @@ def main() -> None:
         override=args.override,
         offnadir_range=args.offnadir,
         shipgen_kwargs=dict(args.shipgen),
+        debug_profile_path=args.debug_profile_json,
+        debug_require_berth=args.debug_require_berth,
     )
     append_command_history(
         args.output_dir,

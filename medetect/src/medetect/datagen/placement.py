@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,7 +40,12 @@ from medetect.datagen.scene import (
     _shadow_offset_pixels,
 )
 from medetect.datagen.ship import (
+    MIN_SHIP_BEAM_PX,
+    MIN_SHIP_LENGTH_PX,
+    SHIP_LENGTHS_M,
+    _DEFAULT_LENGTH_M,
     _SvgMeta,
+    _max_reasonable_lb_ratio,
     _pick_svg,
     _resolve_ship_dimensions,
     _scale_ship_pixel_size,
@@ -54,6 +60,35 @@ _BerthSegment = tuple[tuple[float, float], tuple[float, float]]
 _BERTH_RUN_CONNECT_TOL_PX = 2.5
 _BERTH_RUN_MAX_TURN_COS = math.cos(math.radians(20.0))
 _BERTH_LAND_CLEARANCE_PX = 0.25
+_DebugProfile = dict[str, dict[str, float | int]]
+
+
+def _profile_add(
+    debug_profile: _DebugProfile | None,
+    section: str,
+    key: str,
+    value: float | int,
+) -> None:
+    if debug_profile is None:
+        return
+    section_values = debug_profile.setdefault(section, {})
+    section_values[key] = section_values.get(key, 0) + value
+
+
+def _profile_count(
+    debug_profile: _DebugProfile | None,
+    key: str,
+    value: int = 1,
+) -> None:
+    _profile_add(debug_profile, "counts", key, value)
+
+
+def _profile_time(
+    debug_profile: _DebugProfile | None,
+    key: str,
+    elapsed_sec: float,
+) -> None:
+    _profile_add(debug_profile, "timings", key, elapsed_sec)
 
 
 def _rgba_scene_rect(
@@ -347,16 +382,77 @@ def _resolve_berth_land_intrusion(
     This keeps dock contact whenever possible while preventing visible land
     penetration on curved or pixel-stepped shorelines.
     """
-    if not _geometry_intrudes_land(water_mask, hull_geom):
-        return cx, cy, hull_geom
+    max_shift_px = max(0.0, max_shift_px)
+    precision_px = max(step_px, 1e-6)
 
-    steps = max(1, math.ceil(max_shift_px / max(step_px, 1e-6)))
-    for index in range(1, steps + 1):
-        shift = min(max_shift_px, index * step_px)
-        shifted_geom = affinity.translate(hull_geom, xoff=water_nx * shift, yoff=water_ny * shift)
-        if not _geometry_intrudes_land(water_mask, shifted_geom):
-            return cx + water_nx * shift, cy + water_ny * shift, shifted_geom
-    return None
+    evaluated: dict[float, tuple[float, float, BaseGeometry, bool]] = {}
+
+    def _evaluate_shift(shift: float) -> tuple[float, float, BaseGeometry, bool]:
+        clamped_shift = min(max_shift_px, max(0.0, shift))
+        cached = evaluated.get(clamped_shift)
+        if cached is not None:
+            return cached
+
+        if clamped_shift <= 0.0:
+            shifted_geom = hull_geom
+        else:
+            shifted_geom = affinity.translate(
+                hull_geom,
+                xoff=water_nx * clamped_shift,
+                yoff=water_ny * clamped_shift,
+            )
+        result = (
+            cx + water_nx * clamped_shift,
+            cy + water_ny * clamped_shift,
+            shifted_geom,
+            _geometry_intrudes_land(water_mask, shifted_geom),
+        )
+        evaluated[clamped_shift] = result
+        return result
+
+    base_cx, base_cy, base_geom, intrudes = _evaluate_shift(0.0)
+    if not intrudes:
+        return base_cx, base_cy, base_geom
+    if max_shift_px <= 0.0:
+        return None
+
+    coarse_step = min(
+        max_shift_px,
+        max(precision_px * 4.0, max_shift_px / 4.0),
+    )
+    coarse_step = max(coarse_step, precision_px)
+
+    intrusive_shift = 0.0
+    clear_shift: float | None = None
+    probe_shift = coarse_step
+    while probe_shift < max_shift_px:
+        _probe_cx, _probe_cy, _probe_geom, probe_intrudes = _evaluate_shift(probe_shift)
+        if not probe_intrudes:
+            clear_shift = probe_shift
+            break
+        intrusive_shift = probe_shift
+        probe_shift += coarse_step
+
+    if clear_shift is None:
+        end_cx, end_cy, end_geom, end_intrudes = _evaluate_shift(max_shift_px)
+        if end_intrudes:
+            return None
+        clear_shift = max_shift_px
+        clear_result = (end_cx, end_cy, end_geom)
+    else:
+        clear_cx, clear_cy, clear_geom, _clear_intrudes = _evaluate_shift(clear_shift)
+        clear_result = (clear_cx, clear_cy, clear_geom)
+
+    while clear_shift - intrusive_shift > precision_px:
+        probe_shift = (intrusive_shift + clear_shift) / 2.0
+        probe_cx, probe_cy, probe_geom, probe_intrudes = _evaluate_shift(probe_shift)
+        if probe_intrudes:
+            intrusive_shift = probe_shift
+            continue
+        clear_shift = probe_shift
+        clear_result = (probe_cx, probe_cy, probe_geom)
+
+    return clear_result
 
 
 def _render_vector_raft_cluster(
@@ -619,6 +715,46 @@ def _angle_deg_from_stern_direction(
     return math.degrees(math.atan2(-stern_dx, stern_dy))
 
 
+def _minimum_berthed_ship_span_px(
+    resolution_m: float,
+    length_range: tuple[float, float] | None,
+    berth_stern: bool,
+) -> float:
+    """Return a safe lower bound on berth tangent span for one ship."""
+    if length_range is not None:
+        min_length_m = max(length_range[0], 1.0)
+    else:
+        class_mins = [lengths[0] for lengths in SHIP_LENGTHS_M.values()]
+        min_length_m = min(class_mins + [_DEFAULT_LENGTH_M[0]])
+
+    min_length_px = max(MIN_SHIP_LENGTH_PX, round(min_length_m / max(resolution_m, 1e-6)))
+    if not berth_stern:
+        return float(min_length_px)
+
+    max_lb_ratio = _max_reasonable_lb_ratio(min_length_m)
+    min_beam_m = min_length_m / max(max_lb_ratio, 1e-6)
+    min_beam_px = max(MIN_SHIP_BEAM_PX, round(min_beam_m / max(resolution_m, 1e-6)))
+    return float(min_beam_px)
+
+
+def _max_berthed_ships_for_run(
+    run_length: float,
+    ship_gap: float,
+    resolution_m: float,
+    length_range: tuple[float, float] | None,
+    berth_stern: bool,
+) -> int:
+    """Return the maximum ship count that can fit by physical lower bounds."""
+    min_ship_span = _minimum_berthed_ship_span_px(
+        resolution_m,
+        length_range,
+        berth_stern,
+    )
+    if run_length + ship_gap < min_ship_span:
+        return 0
+    return max(0, math.floor((run_length + ship_gap) / (min_ship_span + ship_gap)))
+
+
 def _segment_endpoint_distance(
     point_a: tuple[float, float],
     point_b: tuple[float, float],
@@ -828,254 +964,347 @@ def _place_berthed_cluster(
     offnadir_deg: float = 0.0,
     sensor_az_world_deg: float = 0.0,
     shipgen_kwargs: dict[str, Any] | None = None,
+    debug_profile: _DebugProfile | None = None,
 ) -> list[str]:
+    started = time.perf_counter()
     labels: list[str] = []
-    if not berth_segments:
-        return labels
+    try:
+        if n_ships == 1:
+            _profile_count(debug_profile, "berth_single_calls")
+        else:
+            _profile_count(debug_profile, "berth_cluster_calls")
+        _profile_count(debug_profile, "berth_requested_ships", n_ships)
 
-    runs = _build_berth_runs(berth_segments, berth_water_mask)
-    rng.shuffle(runs)
-    cluster_alpha = rng.uniform(*alpha_range)
-    ship_gap = 4.0
-    scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
+        if not berth_segments:
+            return labels
 
-    for run in runs:
-        if run.length <= 1e-6:
-            continue
+        build_runs_started = time.perf_counter()
+        runs = _build_berth_runs(berth_segments, berth_water_mask)
+        _profile_count(debug_profile, "build_berth_runs_calls")
+        _profile_count(debug_profile, "berth_segments_input_total", len(berth_segments))
+        _profile_count(debug_profile, "berth_runs_total", len(runs))
+        _profile_time(debug_profile, "build_berth_runs_sec", time.perf_counter() - build_runs_started)
 
-        mid_sample = _sample_berth_run(run, run.length / 2.0)
-        if mid_sample is None:
-            continue
-        mid_x, mid_y, mid_tan_x, mid_tan_y, mid_water_nx, mid_water_ny = mid_sample
-        mid_stern_dx = -mid_water_nx if berth_stern else mid_tan_x
-        mid_stern_dy = -mid_water_ny if berth_stern else mid_tan_y
-        mid_angle_deg = _angle_deg_from_stern_direction(mid_stern_dx, mid_stern_dy)
-        ship_sensor_az = (sensor_az_world_deg - mid_angle_deg) % 360.0
-        canonical_angle_deg = _angle_deg_from_stern_direction(-1.0, 0.0) if berth_stern else 0.0
+        rng.shuffle(runs)
+        cluster_alpha = rng.uniform(*alpha_range)
+        ship_gap = 4.0
+        scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
 
-        if not mixed:
-            svg_text_ref = _pick_svg(
-                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
-                shipgen_kwargs=shipgen_kwargs,
+        for run in runs:
+            _profile_count(debug_profile, "berth_run_attempts")
+            if run.length <= 1e-6:
+                continue
+
+            target_ship_count = min(
+                n_ships,
+                _max_berthed_ships_for_run(
+                    run.length,
+                    ship_gap,
+                    resolution_m,
+                    length_range,
+                    berth_stern,
+                ),
             )
-            _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
-                svg_text_ref,
-                resolution_m,
-                rng,
-                length_range,
-                length_exponent,
+            _profile_count(
+                debug_profile,
+                "berth_screened_ships",
+                max(0, n_ships - target_ship_count),
             )
+            if target_ship_count <= 0:
+                continue
 
-        ship_specs: list[
-            tuple[
-                str,
-                int,
-                int,
-                BaseGeometry,
-                tuple[int, int, int, int],
-                float,
-                float,
-                float,
-            ]
-        ] = []
-        total_span = 0.0
-        for index in range(n_ships):
-            if mixed:
-                svg_text_i = _pick_svg(
+            mid_sample = _sample_berth_run(run, run.length / 2.0)
+            if mid_sample is None:
+                continue
+            mid_x, mid_y, mid_tan_x, mid_tan_y, mid_water_nx, mid_water_ny = mid_sample
+            mid_stern_dx = -mid_water_nx if berth_stern else mid_tan_x
+            mid_stern_dy = -mid_water_ny if berth_stern else mid_tan_y
+            mid_angle_deg = _angle_deg_from_stern_direction(mid_stern_dx, mid_stern_dy)
+            ship_sensor_az = (sensor_az_world_deg - mid_angle_deg) % 360.0
+            canonical_angle_deg = _angle_deg_from_stern_direction(-1.0, 0.0) if berth_stern else 0.0
+
+            if not mixed:
+                svg_text_ref = _pick_svg(
                     svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
                     shipgen_kwargs=shipgen_kwargs,
                 )
-                _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
-                    svg_text_i,
+                _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
+                    svg_text_ref,
                     resolution_m,
                     rng,
                     length_range,
                     length_exponent,
                 )
-            else:
-                svg_text_i = svg_text_ref
-                if index == 0:
-                    bw, lh = bw0, lh0
+
+            ship_specs_started = time.perf_counter()
+            ship_specs: list[
+                tuple[
+                    str,
+                    int,
+                    int,
+                    BaseGeometry,
+                    tuple[int, int, int, int],
+                    float,
+                    float,
+                    float,
+                ]
+            ] = []
+            total_span = 0.0
+            for index in range(target_ship_count):
+                if mixed:
+                    svg_text_i = _pick_svg(
+                        svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                        shipgen_kwargs=shipgen_kwargs,
+                    )
+                    _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
+                        svg_text_i,
+                        resolution_m,
+                        rng,
+                        length_range,
+                        length_exponent,
+                    )
                 else:
-                    scale = rng.uniform(0.9, 1.1)
-                    bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
+                    svg_text_i = svg_text_ref
+                    if index == 0:
+                        bw, lh = bw0, lh0
+                    else:
+                        scale = rng.uniform(0.9, 1.1)
+                        bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
 
-            canonical_hull = _local_hull_geometry(svg_text_i, bw, lh, canonical_angle_deg)
-            min_t, max_t = _geometry_projection_extents(canonical_hull, 0.0, 1.0)
-            min_n, _max_n = _geometry_projection_extents(canonical_hull, 1.0, 0.0)
-            ship_specs.append(
-                (
-                    svg_text_i,
-                    bw,
-                    lh,
-                    extract_hull_fill(svg_text_i),
-                    min_t,
-                    max_t,
-                    -min_n,
+                canonical_hull = _local_hull_geometry(svg_text_i, bw, lh, canonical_angle_deg)
+                min_t, max_t = _geometry_projection_extents(canonical_hull, 0.0, 1.0)
+                min_n, _max_n = _geometry_projection_extents(canonical_hull, 1.0, 0.0)
+                ship_specs.append(
+                    (
+                        svg_text_i,
+                        bw,
+                        lh,
+                        extract_hull_fill(svg_text_i),
+                        min_t,
+                        max_t,
+                        -min_n,
+                    )
                 )
-            )
-            total_span += max_t - min_t
+                total_span += max_t - min_t
+            _profile_time(debug_profile, "berth_prepare_specs_sec", time.perf_counter() - ship_specs_started)
 
-        active_ship_specs = list(ship_specs)
-        total_span = sum(max_t - min_t for *_prefix, min_t, max_t, _water_offset in active_ship_specs)
-        total_span += max(0, len(active_ship_specs) - 1) * ship_gap
-        while active_ship_specs and total_span > run.length:
-            active_ship_specs.pop()
+            active_ship_specs = list(ship_specs)
             total_span = sum(max_t - min_t for *_prefix, min_t, max_t, _water_offset in active_ship_specs)
             total_span += max(0, len(active_ship_specs) - 1) * ship_gap
+            while active_ship_specs and total_span > run.length:
+                active_ship_specs.pop()
+                total_span = sum(max_t - min_t for *_prefix, min_t, max_t, _water_offset in active_ship_specs)
+                total_span += max(0, len(active_ship_specs) - 1) * ship_gap
 
-        if not active_ship_specs:
-            continue
+            _profile_count(debug_profile, "berth_truncated_ships", len(ship_specs) - len(active_ship_specs))
+            if not active_ship_specs:
+                continue
 
-        cursor = (run.length - total_span) / 2.0
-        staged_occupancy = occupancy.copy()
-        placed: list[_RaftShipPlacement] = []
-        valid = True
-        for svg_text_i, bw, lh, hull_fill, min_t, max_t, water_offset in active_ship_specs:
-            center_s = cursor - min_t
-            sampled = _sample_berth_run(run, center_s)
-            if sampled is None:
-                valid = False
-                break
+            while active_ship_specs:
+                total_span = sum(
+                    max_t - min_t
+                    for *_prefix, min_t, max_t, _water_offset in active_ship_specs
+                )
+                total_span += max(0, len(active_ship_specs) - 1) * ship_gap
+                cursor = (run.length - total_span) / 2.0
 
-            run_x, run_y, tan_x, tan_y, water_nx, water_ny = sampled
-            stern_dx = -water_nx if berth_stern else tan_x
-            stern_dy = -water_ny if berth_stern else tan_y
-            angle_deg = _angle_deg_from_stern_direction(stern_dx, stern_dy)
-            angle_rad = math.radians(angle_deg)
-            local_hull = _local_hull_geometry(svg_text_i, bw, lh, angle_deg)
-            cx = run_x + water_nx * water_offset
-            cy = run_y + water_ny * water_offset
-            hull_geom = _translate_hull_geometry(local_hull, cx, cy)
-            resolved = _resolve_berth_land_intrusion(
-                berth_water_mask,
-                hull_geom,
-                cx,
-                cy,
-                water_nx,
-                water_ny,
-                max_shift_px=max(6.0, water_offset + _BERTH_LAND_CLEARANCE_PX),
-            )
-            if resolved is None:
-                valid = False
-                break
+                occupancy_copy_started = time.perf_counter()
+                staged_occupancy = occupancy.copy()
+                _profile_count(debug_profile, "berth_occupancy_copies")
+                _profile_time(
+                    debug_profile,
+                    "berth_occupancy_copy_sec",
+                    time.perf_counter() - occupancy_copy_started,
+                )
 
-            cx, cy, hull_geom = resolved
-            min_x, min_y, max_x, max_y = hull_geom.bounds
-            if min_x < 0.0 or min_y < 0.0 or max_x > image_size or max_y > image_size:
-                valid = False
-                break
-            if not _obb_on_berth_water(
-                berth_water_mask,
-                cx,
-                cy,
-                bw,
-                lh,
-                angle_rad,
-                water_nx,
-                water_ny,
-            ):
-                valid = False
-                break
-            cx0, cy0, cx1, cy1 = _obb_aabb_bounds(
-                cx, cy, bw, lh, angle_rad, image_size, padding=0.0,
-            )
-            if staged_occupancy[cy0:cy1, cx0:cx1].any():
-                valid = False
-                break
+                placed = []
+                valid = True
+                failed_index: int | None = None
+                validation_started = time.perf_counter()
+                for index, (svg_text_i, bw, lh, hull_fill, min_t, max_t, water_offset) in enumerate(active_ship_specs):
+                    center_s = cursor - min_t
+                    sampled = _sample_berth_run(run, center_s)
+                    if sampled is None:
+                        valid = False
+                        failed_index = index
+                        break
 
-            placed.append(
-                _RaftShipPlacement(
-                    svg_text=svg_text_i,
-                    cx=float(cx),
-                    cy=float(cy),
-                    bw=bw,
-                    lh=lh,
-                    angle_deg=angle_deg,
-                    angle_rad=angle_rad,
-                    class_id=_ship_class_id(
+                    run_x, run_y, tan_x, tan_y, water_nx, water_ny = sampled
+                    stern_dx = -water_nx if berth_stern else tan_x
+                    stern_dy = -water_ny if berth_stern else tan_y
+                    angle_deg = _angle_deg_from_stern_direction(stern_dx, stern_dy)
+                    angle_rad = math.radians(angle_deg)
+                    local_hull = _local_hull_geometry(svg_text_i, bw, lh, angle_deg)
+                    cx = run_x + water_nx * water_offset
+                    cy = run_y + water_ny * water_offset
+                    hull_geom = _translate_hull_geometry(local_hull, cx, cy)
+
+                    land_intrusion_started = time.perf_counter()
+                    resolved = _resolve_berth_land_intrusion(
+                        berth_water_mask,
+                        hull_geom,
+                        cx,
+                        cy,
+                        water_nx,
+                        water_ny,
+                        max_shift_px=max(6.0, water_offset + _BERTH_LAND_CLEARANCE_PX),
+                    )
+                    _profile_count(debug_profile, "resolve_land_intrusion_calls")
+                    _profile_time(
+                        debug_profile,
+                        "resolve_land_intrusion_sec",
+                        time.perf_counter() - land_intrusion_started,
+                    )
+                    if resolved is None:
+                        valid = False
+                        failed_index = index
+                        break
+
+                    cx, cy, hull_geom = resolved
+                    min_x, min_y, max_x, max_y = hull_geom.bounds
+                    if min_x < 0.0 or min_y < 0.0 or max_x > image_size or max_y > image_size:
+                        valid = False
+                        failed_index = index
+                        break
+
+                    berth_water_started = time.perf_counter()
+                    is_on_berth_water = _obb_on_berth_water(
+                        berth_water_mask,
+                        cx,
+                        cy,
+                        bw,
                         lh,
-                        resolution_m,
-                        class_id,
-                        size_thresholds,
-                    ),
-                    hull_geom=hull_geom,
-                    hull_fill=hull_fill,
-                )
-            )
-            _stamp_geometry_occupancy(staged_occupancy, hull_geom)
-            cursor = center_s + max_t + ship_gap
+                        angle_rad,
+                        water_nx,
+                        water_ny,
+                    )
+                    _profile_count(debug_profile, "obb_on_berth_water_calls")
+                    _profile_time(
+                        debug_profile,
+                        "obb_on_berth_water_sec",
+                        time.perf_counter() - berth_water_started,
+                    )
+                    if not is_on_berth_water:
+                        valid = False
+                        failed_index = index
+                        break
 
-        if not valid or not placed:
-            continue
+                    cx0, cy0, cx1, cy1 = _obb_aabb_bounds(
+                        cx, cy, bw, lh, angle_rad, image_size, padding=0.0,
+                    )
+                    if staged_occupancy[cy0:cy1, cx0:cx1].any():
+                        valid = False
+                        failed_index = index
+                        break
 
-        occupancy[:] = staged_occupancy
-        water_tint = _sample_water_tint(background, round(mid_x), round(mid_y))
-        rendered_cluster = _render_vector_raft_cluster(
-            placed,
-            image_size,
-            blur_sigma,
-            scene_scale,
-            join_tolerance=0.0,
-            shadow_azimuth_rad=shadow_azimuth_rad,
-            shadow_length=shadow_length,
-            shadow_alpha=shadow_alpha,
-            shadow_alpha_scale=shadow_alpha_scale,
-        )
-        shadow_alpha_factor = shadow_alpha * shadow_alpha_scale
-        if (
-            isinstance(rendered_cluster, tuple)
-            and len(rendered_cluster) == 2
-            and isinstance(rendered_cluster[1], RgbaLayerPatch)
-        ):
-            shadow_patch, cluster_patch = rendered_cluster
-            if shadow_alpha_factor > 0.0 and shadow_patch is not None:
-                _darken_rgba_patch(
-                    background,
-                    shadow_patch,
-                    shadow_alpha_factor,
-                    clip_mask=berth_water_mask,
-                )
-            _blend_rgba_patch(
-                background,
-                cluster_patch,
-                cluster_alpha,
-                water_tint,
-            )
-        else:
-            shadow_layer: NDArray[np.uint8]
-            cluster_layer: NDArray[np.uint8]
-            if isinstance(rendered_cluster, tuple):
-                shadow_layer, cluster_layer = rendered_cluster
-            else:
-                shadow_layer = np.zeros((image_size, image_size, 4), dtype=np.uint8)
-                cluster_layer = rendered_cluster
-            if shadow_alpha_factor > 0.0:
-                _darken_rgba_layer(
-                    background,
-                    shadow_layer,
-                    shadow_alpha_factor,
-                    clip_mask=berth_water_mask,
-                )
-            _blend_rgba_layer(
-                background,
-                cluster_layer,
-                cluster_alpha,
-                water_tint,
-            )
+                    placed.append(
+                        _RaftShipPlacement(
+                            svg_text=svg_text_i,
+                            cx=float(cx),
+                            cy=float(cy),
+                            bw=bw,
+                            lh=lh,
+                            angle_deg=angle_deg,
+                            angle_rad=angle_rad,
+                            class_id=_ship_class_id(
+                                lh,
+                                resolution_m,
+                                class_id,
+                                size_thresholds,
+                            ),
+                            hull_geom=hull_geom,
+                            hull_fill=hull_fill,
+                        )
+                    )
+                    _stamp_geometry_occupancy(staged_occupancy, hull_geom)
+                    cursor = center_s + max_t + ship_gap
+                _profile_time(debug_profile, "berth_validate_run_sec", time.perf_counter() - validation_started)
 
-        for ship in placed:
-            corners = compute_obb_corners(
-                float(ship.cx),
-                float(ship.cy),
-                float(ship.bw),
-                float(ship.lh),
-                ship.angle_rad,
-            )
-            labels.append(format_obb_label(ship.class_id, corners, image_size, image_size))
+                if valid and placed:
+                    occupancy[:] = staged_occupancy
+                    water_tint = _sample_water_tint(background, round(mid_x), round(mid_y))
+                    render_started = time.perf_counter()
+                    rendered_cluster = _render_vector_raft_cluster(
+                        placed,
+                        image_size,
+                        blur_sigma,
+                        scene_scale,
+                        join_tolerance=0.0,
+                        shadow_azimuth_rad=shadow_azimuth_rad,
+                        shadow_length=shadow_length,
+                        shadow_alpha=shadow_alpha,
+                        shadow_alpha_scale=shadow_alpha_scale,
+                    )
+                    shadow_alpha_factor = shadow_alpha * shadow_alpha_scale
+                    if (
+                        isinstance(rendered_cluster, tuple)
+                        and len(rendered_cluster) == 2
+                        and isinstance(rendered_cluster[1], RgbaLayerPatch)
+                    ):
+                        shadow_patch, cluster_patch = rendered_cluster
+                        if shadow_alpha_factor > 0.0 and shadow_patch is not None:
+                            _darken_rgba_patch(
+                                background,
+                                shadow_patch,
+                                shadow_alpha_factor,
+                                clip_mask=berth_water_mask,
+                            )
+                        _blend_rgba_patch(
+                            background,
+                            cluster_patch,
+                            cluster_alpha,
+                            water_tint,
+                        )
+                    else:
+                        shadow_layer: NDArray[np.uint8]
+                        cluster_layer: NDArray[np.uint8]
+                        if isinstance(rendered_cluster, tuple):
+                            shadow_layer, cluster_layer = rendered_cluster
+                        else:
+                            shadow_layer = np.zeros((image_size, image_size, 4), dtype=np.uint8)
+                            cluster_layer = rendered_cluster
+                        if shadow_alpha_factor > 0.0:
+                            _darken_rgba_layer(
+                                background,
+                                shadow_layer,
+                                shadow_alpha_factor,
+                                clip_mask=berth_water_mask,
+                            )
+                        _blend_rgba_layer(
+                            background,
+                            cluster_layer,
+                            cluster_alpha,
+                            water_tint,
+                        )
+                    _profile_time(debug_profile, "berth_render_sec", time.perf_counter() - render_started)
+
+                    _profile_count(debug_profile, "berth_successes")
+                    _profile_count(debug_profile, "berth_placed_ships", len(placed))
+                    for ship in placed:
+                        corners = compute_obb_corners(
+                            float(ship.cx),
+                            float(ship.cy),
+                            float(ship.bw),
+                            float(ship.lh),
+                            ship.angle_rad,
+                        )
+                        labels.append(format_obb_label(ship.class_id, corners, image_size, image_size))
+                    return labels
+
+                if failed_index is None or failed_index <= 0:
+                    break
+
+                _profile_count(debug_profile, "berth_validation_trim_retries")
+                _profile_count(
+                    debug_profile,
+                    "berth_truncated_ships",
+                    len(active_ship_specs) - failed_index,
+                )
+                active_ship_specs = active_ship_specs[:failed_index]
+
         return labels
-
-    return labels
+    finally:
+        _profile_time(debug_profile, "place_berthed_cluster_sec", time.perf_counter() - started)
 
 
 def _place_area_cluster(
@@ -1318,6 +1547,7 @@ def _place_cluster(
     offnadir_deg: float = 0.0,
     sensor_az_world_deg: float = 0.0,
     shipgen_kwargs: dict[str, Any] | None = None,
+    debug_profile: _DebugProfile | None = None,
 ) -> list[str]:
     """Place a cluster of ships and return label lines."""
     n_ships = rng.randint(*cluster_size_range)
@@ -1354,6 +1584,7 @@ def _place_cluster(
             offnadir_deg=offnadir_deg,
             sensor_az_world_deg=sensor_az_world_deg,
             shipgen_kwargs=shipgen_kwargs,
+            debug_profile=debug_profile,
         )
         if berthed_labels:
             return berthed_labels

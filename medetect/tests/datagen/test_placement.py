@@ -1535,6 +1535,73 @@ class TestBerthPlacement:
         ys = [ship.cy for ship in captured]
         assert max(ys) - min(ys) > 20.0
 
+    def test_berth_stern_to_cluster_trims_invalid_tail_ship(
+        self,
+        horizontal_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ともづけ berth は末尾だけ入らない場合に prefix を残して短縮する。"""
+        captured = self._setup_mocks(monkeypatch)
+        debug_profile: dict[str, dict[str, float | int]] = {}
+
+        def _resolve_until_short_prefix(
+            water_mask: np.ndarray,
+            hull_geom,
+            cx: float,
+            cy: float,
+            water_nx: float,
+            water_ny: float,
+            *,
+            max_shift_px: float,
+            step_px: float = 0.25,
+        ):
+            del water_mask, water_nx, water_ny, max_shift_px, step_px
+            if cx > 46.0:
+                return None
+            return cx, cy, hull_geom
+
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_berth_land_intrusion",
+            _resolve_until_short_prefix,
+        )
+
+        labels = placement_mod._place_berthed_cluster(
+            horizontal_shore_scene["water_mask"],
+            horizontal_shore_scene["occupancy"],
+            [((20.0, 40.0), (56.0, 40.0))],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(23),
+            n_ships=3,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=horizontal_shore_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            length_exponent=1.0,
+            size_thresholds=None,
+            mixed=False,
+            berth_stern=True,
+            blur_sigma=0.0,
+            debug_profile=debug_profile,
+        )
+
+        assert len(labels) == 2
+        assert len(captured) == 2
+        assert debug_profile["counts"]["berth_validation_trim_retries"] == 1
+        assert debug_profile["counts"]["berth_truncated_ships"] >= 1
+
+        xs = [ship.cx for ship in captured]
+        ys = [ship.cy for ship in captured]
+        assert max(xs) - min(xs) > 8.0
+        assert max(ys) - min(ys) < 3.0
+
+        land_dir = np.array([0.0, -1.0])
+        for ship in captured:
+            stern_dir = np.array([-math.sin(ship.angle_rad), math.cos(ship.angle_rad)])
+            assert float(np.dot(stern_dir, land_dir)) > 0.95
+
     def test_berth_curved_run_avoids_land_intrusion(
         self,
         bulged_shore_scene,
@@ -1599,6 +1666,88 @@ class TestBerthPlacement:
         assert len(captured) == 1
         min_x, _min_y, _max_x, _max_y = captured[0].hull_geom.bounds
         assert min_x >= 43.75
+
+    def test_berth_short_run_limits_mixed_svg_generation(
+        self,
+        vertical_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """短い berth run では入らない分の mixed SVG を生成しない。"""
+        captured = _capture_vector_cluster(monkeypatch)
+        pick_calls: list[int] = []
+
+        def _capture_pick_svg(*args, **kwargs) -> str:
+            del args, kwargs
+            pick_calls.append(len(pick_calls))
+            return f"mock-svg-{len(pick_calls)}"
+
+        monkeypatch.setattr(placement_mod, "_pick_svg", _capture_pick_svg)
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(8, 18)]),
+        )
+        monkeypatch.setattr(placement_mod, "_local_hull_geometry", _rect_local_hull_geometry)
+        monkeypatch.setattr(placement_mod, "extract_hull_fill", lambda svg_text: (200, 200, 200, 255))
+
+        labels = placement_mod._place_berthed_cluster(
+            vertical_shore_scene["water_mask"],
+            vertical_shore_scene["occupancy"],
+            [((40.0, 85.0), (40.0, 115.0))],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(31),
+            n_ships=10,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=vertical_shore_scene["background"].copy(),
+            length_range=(90.0, 90.0),
+            length_exponent=1.0,
+            size_thresholds=None,
+            mixed=True,
+            berth_stern=False,
+            blur_sigma=0.0,
+        )
+
+        assert len(labels) == 1
+        assert len(captured) == 1
+        assert len(pick_calls) == 1
+
+    def test_resolve_berth_land_intrusion_uses_coarse_to_fine_search(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """land intrusion 解決は細かい線形探索より少ない判定で済ませる。"""
+        calls: list[float] = []
+
+        def _mock_intrudes_land(
+            water_mask: np.ndarray,
+            hull_geom,
+            clearance_px: float = placement_mod._BERTH_LAND_CLEARANCE_PX,
+        ) -> bool:
+            del water_mask, clearance_px
+            calls.append(float(hull_geom.centroid.x))
+            return float(hull_geom.centroid.x) < 5.0
+
+        monkeypatch.setattr(placement_mod, "_geometry_intrudes_land", _mock_intrudes_land)
+
+        result = placement_mod._resolve_berth_land_intrusion(
+            np.ones((16, 16), dtype=bool),
+            box(-1.0, -1.0, 1.0, 1.0),
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            max_shift_px=6.0,
+            step_px=0.25,
+        )
+
+        assert result is not None
+        cx, cy, _shifted = result
+        assert cx == pytest.approx(5.0, abs=0.25)
+        assert cy == pytest.approx(0.0)
+        assert len(calls) < 10
 
 
 class TestClusterRenderHelpers:
