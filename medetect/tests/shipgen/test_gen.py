@@ -384,6 +384,31 @@ class TestShipColors:
         assert float(np.mean(subdued_gaps)) <= float(np.mean(plain_gaps)) - 10.0
         assert sum(gap >= 30.0 for gap in subdued_gaps) <= 16
 
+    def test_dark_struct_variant_creates_dark_wheelhouses(self) -> None:
+        """dark struct variant は艦橋を明確に暗色化する。"""
+        plain_luminances: list[float] = []
+        dark_luminances: list[float] = []
+        variant = SimpleNamespace(
+            small_ship=False,
+            oversized_struct=False,
+            bright_white_struct=False,
+            low_contrast_struct=False,
+            dark_struct=True,
+        )
+
+        for seed in range(128):
+            plain = sample_colors("fishing_white", random.Random(seed))
+            dark = sample_colors(
+                "fishing_white",
+                random.Random(seed),
+                appearance_variant=variant,
+            )
+            plain_luminances.append(_luminance(plain.struct_base))
+            dark_luminances.append(_luminance(dark.struct_base))
+
+        assert float(np.mean(dark_luminances)) <= float(np.mean(plain_luminances)) - 95.0
+        assert sum(luminance <= 72.0 for luminance in dark_luminances) >= 96
+
 
 # ── SVG generation ───────────────────────────────────────────────────────
 
@@ -539,6 +564,30 @@ class TestSmallShipRareVariants:
         assert bright_only >= 1
 
     @pytest.mark.parametrize(
+        ("ship_class", "min_dark", "max_dark"),
+        [
+            ("fishing_longliner", 4, 20),
+            ("tug_harbor", 4, 20),
+            ("barge", 4, 20),
+        ],
+    )
+    def test_selected_civilian_classes_include_dark_struct_variants(
+        self,
+        ship_class: str,
+        min_dark: int,
+        max_dark: int,
+    ) -> None:
+        """対象 civilian class では黒い艦橋バリアントが稀に出る。"""
+        variants = [
+            sample_ship_appearance_variant(SHIP_CLASSES[ship_class], random.Random(seed))
+            for seed in range(512)
+        ]
+
+        dark = sum(getattr(variant, "dark_struct", False) for variant in variants)
+
+        assert min_dark <= dark <= max_dark
+
+    @pytest.mark.parametrize(
         ("ship_class", "min_subdued", "max_subdued"),
         [
             ("fishing_longliner", 24, 144),
@@ -574,6 +623,19 @@ class TestSmallShipRareVariants:
                 bright += 1
 
         assert 3 <= bright <= 12
+
+    def test_small_fishing_white_dark_wheelhouses_appear_only_rarely(self) -> None:
+        """白系漁船でも黒い艦橋は稀に留まる。"""
+        dark = 0
+        for seed in range(384):
+            svg = generate_ship_svg("fishing_longliner", rng=random.Random(seed))
+            if any(
+                _luminance(rgb) <= 76.0 and _chroma(rgb) <= 20
+                for rgb in _struct_rect_colors(svg)
+            ):
+                dark += 1
+
+        assert 2 <= dark <= 18
 
     def test_small_ship_oversized_superstructures_stay_rare(self) -> None:
         """小型船で構造物が船面積の半分超えになるのは稀に留まる。"""
