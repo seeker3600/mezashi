@@ -1542,7 +1542,6 @@ class TestBerthPlacement:
     ) -> None:
         """ともづけ berth は末尾だけ入らない場合に prefix を残して短縮する。"""
         captured = self._setup_mocks(monkeypatch)
-        debug_profile: dict[str, dict[str, float | int]] = {}
 
         def _resolve_until_short_prefix(
             water_mask: np.ndarray,
@@ -1584,13 +1583,10 @@ class TestBerthPlacement:
             mixed=False,
             berth_stern=True,
             blur_sigma=0.0,
-            debug_profile=debug_profile,
         )
 
         assert len(labels) == 2
         assert len(captured) == 2
-        assert debug_profile["counts"]["berth_validation_trim_retries"] == 1
-        assert debug_profile["counts"]["berth_truncated_ships"] >= 1
 
         xs = [ship.cx for ship in captured]
         ys = [ship.cy for ship in captured]

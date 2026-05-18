@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import pathlib
 import random
 
@@ -302,67 +301,6 @@ class TestGenerateDatasetParams:
         assert params["berth_prob"] == pytest.approx(0.8)
         assert params["berth_stern_prob"] == pytest.approx(0.2)
         assert params["berth_cluster_auto_truncate"] is True
-
-    def test_debug_profile_is_aggregated_and_written(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: pathlib.Path,
-    ) -> None:
-        """debug profile を有効化すると berth 集計が JSON 出力される。"""
-        bg_dir = tmp_path / "bg"
-        bg_dir.mkdir()
-        (bg_dir / "scene_visual.tif").write_bytes(b"placeholder")
-
-        profile_path = tmp_path / "profile.json"
-
-        def _capture_compose_task(
-            *,
-            index: int,
-            task_seed: int,
-            tif_path: pathlib.Path | None,
-            img_out: pathlib.Path,
-            lbl_out: pathlib.Path,
-            config: object,
-        ) -> tuple[int, int, dict[str, object]]:
-            del index, task_seed, tif_path, img_out, lbl_out
-            assert getattr(config, "debug_profile_path") == profile_path
-            return (
-                1,
-                0,
-                {
-                    "counts": {
-                        "berth_cluster_calls": 2,
-                        "build_berth_runs_calls": 2,
-                    },
-                    "timings": {
-                        "place_berthed_cluster_sec": 1.25,
-                        "build_berth_runs_sec": 0.75,
-                    },
-                },
-            )
-
-        monkeypatch.setattr(pipeline_mod, "_run_compose_task", _capture_compose_task)
-        monkeypatch.setattr(pipeline_mod, "_worker_init", lambda *args, **kwargs: None)
-        monkeypatch.setattr(pipeline_mod, "_write_dataset_yaml", lambda *args, **kwargs: None)
-
-        stats = pipeline_mod.generate_dataset(
-            bg_dir=bg_dir,
-            output_dir=tmp_path / "out",
-            count=1,
-            max_workers=0,
-            debug_profile_path=profile_path,
-        )
-
-        assert stats["images"] == 1
-        assert stats["debug_profile"]["counts"]["berth_cluster_calls"] == 2
-        assert stats["debug_profile"]["counts"]["build_berth_runs_calls"] == 2
-        assert stats["debug_profile"]["timings"]["place_berthed_cluster_sec"] == pytest.approx(1.25)
-        assert stats["debug_profile"]["timings"]["build_berth_runs_sec"] == pytest.approx(0.75)
-
-        profile = json.loads(profile_path.read_text(encoding="utf-8"))
-        assert profile["counts"]["berth_cluster_calls"] == 2
-        assert profile["timings"]["build_berth_runs_sec"] == pytest.approx(0.75)
-
 
 class TestFalseSourceGrid:
     """_false_source_grid のグリッド計算テスト。"""
@@ -782,78 +720,3 @@ class TestDatagenCli:
         assert captured["berth_prob"] == pytest.approx(0.8)
         assert captured["berth_stern_prob"] == pytest.approx(0.2)
 
-    def test_debug_profile_json_is_forwarded(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """debug_profile_json は CLI から generate_dataset へ渡る。"""
-        import sys
-
-        import medetect.datagen.__main__ as datagen_main
-
-        captured: dict[str, object] = {}
-
-        def _capture_generate_dataset(**kwargs):
-            captured.update(kwargs)
-            return {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
-
-        monkeypatch.setattr(datagen_main, "generate_dataset", _capture_generate_dataset)
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [
-                "medetect.datagen",
-                "--bg_dir",
-                "bg",
-                "--output_dir",
-                "out",
-                "--count",
-                "1",
-                "--workers",
-                "0",
-                "--debug_profile_json",
-                "profile.json",
-            ],
-        )
-
-        datagen_main.main()
-
-        assert captured["max_workers"] == 0
-        assert captured["debug_profile_path"] == pathlib.Path("profile.json")
-
-    def test_debug_require_berth_is_forwarded(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """debug_require_berth は CLI から generate_dataset へ渡る。"""
-        import sys
-
-        import medetect.datagen.__main__ as datagen_main
-
-        captured: dict[str, object] = {}
-
-        def _capture_generate_dataset(**kwargs):
-            captured.update(kwargs)
-            return {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
-
-        monkeypatch.setattr(datagen_main, "generate_dataset", _capture_generate_dataset)
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [
-                "medetect.datagen",
-                "--bg_dir",
-                "bg",
-                "--output_dir",
-                "out",
-                "--count",
-                "1",
-                "--coastline",
-                "coast.shp",
-                "--debug_require_berth",
-            ],
-        )
-
-        datagen_main.main()
-
-        assert captured["debug_require_berth"] is True

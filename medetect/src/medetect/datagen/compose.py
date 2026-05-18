@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import math
 import random
-import time
 from pathlib import Path
 
 import numpy as np
@@ -69,35 +68,6 @@ logger = logging.getLogger(__name__)
 
 _DARK_TILE_THRESHOLD: float = 10.0
 _COASTLINE_CRS = CRS.from_epsg(4326)
-_DebugProfile = dict[str, dict[str, float | int]]
-
-
-def _profile_add(
-    debug_profile: _DebugProfile | None,
-    section: str,
-    key: str,
-    value: float | int,
-) -> None:
-    if debug_profile is None:
-        return
-    section_values = debug_profile.setdefault(section, {})
-    section_values[key] = section_values.get(key, 0) + value
-
-
-def _profile_count(
-    debug_profile: _DebugProfile | None,
-    key: str,
-    value: int = 1,
-) -> None:
-    _profile_add(debug_profile, "counts", key, value)
-
-
-def _profile_time(
-    debug_profile: _DebugProfile | None,
-    key: str,
-    elapsed_sec: float,
-) -> None:
-    _profile_add(debug_profile, "timings", key, elapsed_sec)
 
 __all__ = [
     "SingleShipPlacement",
@@ -316,11 +286,8 @@ def _compose_one(
     coastline_index: CoastlineIndex | None = None,
     offnadir_range: tuple[float, float] = (0.0, 0.0),
     shipgen_kwargs: dict | None = None,
-    debug_profile: _DebugProfile | None = None,
-    debug_require_berth: bool = False,
 ) -> tuple[NDArray[np.uint8], list[str], int] | None:
     """Compose one training image. Returns ``(tile, labels, n_clusters)``."""
-    _profile_count(debug_profile, "compose_images")
     with rasterio.open(tif_path) as src:
         if geo_scale is not None:
             src_tile = max(1, round(image_size * geo_scale))
@@ -384,7 +351,6 @@ def _compose_one(
             berth_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
 
             if coastline_index is not None:
-                _profile_count(debug_profile, "coastline_tiles")
                 window = Window(col, row, src_tile, src_tile)
                 tile_transform = src.window_transform(window)
                 if src_tile != image_size:
@@ -411,7 +377,6 @@ def _compose_one(
                         *tile_bounds,
                         densify_pts=21,
                     )
-                coastline_query_started = time.perf_counter()
                 coastline_geoms = coastline_index.query(query_bounds)
                 if coastline_geoms and src.crs is not None:
                     coastline_geoms = _reproject_coastline_geometries(
@@ -419,15 +384,6 @@ def _compose_one(
                         _COASTLINE_CRS,
                         src.crs,
                     )
-                _profile_time(
-                    debug_profile,
-                    "coastline_query_sec",
-                    time.perf_counter() - coastline_query_started,
-                )
-                if coastline_geoms:
-                    _profile_count(debug_profile, "coastline_geometry_tiles")
-                    _profile_count(debug_profile, "coastline_geometries_total", len(coastline_geoms))
-                coastline_mask_started = time.perf_counter()
                 coastline_mask = make_water_mask_from_coastline(
                     coastline_geoms,
                     tile,
@@ -435,31 +391,14 @@ def _compose_one(
                     image_size,
                     image_size,
                 )
-                _profile_time(
-                    debug_profile,
-                    "coastline_mask_sec",
-                    time.perf_counter() - coastline_mask_started,
-                )
                 water_mask &= coastline_mask
                 berth_water_mask = water_mask.copy()
-                berth_segments_started = time.perf_counter()
                 berth_segments = _coastline_to_pixel_segments(
                     coastline_geoms,
                     tile_transform,
                     image_size,
                     image_size,
                 )
-                _profile_time(
-                    debug_profile,
-                    "coastline_segments_sec",
-                    time.perf_counter() - berth_segments_started,
-                )
-                _profile_count(debug_profile, "berth_segments_total", len(berth_segments))
-                if berth_segments:
-                    _profile_count(debug_profile, "berth_segment_tiles")
-                elif debug_require_berth:
-                    _profile_count(debug_profile, "debug_require_berth_retries")
-                    continue
 
             water_mask = erode_mask(water_mask, erode_coast)
 
@@ -468,12 +407,8 @@ def _compose_one(
                 break
         else:
             try:
-                if debug_require_berth:
-                    _profile_count(debug_profile, "debug_require_berth_failures")
                 return tile, [], 0  # type: ignore[possibly-undefined]
             except NameError:
-                if debug_require_berth:
-                    _profile_count(debug_profile, "debug_require_berth_failures")
                 return None
 
     if debug_bg_color is None:
@@ -530,7 +465,6 @@ def _compose_one(
                 offnadir_deg=tile_offnadir_deg,
                 sensor_az_world_deg=tile_sensor_az_world_deg,
                 shipgen_kwargs=shipgen_kwargs,
-                debug_profile=debug_profile,
             )
             labels.extend(new_labels)
             if new_labels:
@@ -562,7 +496,6 @@ def _compose_one(
                     offnadir_deg=tile_offnadir_deg,
                     sensor_az_world_deg=tile_sensor_az_world_deg,
                     shipgen_kwargs=shipgen_kwargs,
-                    debug_profile=debug_profile,
                 )
                 if berthed_labels:
                     labels.extend(berthed_labels)
