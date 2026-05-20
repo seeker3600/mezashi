@@ -37,7 +37,8 @@ def _parse_float_range(s: str) -> tuple[float, float]:
 
 def main() -> None:
     public_classes = get_ship_classes()
-    debug_classes = sorted(set(get_ship_classes(include_debug=True)) - set(public_classes))
+    all_classes = get_ship_classes(include_debug=True)
+    debug_classes = sorted(set(all_classes) - set(public_classes))
     available_classes = public_classes + [f"{name} (debug only)" for name in debug_classes]
 
     parser = argparse.ArgumentParser(
@@ -55,13 +56,24 @@ def main() -> None:
         required=True,
         help="Number of SVG files to generate.",
     )
-    parser.add_argument(
+    type_group = parser.add_mutually_exclusive_group()
+    type_group.add_argument(
         "--types",
         nargs="+",
         default=None,
         metavar="CLASS:WEIGHT",
         help=(
             "Ship classes with sampling weights (e.g. destroyer:3 frigate:2). "
+            f"Available classes: {', '.join(available_classes)}"
+        ),
+    )
+    type_group.add_argument(
+        "--exclude_types",
+        nargs="+",
+        default=None,
+        metavar="CLASS",
+        help=(
+            "Ship classes to exclude from the default public-class pool. "
             f"Available classes: {', '.join(available_classes)}"
         ),
     )
@@ -135,6 +147,17 @@ def main() -> None:
     types: dict[str, float] | None = None
     if args.types is not None:
         types = _parse_types(args.types)
+    elif args.exclude_types is not None:
+        excluded = set(args.exclude_types)
+        unknown = sorted(excluded - set(all_classes))
+        if unknown:
+            parser.error(f"Unknown ship class in --exclude_types: {unknown[0]!r}. Available: {all_classes}")
+
+        remaining = [name for name in public_classes if name not in excluded]
+        if not remaining:
+            parser.error("--exclude_types removed all public ship classes.")
+
+        types = {name: 1.0 for name in remaining}
 
     generate_ships(
         output_dir=args.output_dir,

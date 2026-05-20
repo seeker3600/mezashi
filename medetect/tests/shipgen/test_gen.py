@@ -21,6 +21,7 @@ from medetect.shipgen.ship_class import (
     SHIP_CLASSES,
     ShipColors,
     sample_colors,
+    sample_hull_trait_variant,
     sample_ship_appearance_variant,
 )
 
@@ -104,6 +105,24 @@ def _struct_area_ratio(svg: str) -> float:
         if rect.attrib.get("data-role") == "struct"
     )
     return struct_area / _ship_area_from_svg(svg)
+
+
+def _hull_traits_from_svg(svg: str) -> set[str]:
+    root = ET.fromstring(svg)
+    raw = root.attrib.get("data-hull-traits", "none")
+    if raw == "none":
+        return set()
+    return {token for token in raw.split(",") if token}
+
+
+def _struct_start_positions(svg: str) -> list[float]:
+    root = ET.fromstring(svg)
+    lb_ratio = float(root.attrib["data-lb-ratio"])
+    return [
+        float(rect.attrib["y"]) / lb_ratio
+        for rect in root.iter(f"{{{SVG_NS}}}rect")
+        if rect.attrib.get("data-role") == "struct"
+    ]
 
 
 # ── Hull interpolation ───────────────────────────────────────────────────
@@ -191,6 +210,32 @@ class TestHullTraitVariants:
 
         fore_index = len(hw) // 8
         assert modified[fore_index] < hw[fore_index] * 0.85
+
+    def test_long_foredeck_trait_keeps_forebody_narrow_farther_aft(self) -> None:
+        """long foredeck trait は pointed bow の細身領域を前甲板側へ延長する。"""
+        hw = interpolate_hull("fishing", 0.55, 0.12, 128)
+
+        pointed_only = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(
+                pointed_bow=True,
+                straight_sides=False,
+                square_stern=False,
+                long_foredeck=False,
+            ),
+        )
+        extended = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(
+                pointed_bow=True,
+                straight_sides=False,
+                square_stern=False,
+                long_foredeck=True,
+            ),
+        )
+
+        foredeck_index = int(round((len(hw) - 1) * 0.32))
+        assert extended[foredeck_index] < pointed_only[foredeck_index] * 0.92
 
     def test_straight_sides_trait_reduces_midbody_curvature(self) -> None:
         """straight sides trait は船腹中央の幅変動を減らす。"""
@@ -566,7 +611,9 @@ class TestSmallShipRareVariants:
     @pytest.mark.parametrize(
         ("ship_class", "min_dark", "max_dark"),
         [
-            ("fishing_longliner", 4, 20),
+            ("fishing_longliner", 24, 120),
+            ("fishing_purse_seiner", 24, 120),
+            ("workboat", 24, 120),
             ("tug_harbor", 4, 20),
             ("barge", 4, 20),
         ],
@@ -586,6 +633,48 @@ class TestSmallShipRareVariants:
         dark = sum(getattr(variant, "dark_struct", False) for variant in variants)
 
         assert min_dark <= dark <= max_dark
+
+    @pytest.mark.parametrize(
+        ("ship_class", "min_long_foredeck", "max_long_foredeck"),
+        [
+            ("fishing_longliner", 20, 160),
+            ("fishing_purse_seiner", 20, 160),
+            ("workboat", 20, 160),
+        ],
+    )
+    def test_targeted_small_civilian_classes_include_long_foredeck_variants(
+        self,
+        ship_class: str,
+        min_long_foredeck: int,
+        max_long_foredeck: int,
+    ) -> None:
+        """対象小型民間船では long foredeck バリアントが実用頻度で出る。"""
+        variants = [
+            sample_hull_trait_variant(SHIP_CLASSES[ship_class], random.Random(seed))
+            for seed in range(512)
+        ]
+
+        long_foredeck = sum(getattr(variant, "long_foredeck", False) for variant in variants)
+
+        assert min_long_foredeck <= long_foredeck <= max_long_foredeck
+
+    def test_long_foredeck_variant_pushes_superstructure_aft_on_longliner(self) -> None:
+        """long foredeck variant は主艦橋の開始位置を後方へ寄せる。"""
+        trait_starts: list[float] = []
+        plain_starts: list[float] = []
+
+        for seed in range(512):
+            svg = generate_ship_svg("fishing_longliner", rng=random.Random(seed))
+            starts = _struct_start_positions(svg)
+            if not starts:
+                continue
+            if "long_foredeck" in _hull_traits_from_svg(svg):
+                trait_starts.append(min(starts))
+            else:
+                plain_starts.append(min(starts))
+
+        assert len(trait_starts) >= 12
+        assert float(np.mean(trait_starts)) >= float(np.mean(plain_starts)) + 0.05
 
     @pytest.mark.parametrize(
         ("ship_class", "min_subdued", "max_subdued"),
@@ -624,8 +713,8 @@ class TestSmallShipRareVariants:
 
         assert 3 <= bright <= 12
 
-    def test_small_fishing_white_dark_wheelhouses_appear_only_rarely(self) -> None:
-        """白系漁船でも黒い艦橋は稀に留まる。"""
+    def test_small_fishing_white_dark_wheelhouses_appear_regularly(self) -> None:
+        """白系漁船でも黒い艦橋が再現可能な頻度で現れる。"""
         dark = 0
         for seed in range(384):
             svg = generate_ship_svg("fishing_longliner", rng=random.Random(seed))
@@ -635,7 +724,7 @@ class TestSmallShipRareVariants:
             ):
                 dark += 1
 
-        assert 2 <= dark <= 18
+        assert 18 <= dark <= 96
 
     def test_small_ship_oversized_superstructures_stay_rare(self) -> None:
         """小型船で構造物が船面積の半分超えになるのは稀に留まる。"""
@@ -772,8 +861,9 @@ class TestSmallShipRareVariants:
             root = ET.fromstring(svg)
             trait_values.append(root.attrib["data-hull-traits"])
 
-        combined = sum(value == "pointed_bow,straight_sides,square_stern" for value in trait_values)
-        partial = sum(value not in {"none", "pointed_bow,straight_sides,square_stern"} for value in trait_values)
+        combined_value = "pointed_bow,long_foredeck,straight_sides,square_stern"
+        combined = sum(value == combined_value for value in trait_values)
+        partial = sum(value not in {"none", combined_value} for value in trait_values)
 
         assert 16 <= combined <= 128
         assert partial >= 24
@@ -787,6 +877,18 @@ class TestSmallShipRareVariants:
 
     def test_generate_ship_svg_uses_sampled_hull_traits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """generate_ship_svg は sampled hull traits を hull geometry に反映する。"""
+        monkeypatch.setattr(
+            shipgen_gen,
+            "sample_hull_trait_variant",
+            lambda _cls, _rng: SimpleNamespace(
+                pointed_bow=False,
+                long_foredeck=False,
+                straight_sides=False,
+                square_stern=False,
+            ),
+            raising=False,
+        )
+
         base_svg = generate_ship_svg("workboat", rng=random.Random(42), hull_noise=0.0)
 
         monkeypatch.setattr(
@@ -794,6 +896,7 @@ class TestSmallShipRareVariants:
             "sample_hull_trait_variant",
             lambda _cls, _rng: SimpleNamespace(
                 pointed_bow=True,
+                long_foredeck=True,
                 straight_sides=True,
                 square_stern=True,
             ),
@@ -805,7 +908,7 @@ class TestSmallShipRareVariants:
         base_hw = _hull_half_widths_from_svg(base_svg)
         variant_hw = _hull_half_widths_from_svg(variant_svg)
         fore_index = len(base_hw) // 8
-        mid_slice = slice(len(base_hw) // 4, (len(base_hw) * 3) // 4)
+        mid_slice = slice((len(base_hw) * 9) // 20, (len(base_hw) * 4) // 5)
 
         assert variant_hw[fore_index] < base_hw[fore_index] * 0.90
         assert float(np.std(variant_hw[mid_slice])) < float(np.std(base_hw[mid_slice])) * 0.75

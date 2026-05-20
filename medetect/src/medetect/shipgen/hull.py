@@ -174,6 +174,12 @@ def apply_hull_trait_variant(
         bow_scale = np.linspace(0.55, 1.0, bow_end + 1)
         hw[:bow_end + 1] *= bow_scale
 
+    if bool(getattr(variant, "long_foredeck", False)):
+        foredeck_end = max(5, int(round((hw.size - 1) * 0.40)))
+        taper = np.linspace(0.0, 1.0, foredeck_end + 1)
+        foredeck_scale = 0.60 + 0.40 * np.power(taper, 1.20)
+        hw[:foredeck_end + 1] *= foredeck_scale
+
     if bool(getattr(variant, "straight_sides", False)):
         start = max(1, int(round((hw.size - 1) * 0.24)))
         end = max(start + 2, int(round((hw.size - 1) * 0.82)))

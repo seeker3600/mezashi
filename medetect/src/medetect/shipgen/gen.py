@@ -114,6 +114,8 @@ def _format_hull_trait_metadata(variant: HullTraitVariant | object | None) -> st
     traits: list[str] = []
     if bool(getattr(variant, "pointed_bow", False)):
         traits.append("pointed_bow")
+    if bool(getattr(variant, "long_foredeck", False)):
+        traits.append("long_foredeck")
     if bool(getattr(variant, "straight_sides", False)):
         traits.append("straight_sides")
     if bool(getattr(variant, "square_stern", False)):
@@ -410,6 +412,23 @@ def _apply_oversized_struct_geometry(
     return x0, x1, w_frac
 
 
+def _apply_long_foredeck_struct_geometry(
+    x0: float,
+    x1: float,
+) -> tuple[float, float]:
+    span = x1 - x0
+    if span <= 0.0:
+        return x0, x1
+
+    shift = min(max(span * 0.45, 0.08), 0.14)
+    x0 += shift
+    x1 += shift
+    if x1 > 0.96:
+        x1 = 0.96
+        x0 = max(0.04, x1 - span)
+    return x0, x1
+
+
 def _resolve_struct_rect(
     spec: Struct,
     lb_ratio: float,
@@ -417,6 +436,7 @@ def _resolve_struct_rect(
     rng: random.Random,
     *,
     oversized_variant: bool = False,
+    long_foredeck_variant: bool = False,
     beam_shift: float = 0.0,
     length_shift: float = 0.0,
 ) -> _ResolvedStructRect | None:
@@ -427,6 +447,8 @@ def _resolve_struct_rect(
     w_frac = rng.uniform(*spec.w)
     if oversized_variant:
         x0, x1, w_frac = _apply_oversized_struct_geometry(x0, x1, w_frac)
+    if long_foredeck_variant:
+        x0, x1 = _apply_long_foredeck_struct_geometry(x0, x1)
 
     base_y0 = x0 * lb_ratio + length_shift
     base_y1 = x1 * lb_ratio + length_shift
@@ -491,12 +513,15 @@ def _estimate_struct_zone(
     *,
     lb_ratio: float,
     oversized_variant: bool = False,
+    long_foredeck_variant: bool = False,
     length_shift: float = 0.0,
 ) -> tuple[float, float]:
     x0 = spec.x0[0]
     x1 = spec.x1[1]
     if oversized_variant:
         x0, x1, _ = _apply_oversized_struct_geometry(x0, x1, spec.w[1])
+    if long_foredeck_variant:
+        x0, x1 = _apply_long_foredeck_struct_geometry(x0, x1)
     y0 = min(lb_ratio, max(0.0, x0 * lb_ratio + length_shift))
     y1 = min(lb_ratio, max(y0, x1 * lb_ratio + length_shift))
     return y0 / lb_ratio, y1 / lb_ratio
@@ -1837,6 +1862,7 @@ def generate_ship_svg(
             spec,
             lb_ratio=lb_ratio,
             oversized_variant=appearance_variant.oversized_struct and index == 0,
+            long_foredeck_variant=getattr(hull_trait_variant, "long_foredeck", False) and index == 0,
             length_shift=length_shift,
         )
         for index, spec in enumerate(cls.structs)
@@ -1860,6 +1886,7 @@ def generate_ship_svg(
                 half_widths,
                 rng,
                 oversized_variant=appearance_variant.oversized_struct and index == 0,
+                long_foredeck_variant=getattr(hull_trait_variant, "long_foredeck", False) and index == 0,
                 beam_shift=beam_shift,
                 length_shift=length_shift,
             )

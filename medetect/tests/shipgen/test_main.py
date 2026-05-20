@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from medetect.shipgen.__main__ import main
+from medetect.shipgen.gen import get_ship_classes
 
 
 class TestMainOverride:
@@ -146,3 +147,73 @@ class TestMainOffnadirAzimuth:
 
         assert mock_generate.call_count == 1
         assert mock_generate.call_args.kwargs["sensor_az_ship_deg"] is None
+
+
+class TestMainExcludeTypes:
+    def test_exclude_types_is_forwarded_as_remaining_class_pool(self, tmp_path: Path) -> None:
+        """--exclude_types は残りの公開クラスを等重みで generate_ships に渡す。"""
+        out = tmp_path / "out"
+        args = [
+            "--output_dir", str(out),
+            "--count", "1",
+            "--exclude_types", "patrol", "corvette",
+        ]
+
+        with patch("medetect.shipgen.__main__.generate_ships") as mock_generate:
+            with patch("sys.argv", ["shipgen"] + args):
+                main()
+
+        assert mock_generate.call_count == 1
+        forwarded = mock_generate.call_args.kwargs["types"]
+        assert forwarded is not None
+        assert "patrol" not in forwarded
+        assert "corvette" not in forwarded
+        assert set(forwarded) == set(get_ship_classes()) - {"patrol", "corvette"}
+        assert set(forwarded.values()) == {1.0}
+
+    def test_types_and_exclude_types_are_mutually_exclusive(self, tmp_path: Path) -> None:
+        """--types と --exclude_types の併用はできない。"""
+        out = tmp_path / "out"
+        args = [
+            "--output_dir", str(out),
+            "--count", "1",
+            "--types", "patrol:1",
+            "--exclude_types", "corvette",
+        ]
+
+        with patch("sys.argv", ["shipgen"] + args):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 2
+
+    def test_exclude_types_rejects_unknown_class(self, tmp_path: Path) -> None:
+        """未知クラスを --exclude_types に渡すと exit code 2 で失敗する。"""
+        out = tmp_path / "out"
+        args = [
+            "--output_dir", str(out),
+            "--count", "1",
+            "--exclude_types", "unknown_xyz",
+        ]
+
+        with patch("sys.argv", ["shipgen"] + args):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 2
+
+    def test_exclude_types_rejects_empty_public_pool(self, tmp_path: Path) -> None:
+        """公開クラスを全除外すると生成対象が空になり exit code 2 で失敗する。"""
+        out = tmp_path / "out"
+        args = [
+            "--output_dir", str(out),
+            "--count", "1",
+            "--exclude_types",
+            *get_ship_classes(),
+        ]
+
+        with patch("sys.argv", ["shipgen"] + args):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 2

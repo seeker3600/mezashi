@@ -628,6 +628,7 @@ class HullTraitVariant:
     """Optional hull-shape traits for one ship instance."""
 
     pointed_bow: bool = False
+    long_foredeck: bool = False
     straight_sides: bool = False
     square_stern: bool = False
 
@@ -635,6 +636,8 @@ class HullTraitVariant:
         traits: list[str] = []
         if self.pointed_bow:
             traits.append("pointed_bow")
+        if self.long_foredeck:
+            traits.append("long_foredeck")
         if self.straight_sides:
             traits.append("straight_sides")
         if self.square_stern:
@@ -800,6 +803,7 @@ def sample_hull_trait_variant(
 
     has_hull_traits = (
         ship_class.hull_trait_pointed_bow_prob > 0.0
+        or ship_class.hull_trait_long_foredeck_prob > 0.0
         or ship_class.hull_trait_straight_sides_prob > 0.0
         or ship_class.hull_trait_square_stern_prob > 0.0
         or ship_class.hull_trait_combined_prob > 0.0
@@ -808,17 +812,18 @@ def sample_hull_trait_variant(
         return HullTraitVariant()
 
     forked = _fork_rng(rng)
-    if forked.random() < ship_class.hull_trait_combined_prob:
-        return HullTraitVariant(
-            pointed_bow=True,
-            straight_sides=True,
-            square_stern=True,
-        )
+    combined = forked.random() < ship_class.hull_trait_combined_prob
 
     return HullTraitVariant(
-        pointed_bow=forked.random() < ship_class.hull_trait_pointed_bow_prob,
-        straight_sides=forked.random() < ship_class.hull_trait_straight_sides_prob,
-        square_stern=forked.random() < ship_class.hull_trait_square_stern_prob,
+        pointed_bow=combined or (forked.random() < ship_class.hull_trait_pointed_bow_prob),
+        long_foredeck=(
+            combined and ship_class.hull_trait_long_foredeck_prob > 0.0
+        ) or (
+            forked.random() < ship_class.hull_trait_long_foredeck_prob
+            if ship_class.hull_trait_long_foredeck_prob > 0.0 else False
+        ),
+        straight_sides=combined or (forked.random() < ship_class.hull_trait_straight_sides_prob),
+        square_stern=combined or (forked.random() < ship_class.hull_trait_square_stern_prob),
     )
 
 
@@ -1046,6 +1051,7 @@ class ShipClass:
     rare_dark_struct_prob: float = 0.0
     low_contrast_struct_prob: float = 0.0
     hull_trait_pointed_bow_prob: float = 0.0
+    hull_trait_long_foredeck_prob: float = 0.0
     hull_trait_straight_sides_prob: float = 0.0
     hull_trait_square_stern_prob: float = 0.0
     hull_trait_combined_prob: float = 0.0
@@ -1495,9 +1501,10 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("tire_fender", x=(0.88, 0.94), y=0.90, size=0.012, prob=0.3),
             Detail("pipe", x=(0.60, 0.72), y=0.22, size=0.008, prob=0.25),
         ),
-        rare_dark_struct_prob=0.02,
+        rare_dark_struct_prob=0.08,
         low_contrast_struct_prob=0.18,
         hull_trait_pointed_bow_prob=0.10,
+        hull_trait_long_foredeck_prob=0.12,
         hull_trait_straight_sides_prob=0.12,
         hull_trait_square_stern_prob=0.10,
         hull_trait_combined_prob=0.14,
@@ -1532,9 +1539,10 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.01,
-        rare_dark_struct_prob=0.02,
+        rare_dark_struct_prob=0.10,
         low_contrast_struct_prob=0.18,
         hull_trait_pointed_bow_prob=0.10,
+        hull_trait_long_foredeck_prob=0.14,
         hull_trait_straight_sides_prob=0.10,
         hull_trait_square_stern_prob=0.10,
         hull_trait_combined_prob=0.14,
@@ -1750,9 +1758,10 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.02,
-        rare_dark_struct_prob=0.02,
+        rare_dark_struct_prob=0.08,
         low_contrast_struct_prob=0.16,
         hull_trait_pointed_bow_prob=0.08,
+        hull_trait_long_foredeck_prob=0.12,
         hull_trait_straight_sides_prob=0.14,
         hull_trait_square_stern_prob=0.12,
         hull_trait_combined_prob=0.16,
