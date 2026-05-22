@@ -223,6 +223,16 @@ def _cap_luminance(
     return tuple(_clamp(int(round(channel * scale))) for channel in rgb)
 
 
+def _floor_luminance(
+    rgb: tuple[int, int, int],
+    min_luminance: float,
+) -> tuple[int, int, int]:
+    lum = _luminance(rgb)
+    if lum >= min_luminance:
+        return rgb
+    return _lift_rgb(rgb, int(round(min_luminance - lum)))
+
+
 _STRUCT_NEUTRALS: dict[str, list[tuple[int, int, int]]] = {
     "fishing_mixed": [
         (174, 176, 172),
@@ -263,6 +273,12 @@ _STRUCT_BASE_LUMINANCE_CAPS: dict[str, float] = {
 }
 
 
+_STRUCT_MIN_LUMINANCE_FLOORS: dict[str, float] = {
+    "fishing_mixed": 72.0,
+    "work_mixed": 64.0,
+}
+
+
 _STRUCT_MAX_HULL_LUMINANCE_GAPS: dict[str, float] = {
     "fishing_mixed": 52.0,
     "work_mixed": 48.0,
@@ -277,22 +293,6 @@ _SMALL_SHIP_STRUCT_LUMINANCE_CAPS: dict[str, float] = {
 
 _SMALL_SHIP_STRUCT_HULL_GAPS: dict[str, float] = {
     "fishing_white": 26.0,
-}
-
-
-_LOW_CONTRAST_STRUCT_HULL_GAPS: dict[str, float] = {
-    "fishing_mixed": 18.0,
-    "fishing_white": 14.0,
-    "work_mixed": 16.0,
-    "barge_dull": 14.0,
-}
-
-
-_LOW_CONTRAST_STRUCT_BRIGHTNESS_BIAS_RANGES: dict[str, tuple[int, int]] = {
-    "fishing_mixed": (-20, -12),
-    "fishing_white": (-22, -14),
-    "work_mixed": (-22, -14),
-    "barge_dull": (-18, -10),
 }
 
 
@@ -558,6 +558,9 @@ def _sample_civilian_struct_base(
         struct_base,
         struct_cap,
     )
+    min_luminance = _STRUCT_MIN_LUMINANCE_FLOORS.get(family_key)
+    if min_luminance is not None:
+        capped = _floor_luminance(capped, min_luminance)
     max_gap = _STRUCT_MAX_HULL_LUMINANCE_GAPS.get(family_key)
     if max_gap is None:
         return capped
@@ -571,7 +574,6 @@ class ShipAppearanceVariant:
     small_ship: bool = False
     oversized_struct: bool = False
     bright_white_struct: bool = False
-    low_contrast_struct: bool = False
 
 
 @dataclass(frozen=True)
@@ -630,48 +632,6 @@ def _apply_small_ship_struct_base_variant(
     return _cap_luminance(toned, _luminance(hull) + max_gap)
 
 
-def _apply_low_contrast_struct_base_variant(
-    family: str,
-    hull: tuple[int, int, int],
-    struct_base: tuple[int, int, int],
-    rng: random.Random,
-    appearance_variant: ShipAppearanceVariant | None,
-) -> tuple[int, int, int]:
-    if appearance_variant is None or not appearance_variant.low_contrast_struct:
-        return struct_base
-    if appearance_variant.bright_white_struct:
-        return struct_base
-
-    family_key = _STRUCT_FAMILY_ALIASES.get(family, family)
-    hull_muted = _desaturate_toward_gray(hull, rng.uniform(0.45, 0.75))
-    struct_muted = _desaturate_toward_gray(struct_base, rng.uniform(0.35, 0.65))
-    toned = _mix_rgb(struct_muted, hull_muted, rng.uniform(0.55, 0.78))
-    toned = _jitter_rgb(toned, rng, 2)
-
-    max_gap = _LOW_CONTRAST_STRUCT_HULL_GAPS.get(family_key, 16.0)
-    toned = _cap_luminance(toned, _luminance(hull) + max_gap)
-    min_luminance = max(0.0, _luminance(hull) - 8.0)
-    toned_luminance = _luminance(toned)
-    if toned_luminance < min_luminance:
-        toned = _lift_rgb(toned, int(round(min_luminance - toned_luminance)))
-    return toned
-
-
-def _sample_struct_brightness_bias(
-    family: str,
-    rng: random.Random,
-    appearance_variant: ShipAppearanceVariant | None,
-) -> int:
-    if appearance_variant is None or not appearance_variant.low_contrast_struct:
-        return 0
-    if appearance_variant.bright_white_struct:
-        return 0
-
-    family_key = _STRUCT_FAMILY_ALIASES.get(family, family)
-    low, high = _LOW_CONTRAST_STRUCT_BRIGHTNESS_BIAS_RANGES.get(family_key, (-18, -10))
-    return rng.randint(low, high)
-
-
 def sample_ship_appearance_variant(
     ship_class: ShipClass,
     rng: random.Random,
@@ -682,8 +642,7 @@ def sample_ship_appearance_variant(
         ship_class.rare_oversized_struct_prob > 0.0
         or ship_class.rare_bright_white_struct_prob > 0.0
     )
-    has_low_contrast_variant = ship_class.low_contrast_struct_prob > 0.0
-    if not has_small_ship_variant and not has_low_contrast_variant:
+    if not has_small_ship_variant:
         return ShipAppearanceVariant()
 
     forked = _fork_rng(rng)
@@ -697,7 +656,6 @@ def sample_ship_appearance_variant(
             forked.random() < ship_class.rare_bright_white_struct_prob
             if has_small_ship_variant else False
         ),
-        low_contrast_struct=forked.random() < ship_class.low_contrast_struct_prob,
     )
 
 
@@ -857,21 +815,6 @@ def sample_colors(
         rng,
         appearance_variant,
     )
-    struct_brightness_bias = 0
-    if appearance_variant is not None and appearance_variant.low_contrast_struct:
-        appearance_rng = _fork_rng(rng)
-        struct_base = _apply_low_contrast_struct_base_variant(
-            family,
-            hull,
-            struct_base,
-            appearance_rng,
-            appearance_variant,
-        )
-        struct_brightness_bias = _sample_struct_brightness_bias(
-            family,
-            appearance_rng,
-            appearance_variant,
-        )
     trim = _sample_hull_trim_style(
         family,
         hull,
@@ -883,7 +826,6 @@ def sample_colors(
         hull=hull,
         struct_base=struct_base,
         trim=trim,
-        struct_brightness_bias=struct_brightness_bias,
     )
 
 
@@ -935,7 +877,6 @@ class ShipClass:
     debug_only: bool = False
     rare_oversized_struct_prob: float = 0.0
     rare_bright_white_struct_prob: float = 0.0
-    low_contrast_struct_prob: float = 0.0
     hull_trait_pointed_bow_prob: float = 0.0
     hull_trait_long_foredeck_prob: float = 0.0
     hull_trait_straight_sides_prob: float = 0.0
@@ -1385,7 +1326,6 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("tire_fender", x=(0.88, 0.94), y=0.90, size=0.012, prob=0.3),
             Detail("pipe", x=(0.60, 0.72), y=0.22, size=0.008, prob=0.25),
         ),
-        low_contrast_struct_prob=0.18,
         hull_trait_pointed_bow_prob=0.10,
         hull_trait_long_foredeck_prob=0.12,
         hull_trait_straight_sides_prob=0.12,
@@ -1422,7 +1362,6 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.01,
-        low_contrast_struct_prob=0.18,
         hull_trait_pointed_bow_prob=0.10,
         hull_trait_long_foredeck_prob=0.14,
         hull_trait_straight_sides_prob=0.10,
@@ -1635,7 +1574,6 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.02,
-        low_contrast_struct_prob=0.16,
         hull_trait_pointed_bow_prob=0.08,
         hull_trait_long_foredeck_prob=0.12,
         hull_trait_straight_sides_prob=0.14,

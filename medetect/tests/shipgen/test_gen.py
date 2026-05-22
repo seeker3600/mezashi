@@ -403,31 +403,17 @@ class TestShipColors:
         assert sum(gap >= 60.0 for gap in gaps) <= max_large_gap
         assert dark_hull_bright_struct <= max_dark_hull_bright_struct
 
-    def test_low_contrast_variant_reduces_visible_struct_gap(self) -> None:
-        """low contrast variant は構造物の見かけ輝度差を抑える。"""
-        plain_gaps: list[float] = []
-        subdued_gaps: list[float] = []
-        variant = SimpleNamespace(
-            small_ship=False,
-            oversized_struct=False,
-            bright_white_struct=False,
-            low_contrast_struct=True,
-        )
+    def test_work_mixed_superstructures_do_not_drop_into_near_black_band(self) -> None:
+        """work_mixed の構造物は near-black に落ち込まない。"""
+        dark = 0
 
-        for seed in range(128):
-            plain = sample_colors("work_mixed", random.Random(seed))
-            subdued = sample_colors(
-                "work_mixed",
-                random.Random(seed),
-                appearance_variant=variant,
-            )
-            plain_fill = _parse_rgb(plain.struct_css(brightness_off=28, rng=random.Random(seed)))
-            subdued_fill = _parse_rgb(subdued.struct_css(brightness_off=28, rng=random.Random(seed)))
-            plain_gaps.append(_luminance(plain_fill) - _luminance(plain.hull))
-            subdued_gaps.append(_luminance(subdued_fill) - _luminance(subdued.hull))
+        for seed in range(256):
+            colors = sample_colors("work_mixed", random.Random(seed))
+            struct_fill = _parse_rgb(colors.struct_css(brightness_off=28, rng=random.Random(seed)))
+            if _luminance(struct_fill) <= 76.0 and _chroma(struct_fill) <= 20:
+                dark += 1
 
-        assert float(np.mean(subdued_gaps)) <= float(np.mean(plain_gaps)) - 10.0
-        assert sum(gap >= 30.0 for gap in subdued_gaps) <= 16
+        assert dark == 0
 
 
 # ── SVG generation ───────────────────────────────────────────────────────
@@ -626,28 +612,22 @@ class TestSmallShipRareVariants:
         assert float(np.mean(trait_starts)) >= float(np.mean(plain_starts)) + 0.05
 
     @pytest.mark.parametrize(
-        ("ship_class", "min_subdued", "max_subdued"),
-        [
-            ("fishing_longliner", 24, 144),
-            ("fishing_purse_seiner", 24, 144),
-            ("workboat", 24, 144),
-        ],
+        "ship_class",
+        ["fishing_longliner", "fishing_purse_seiner", "workboat"],
     )
-    def test_selected_civilian_classes_include_low_contrast_struct_variants(
+    def test_selected_civilian_classes_do_not_flag_low_contrast_struct_variants(
         self,
         ship_class: str,
-        min_subdued: int,
-        max_subdued: int,
     ) -> None:
-        """対象 civilian class では低コントラスト構造物が一定頻度で出る。"""
+        """対象 civilian class では low contrast 構造物バリアントを使わない。"""
         variants = [
             sample_ship_appearance_variant(SHIP_CLASSES[ship_class], random.Random(seed))
             for seed in range(512)
         ]
 
-        subdued = sum(variant.low_contrast_struct for variant in variants)
+        subdued = sum(bool(getattr(variant, "low_contrast_struct", False)) for variant in variants)
 
-        assert min_subdued <= subdued <= max_subdued
+        assert subdued == 0
 
     def test_small_fishing_white_superstructures_glow_only_rarely(self) -> None:
         """小型の白系漁船で白く光る構造物はたまにしか出ない。"""
@@ -662,11 +642,18 @@ class TestSmallShipRareVariants:
 
         assert 3 <= bright <= 16
 
-    def test_small_fishing_white_near_black_wheelhouses_do_not_appear(self) -> None:
-        """白系漁船で near-black の艦橋は生成されない。"""
+    @pytest.mark.parametrize(
+        "ship_class",
+        ["fishing_longliner", "fishing_purse_seiner", "workboat"],
+    )
+    def test_targeted_small_civilian_superstructures_do_not_go_near_black(
+        self,
+        ship_class: str,
+    ) -> None:
+        """対象小型民間船で near-black の艦橋は生成されない。"""
         dark = 0
         for seed in range(384):
-            svg = generate_ship_svg("fishing_longliner", rng=random.Random(seed))
+            svg = generate_ship_svg(ship_class, rng=random.Random(seed))
             if any(
                 _luminance(rgb) <= 76.0 and _chroma(rgb) <= 20
                 for rgb in _struct_rect_colors(svg)
