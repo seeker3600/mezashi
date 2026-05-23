@@ -308,9 +308,9 @@ _STRUCT_FAMILY_ALIASES: dict[str, str] = {
 _TRIM_PRIMARY_WEIGHTS: dict[str, tuple[int, int, int]] = {
     "navy_gray": (82, 8, 10),
     "navy_dark": (86, 6, 8),
-    "fishing_mixed": (48, 22, 30),
+    "fishing_mixed": (36, 28, 36),
     "fishing_white": (30, 40, 30),
-    "work_mixed": (62, 12, 26),
+    "work_mixed": (48, 18, 34),
     "barge_dull": (76, 6, 18),
 }
 
@@ -530,29 +530,29 @@ def _sample_civilian_struct_base(
         if roll < 0.18:
             struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.18), rng, 5)
         elif roll < 0.56:
-            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.22), rng.randint(6, 16))
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.52), rng.randint(6, 16))
         elif roll < 0.84:
-            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.35), rng.randint(10, 22))
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.68), rng.randint(10, 22))
         else:
-            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.14), rng.randint(4, 12))
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.48), rng.randint(4, 12))
     elif family_key == "work_mixed":
         if roll < 0.08:
             struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.14), rng, 5)
         elif roll < 0.40:
-            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.28), rng.randint(4, 12))
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.52), rng.randint(4, 12))
         elif roll < 0.78:
-            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.28), rng.randint(6, 14))
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.62), rng.randint(6, 14))
         else:
-            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.16), rng.randint(2, 10))
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.50), rng.randint(2, 10))
     else:
         if roll < 0.05:
             struct_base = _jitter_rgb(_mix_rgb(tone, hull_muted, 0.12), rng, 4)
         elif roll < 0.48:
-            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.24), rng.randint(4, 12))
+            struct_base = _lift_rgb(_mix_rgb(hull_muted, tone, 0.50), rng.randint(4, 12))
         elif roll < 0.84:
-            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.40), rng.randint(4, 14))
+            struct_base = _lift_rgb(_desaturate_toward_gray(hull, 0.72), rng.randint(4, 14))
         else:
-            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.14), rng.randint(0, 8))
+            struct_base = _lift_rgb(_mix_rgb(hull, tone, 0.48), rng.randint(0, 8))
 
     capped = _cap_luminance(
         struct_base,
@@ -1327,10 +1327,10 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("pipe", x=(0.60, 0.72), y=0.22, size=0.008, prob=0.25),
         ),
         hull_trait_pointed_bow_prob=0.10,
-        hull_trait_long_foredeck_prob=0.12,
+        hull_trait_long_foredeck_prob=0.22,
         hull_trait_straight_sides_prob=0.12,
         hull_trait_square_stern_prob=0.10,
-        hull_trait_combined_prob=0.14,
+        hull_trait_combined_prob=0.18,
     ),
     "fishing_longliner": ShipClass(
         hull="fishing",
@@ -1363,10 +1363,10 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.01,
         hull_trait_pointed_bow_prob=0.10,
-        hull_trait_long_foredeck_prob=0.14,
+        hull_trait_long_foredeck_prob=0.24,
         hull_trait_straight_sides_prob=0.10,
         hull_trait_square_stern_prob=0.10,
-        hull_trait_combined_prob=0.14,
+        hull_trait_combined_prob=0.18,
     ),
     # ─── Wide / stubby vessels (5–50 m, low L/B) ───
     "tug_harbor": ShipClass(
@@ -1575,10 +1575,10 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.02,
         hull_trait_pointed_bow_prob=0.08,
-        hull_trait_long_foredeck_prob=0.12,
+        hull_trait_long_foredeck_prob=0.20,
         hull_trait_straight_sides_prob=0.14,
         hull_trait_square_stern_prob=0.12,
-        hull_trait_combined_prob=0.16,
+        hull_trait_combined_prob=0.20,
     ),
     "landing_craft": ShipClass(
         hull="barge",

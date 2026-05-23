@@ -611,9 +611,9 @@ class TestSmallShipRareVariants:
     @pytest.mark.parametrize(
         ("ship_class", "min_long_foredeck", "max_long_foredeck"),
         [
-            ("fishing_longliner", 20, 160),
-            ("fishing_purse_seiner", 20, 160),
-            ("workboat", 20, 160),
+            ("fishing_longliner", 20, 240),
+            ("fishing_purse_seiner", 20, 240),
+            ("workboat", 20, 240),
         ],
     )
     def test_targeted_small_civilian_classes_include_long_foredeck_variants(
