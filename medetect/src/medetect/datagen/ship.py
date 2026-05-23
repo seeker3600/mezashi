@@ -108,6 +108,15 @@ def _max_reasonable_lb_ratio(length_m: float) -> float:
     return _natural_lb_ratio(length_m) * _MAX_REASONABLE_LB_RATIO_MULTIPLIER
 
 
+def _min_reasonable_lb_ratio(length_m: float) -> float:
+    """Return the widest acceptable L/B ratio for a sampled ship length.
+
+    Symmetric counterpart to *_max_reasonable_lb_ratio*: vessels shorter than
+    their length would imply get down-weighted during SVG selection.
+    """
+    return _natural_lb_ratio(length_m) / _MAX_REASONABLE_LB_RATIO_MULTIPLIER
+
+
 def _effective_lb_ratio(lb_ratio: float, length_m: float) -> float:
     """Clamp an SVG L/B ratio to the sane upper bound for the sampled length."""
     sane_upper = _max_reasonable_lb_ratio(length_m)
@@ -125,15 +134,16 @@ def _scale_ship_pixel_size(beam_px: int, length_px: int, scale: float) -> tuple[
 def _svg_lb_weight(lb_ratio: float, target_length_m: float) -> float:
     """Preference weight for an SVG with *lb_ratio* at *target_length_m*.
 
-    lb_ratios within 1.6× the natural value for that length score 1.0.
-    Those between 1.6× and 2.0× are steeply down-weighted.
-    Those exceeding 2.0× natural are hard-rejected (weight 0.0).
+    The acceptable band is [natural/1.6, natural*1.6]; ratios inside score 1.0.
+    Outside this band the weight decays exponentially.  Hard-reject thresholds
+    are symmetric: weight 0.0 below natural/2.0 or above natural*2.0.
     """
     natural = _natural_lb_ratio(target_length_m)
-    if lb_ratio > natural * 2.0:
+    if lb_ratio > natural * 2.0 or lb_ratio < natural / 2.0:
         return 0.0
-    excess = max(0.0, lb_ratio - natural * 1.6)
-    return math.exp(-excess / 1.0)
+    upper_excess = max(0.0, lb_ratio - natural * 1.6)
+    lower_deficit = max(0.0, natural / 1.6 - lb_ratio)
+    return math.exp(-(upper_excess + lower_deficit))
 
 
 def _pick_svg(

@@ -7,6 +7,7 @@ from medetect.datagen.ship import (
     MIN_SHIP_BEAM_PX,
     _SvgMeta,
     _load_svg_metas,
+    _min_reasonable_lb_ratio,
     _natural_lb_ratio,
     _scale_ship_pixel_size,
     _ship_class_id,
@@ -263,6 +264,32 @@ class TestSvgLbWeight:
         w_stubby = _svg_lb_weight(4.0, 10.0)
         w_slender = _svg_lb_weight(9.0, 10.0)
         assert w_stubby > w_slender
+
+    def test_hard_reject_below_half_natural(self) -> None:
+        """natural の 1/2 未満の lb_ratio は hard-reject (weight=0.0)。"""
+        # 100m 船 (natural ≈ 6.0): L/B=2 はビーム50m となり非現実的。
+        assert _svg_lb_weight(2.0, 100.0) == 0.0
+
+    def test_soft_reject_in_lower_zone(self) -> None:
+        """natural/2.0 〜 natural/1.6 の帯域はソフトペナルティ (0 < w < 1)。"""
+        natural = _natural_lb_ratio(100.0)  # 6.0
+        lb_in_soft_zone = (natural / 2.0 + natural / 1.6) / 2.0
+        w = _svg_lb_weight(lb_in_soft_zone, 100.0)
+        assert 0.0 < w < 1.0
+
+    def test_lower_penalty_symmetric_with_upper(self) -> None:
+        """上下限ペナルティが natural に対して対称になっている。"""
+        natural = _natural_lb_ratio(80.0)
+        # natural + delta と natural - delta / natural の対称点
+        delta = 0.5
+        w_above = _svg_lb_weight(natural * 1.6 + delta, 80.0)
+        w_below = _svg_lb_weight(natural / 1.6 - delta, 80.0)
+        assert abs(w_above - w_below) < 1e-9
+
+    def test_min_reasonable_lb_ratio_less_than_natural(self) -> None:
+        """_min_reasonable_lb_ratio は常に natural より小さい。"""
+        for length in [10.0, 50.0, 100.0, 200.0]:
+            assert _min_reasonable_lb_ratio(length) < _natural_lb_ratio(length)
 
 
 class TestLoadSvgMetas:
