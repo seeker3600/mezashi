@@ -104,6 +104,15 @@ def _rgb_css(color: tuple[int, int, int]) -> str:
     return f"rgb({r},{g},{b})"
 
 
+def _rgb_luminance(color: tuple[int, int, int]) -> float:
+    r, g, b = color
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _rgb_is_void_like(color: tuple[int, int, int]) -> bool:
+    return _rgb_luminance(color) <= 28.0 and max(color) <= 40
+
+
 def _format_hull_trait_metadata(variant: HullTraitVariant | object | None) -> str:
     if isinstance(variant, HullTraitVariant):
         return variant.metadata_value()
@@ -746,6 +755,9 @@ def _write_detail_svg(
         w = sz * 1.2
         h = sz * 0.6
         shadow_fill = colors.shadow_css(rng)
+        shadow_rgb = tuple(int(part) for part in shadow_fill[4:-1].split(","))
+        if _rgb_is_void_like(shadow_rgb):
+            return
         out.write(
             f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy)}" '
             f'width="{_f(w)}" height="{_f(h)}" '
@@ -1409,13 +1421,13 @@ def _write_deck_scatter_svg(
         cx += -side_component * height_frac
         cy += length_component * height_frac
 
-        # ── Colour — hull-toned with strong contrast ─────────────────
-        # Contrast values represent Δ in [0,255] per RGB channel.
-        # Real deck equipment reads as Δ≥30 (rust/grime) to Δ≥80 (white hatches).
-        # Values are clamped to [0,255] inside detail_css().
-        sign = 1 if rng.random() < 0.5 else -1
+        # ── Colour — hull-toned with brightening contrast ──────────────
+        # Scatter marks represent deck equipment (hatches, vents, containers)
+        # that reflects sky light and reads brighter than the deck surface.
+        # Always using positive offsets ensures readability on any hull tone;
+        # shadow elements (below) supply the darkening depth cue instead.
         contrast = {1: (30, 65), 2: (45, 80), 3: (65, 110)}[tier]
-        offset = sign * rng.randint(*contrast)
+        offset = rng.randint(*contrast)
         fill = colors.detail_css(offset)
 
         # ── Shadow for tier 2+ ──────────────────────────────────────
@@ -1454,7 +1466,7 @@ def _write_deck_scatter_svg(
                 )
         elif tier == 2:
             # Small equipment: rects aligned to ship axis, circles
-            stroke_color = colors.detail_css(offset - sign * 6)
+            stroke_color = colors.detail_css(offset - 6)
             kind = rng.choices(
                 ["rect", "rect_long", "circle"],
                 weights=[4, 3, 2],
@@ -1486,7 +1498,7 @@ def _write_deck_scatter_svg(
                 )
         else:
             # Tier 3: medium equipment — boxes, small hatches with crosslines
-            stroke_color = colors.detail_css(offset - sign * 8)
+            stroke_color = colors.detail_css(offset - 8)
             kind = rng.choices(
                 ["box", "hatch_mini", "rect_long"],
                 weights=[4, 3, 2],
@@ -1503,7 +1515,7 @@ def _write_deck_scatter_svg(
             elif kind == "hatch_mini":
                 w = sz * rng.uniform(0.8, 1.2)
                 h = sz * rng.uniform(0.6, 1.0)
-                inner = colors.detail_css(offset - sign * 14)
+                inner = colors.detail_css(offset - 14)
                 out.write(
                     f'  <rect x="{_f(cx - w / 2)}" y="{_f(cy - h / 2)}" '
                     f'width="{_f(w)}" height="{_f(h)}" '
@@ -1543,6 +1555,9 @@ def _write_scatter_shadow(
     w = sz * rng.uniform(0.8, 1.3)
     h = sz * rng.uniform(0.8, 1.3)
     shadow_fill = colors.shadow_css(rng)
+    shadow_rgb = tuple(int(part) for part in shadow_fill[4:-1].split(","))
+    if _rgb_is_void_like(shadow_rgb):
+        return
     out.write(
         f'  <rect x="{_f(sx - w / 2)}" y="{_f(sy - h / 2)}" '
         f'width="{_f(w)}" height="{_f(h)}" '

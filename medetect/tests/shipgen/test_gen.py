@@ -502,6 +502,45 @@ class TestGenerateShipSvg:
             )
         assert _count(svg_hi) > _count(svg_lo)
 
+    def test_deck_scatter_fills_are_never_void_like(self) -> None:
+        """散乱図形の fill/stroke は暗いハルでも穴のように見える黒にならない。
+
+        正オフセットのみ使用するため、いかなるハル色でも near-black は生成されない。
+        """
+        import re
+        _RGB_RE = re.compile(r"rgb\((\d+),(\d+),(\d+)\)")
+
+        def _is_void_like(r: int, g: int, b: int) -> bool:
+            lum = 0.299 * r + 0.587 * g + 0.114 * b
+            return lum <= 28.0 and max(r, g, b) <= 40
+
+        # Cover dark-hull classes across many seeds and high scatter density.
+        dark_classes = ["frigate", "destroyer", "corvette"]
+        for ship_class in dark_classes:
+            for seed in range(30):
+                svg = generate_ship_svg(
+                    ship_class,
+                    rng=random.Random(seed),
+                    deck_scatter_density=10.0,
+                )
+                root = ET.fromstring(svg)
+                scatter_groups = [
+                    e for e in root
+                    if e.tag == f"{{{SVG_NS}}}g" and e.get("id") == "scatter"
+                ]
+                for group in scatter_groups:
+                    for elem in group:
+                        for attr in ("fill", "stroke"):
+                            val = elem.get(attr, "")
+                            m = _RGB_RE.match(val)
+                            if not m:
+                                continue
+                            r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                            assert not _is_void_like(r, g, b), (
+                                f"{ship_class} seed={seed}: void-like {attr} "
+                                f"rgb({r},{g},{b}) in scatter"
+                            )
+
     @pytest.mark.parametrize("ship_class", get_ship_classes(include_debug=True))
     def test_all_classes_generate(self, ship_class: str) -> None:
         """全艦種でエラーなく SVG を生成できる。"""
