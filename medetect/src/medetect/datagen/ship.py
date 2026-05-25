@@ -29,7 +29,16 @@ SHIP_LENGTHS_M: dict[str, tuple[float, float]] = {
 _DEFAULT_LENGTH_M = (30.0, 100.0)
 MIN_SHIP_LENGTH_PX = 3
 MIN_SHIP_BEAM_PX = 3
-_MAX_REASONABLE_LB_RATIO_MULTIPLIER = 1.6
+# Inner-band multiplier: SVGs whose L/B ratio falls within
+# [natural / M, natural * M] receive weight 1.0 during selection.
+# Raised from 1.6 to 1.9 so that slender vessels (e.g. patrol craft,
+# 50 m × 7 m => L/B ≈ 7.1) remain inside the full-weight band.
+_MAX_REASONABLE_LB_RATIO_MULTIPLIER = 1.9
+# Outer-band hard-reject multiplier.  Ratios outside
+# [natural / _LB_OUTER_BAND_MULTIPLIER, natural * _LB_OUTER_BAND_MULTIPLIER]
+# are scored 0 and never used.  The ratio _LB_OUTER_BAND_MULTIPLIER /
+# _MAX_REASONABLE_LB_RATIO_MULTIPLIER is kept ≈ 1.26 (same as before).
+_LB_OUTER_BAND_MULTIPLIER = 2.4
 
 
 def compute_ship_pixel_size(
@@ -134,15 +143,19 @@ def _scale_ship_pixel_size(beam_px: int, length_px: int, scale: float) -> tuple[
 def _svg_lb_weight(lb_ratio: float, target_length_m: float) -> float:
     """Preference weight for an SVG with *lb_ratio* at *target_length_m*.
 
-    The acceptable band is [natural/1.6, natural*1.6]; ratios inside score 1.0.
-    Outside this band the weight decays exponentially.  Hard-reject thresholds
-    are symmetric: weight 0.0 below natural/2.0 or above natural*2.0.
+    The acceptable band is
+    [natural / _MAX_REASONABLE_LB_RATIO_MULTIPLIER,
+     natural * _MAX_REASONABLE_LB_RATIO_MULTIPLIER];
+    ratios inside score 1.0.  Outside this band the weight decays
+    exponentially.  Hard-reject thresholds are symmetric: weight 0.0 below
+    natural / _LB_OUTER_BAND_MULTIPLIER or above
+    natural * _LB_OUTER_BAND_MULTIPLIER.
     """
     natural = _natural_lb_ratio(target_length_m)
-    if lb_ratio > natural * 2.0 or lb_ratio < natural / 2.0:
+    if lb_ratio > natural * _LB_OUTER_BAND_MULTIPLIER or lb_ratio < natural / _LB_OUTER_BAND_MULTIPLIER:
         return 0.0
-    upper_excess = max(0.0, lb_ratio - natural * 1.6)
-    lower_deficit = max(0.0, natural / 1.6 - lb_ratio)
+    upper_excess = max(0.0, lb_ratio - natural * _MAX_REASONABLE_LB_RATIO_MULTIPLIER)
+    lower_deficit = max(0.0, natural / _MAX_REASONABLE_LB_RATIO_MULTIPLIER - lb_ratio)
     return math.exp(-(upper_excess + lower_deficit))
 
 

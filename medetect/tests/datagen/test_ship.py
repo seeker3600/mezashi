@@ -3,8 +3,12 @@ from __future__ import annotations
 import pathlib
 import random
 
+import pytest
+
 from medetect.datagen.ship import (
     MIN_SHIP_BEAM_PX,
+    _LB_OUTER_BAND_MULTIPLIER,
+    _MAX_REASONABLE_LB_RATIO_MULTIPLIER,
     _SvgMeta,
     _load_svg_metas,
     _min_reasonable_lb_ratio,
@@ -246,12 +250,12 @@ class TestSvgLbWeight:
         w_good = _svg_lb_weight(3.5, 10.0)
         assert w_bad < w_good
 
-    def test_hard_reject_above_twice_natural(self) -> None:
-        """natural の 2.0 倍を超える lb_ratio は hard-reject (weight=0.0)。"""
+    def test_hard_reject_above_outer_band(self) -> None:
+        """natural の _LB_OUTER_BAND_MULTIPLIER 倍を超える lb_ratio は hard-reject (weight=0.0)。"""
         assert _svg_lb_weight(15.0, 5.0) == 0.0
 
-    def test_within_twice_natural_has_positive_weight(self) -> None:
-        """natural の 2.0 倍以内の lb_ratio は正の重みを返す。"""
+    def test_within_outer_band_has_positive_weight(self) -> None:
+        """natural の _LB_OUTER_BAND_MULTIPLIER 倍以内の lb_ratio は正の重みを返す。"""
         assert _svg_lb_weight(6.0, 5.0) > 0.0
 
     def test_hard_reject_boundary_small_ship(self) -> None:
@@ -265,26 +269,43 @@ class TestSvgLbWeight:
         w_slender = _svg_lb_weight(9.0, 10.0)
         assert w_stubby > w_slender
 
-    def test_hard_reject_below_half_natural(self) -> None:
-        """natural の 1/2 未満の lb_ratio は hard-reject (weight=0.0)。"""
+    def test_hard_reject_below_outer_band(self) -> None:
+        """natural / _LB_OUTER_BAND_MULTIPLIER 未満の lb_ratio は hard-reject (weight=0.0)。"""
         # 100m 船 (natural ≈ 6.0): L/B=2 はビーム50m となり非現実的。
         assert _svg_lb_weight(2.0, 100.0) == 0.0
 
     def test_soft_reject_in_lower_zone(self) -> None:
-        """natural/2.0 〜 natural/1.6 の帯域はソフトペナルティ (0 < w < 1)。"""
+        """outer-band 〜 inner-band の帯域はソフトペナルティ (0 < w < 1)。"""
         natural = _natural_lb_ratio(100.0)  # 6.0
-        lb_in_soft_zone = (natural / 2.0 + natural / 1.6) / 2.0
+        lb_in_soft_zone = (
+            natural / _LB_OUTER_BAND_MULTIPLIER
+            + natural / _MAX_REASONABLE_LB_RATIO_MULTIPLIER
+        ) / 2.0
         w = _svg_lb_weight(lb_in_soft_zone, 100.0)
         assert 0.0 < w < 1.0
 
     def test_lower_penalty_symmetric_with_upper(self) -> None:
         """上下限ペナルティが natural に対して対称になっている。"""
         natural = _natural_lb_ratio(80.0)
-        # natural + delta と natural - delta / natural の対称点
-        delta = 0.5
-        w_above = _svg_lb_weight(natural * 1.6 + delta, 80.0)
-        w_below = _svg_lb_weight(natural / 1.6 - delta, 80.0)
+        # inner-band の境界から等距離だけ外側に出た点は同じペナルティを受ける
+        excess = 0.2
+        w_above = _svg_lb_weight(
+            natural * _MAX_REASONABLE_LB_RATIO_MULTIPLIER + excess, 80.0
+        )
+        w_below = _svg_lb_weight(
+            natural / _MAX_REASONABLE_LB_RATIO_MULTIPLIER - excess, 80.0
+        )
         assert abs(w_above - w_below) < 1e-9
+
+    def test_slender_50m_ship_full_weight(self) -> None:
+        """50m×7m の細長い船 (L/B≈7.14) は 50m ターゲットで重み 1.0 を得る。"""
+        # 現実に存在する細長い船が inner band に入ることを確認する。
+        assert _svg_lb_weight(7.14, 50.0) == pytest.approx(1.0)
+
+    def test_patrol_midpoint_lb_full_weight_at_50m(self) -> None:
+        """patrol クラス L/B 中央値 (7.75) が 50m ターゲットで重み 1.0 を得る。"""
+        # patrol (L/B 5.5-10.0) の on-demand 生成で 50m 船を downweight しないことを確認。
+        assert _svg_lb_weight(7.75, 50.0) == pytest.approx(1.0)
 
     def test_min_reasonable_lb_ratio_less_than_natural(self) -> None:
         """_min_reasonable_lb_ratio は常に natural より小さい。"""
