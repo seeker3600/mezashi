@@ -584,6 +584,7 @@ class HullTraitVariant:
     long_foredeck: bool = False
     straight_sides: bool = False
     square_stern: bool = False
+    round_stern: bool = False
 
     def metadata_value(self) -> str:
         traits: list[str] = []
@@ -595,6 +596,8 @@ class HullTraitVariant:
             traits.append("straight_sides")
         if self.square_stern:
             traits.append("square_stern")
+        if self.round_stern:
+            traits.append("round_stern")
         return ",".join(traits) if traits else "none"
 
 
@@ -670,6 +673,7 @@ def sample_hull_trait_variant(
         or ship_class.hull_trait_long_foredeck_prob > 0.0
         or ship_class.hull_trait_straight_sides_prob > 0.0
         or ship_class.hull_trait_square_stern_prob > 0.0
+        or ship_class.hull_trait_round_stern_prob > 0.0
         or ship_class.hull_trait_combined_prob > 0.0
     )
     if not has_hull_traits:
@@ -688,6 +692,8 @@ def sample_hull_trait_variant(
         ),
         straight_sides=combined or (forked.random() < ship_class.hull_trait_straight_sides_prob),
         square_stern=combined or (forked.random() < ship_class.hull_trait_square_stern_prob),
+        # round_stern is independent of combined_prob to avoid conflict with square_stern
+        round_stern=forked.random() < ship_class.hull_trait_round_stern_prob,
     )
 
 
@@ -881,6 +887,7 @@ class ShipClass:
     hull_trait_long_foredeck_prob: float = 0.0
     hull_trait_straight_sides_prob: float = 0.0
     hull_trait_square_stern_prob: float = 0.0
+    hull_trait_round_stern_prob: float = 0.0
     hull_trait_combined_prob: float = 0.0
 
 
@@ -1249,10 +1256,12 @@ SHIP_CLASSES: dict[str, ShipClass] = {
             Detail("bollard", x=(0.82, 0.88), y=0.70, size=0.01, prob=0.4),
             Detail("pipe", x=(0.60, 0.72), y=0.25, size=0.008, prob=0.3),
         ),
+        hull_trait_straight_sides_prob=0.15,
+        hull_trait_round_stern_prob=0.15,
     ),
     "fishing_trawler": ShipClass(
         hull="fishing_wide",
-        lb=(3.8, 6.5),
+        lb=(3.8, 7.0),
         bow=(0.35, 0.75),
         stern_hw=(0.08, 0.25),
         color_family="fishing_mixed",
@@ -1287,6 +1296,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.02,
+        hull_trait_straight_sides_prob=0.25,
+        hull_trait_round_stern_prob=0.30,
     ),
     "fishing_purse_seiner": ShipClass(
         hull="fishing_wide",
@@ -1328,8 +1339,9 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         hull_trait_pointed_bow_prob=0.10,
         hull_trait_long_foredeck_prob=0.22,
-        hull_trait_straight_sides_prob=0.12,
+        hull_trait_straight_sides_prob=0.25,
         hull_trait_square_stern_prob=0.10,
+        hull_trait_round_stern_prob=0.25,
         hull_trait_combined_prob=0.18,
     ),
     "fishing_longliner": ShipClass(
@@ -1366,6 +1378,7 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         hull_trait_long_foredeck_prob=0.24,
         hull_trait_straight_sides_prob=0.10,
         hull_trait_square_stern_prob=0.10,
+        hull_trait_round_stern_prob=0.20,
         hull_trait_combined_prob=0.18,
     ),
     # ─── Wide / stubby vessels (5–50 m, low L/B) ───

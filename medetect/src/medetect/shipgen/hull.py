@@ -187,7 +187,9 @@ def apply_hull_trait_variant(
         plateau = float(np.quantile(mid, 0.88))
         hw[start:end + 1] = np.clip(0.25 * mid + 0.75 * plateau, 0.0, 0.5)
 
-    if bool(getattr(variant, "square_stern", False)):
+    round_stern_active = bool(getattr(variant, "round_stern", False))
+
+    if bool(getattr(variant, "square_stern", False)) and not round_stern_active:
         stern_start = max(1, int(round((hw.size - 1) * 0.82)))
         aft_ref_start = max(0, int(round((hw.size - 1) * 0.55)))
         aft_ref_end = max(aft_ref_start + 1, int(round((hw.size - 1) * 0.78)))
@@ -197,6 +199,18 @@ def apply_hull_trait_variant(
         ramp = np.linspace(ramp_start, target, hw.size - stern_start)
         hw[stern_start:] = np.maximum(hw[stern_start:], ramp)
         hw[-1] = max(hw[-1], target)
+
+    if round_stern_active:
+        # Quarter-ellipse curve from ~72% LOA to stern tip.
+        # Creates a smooth rounded (cruiser) stern shape.
+        stern_start = max(1, int(round((hw.size - 1) * 0.72)))
+        region_len = hw.size - stern_start
+        if region_len >= 3:
+            max_w = float(hw[stern_start])
+            stern_tip_w = float(hw[-1])
+            t_vals = np.linspace(0.0, 1.0, region_len)
+            alpha = np.sqrt(np.maximum(0.0, 1.0 - t_vals ** 2))
+            hw[stern_start:] = stern_tip_w + (max_w - stern_tip_w) * alpha
 
     return np.clip(hw, 0.0, 0.5)
 

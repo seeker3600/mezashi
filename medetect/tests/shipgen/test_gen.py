@@ -262,6 +262,71 @@ class TestHullTraitVariants:
         assert modified[-1] >= hw[-1] + 0.08
         assert modified[-1] >= float(np.max(aft_band)) * 0.82
 
+    def test_round_stern_trait_shapes_aft_as_quarter_ellipse(self) -> None:
+        """round stern trait は船尾域を1/4楕円カーブに成形する。"""
+        hw = interpolate_hull("fishing_wide", 0.45, 0.14, 128)
+
+        modified = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(pointed_bow=False, straight_sides=False,
+                            square_stern=False, round_stern=True),
+        )
+
+        n = len(hw)
+        stern_start = max(1, int(round((n - 1) * 0.72)))
+        # Stern tip should remain approximately equal to the original stern_hw
+        assert pytest.approx(modified[-1], abs=0.005) == hw[-1]
+        # Midpoint of stern region should be higher than linear interpolation
+        # (quarter-ellipse bulges above the straight line)
+        mid_idx = stern_start + (n - 1 - stern_start) // 2
+        t_mid = (mid_idx - stern_start) / max(n - 1 - stern_start, 1)
+        linear_val = hw[-1] + (modified[stern_start] - hw[-1]) * (1.0 - t_mid)
+        assert modified[mid_idx] > linear_val * 1.01
+
+    def test_round_stern_takes_priority_over_square_stern(self) -> None:
+        """round_stern が square_stern と競合した場合、round_stern が優先される。"""
+        hw = interpolate_hull("fishing_wide", 0.45, 0.14, 128)
+
+        square_only = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(pointed_bow=False, straight_sides=False,
+                            square_stern=True, round_stern=False),
+        )
+        round_only = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(pointed_bow=False, straight_sides=False,
+                            square_stern=False, round_stern=True),
+        )
+        both = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(pointed_bow=False, straight_sides=False,
+                            square_stern=True, round_stern=True),
+        )
+
+        n = len(hw)
+        # When both active, result should match round_only (not square_only)
+        np.testing.assert_array_almost_equal(both, round_only, decimal=10)
+        # Sanity: square_only and round_only differ in the aft region
+        aft_start = int(round((n - 1) * 0.85))
+        assert not np.allclose(square_only[aft_start:], round_only[aft_start:])
+
+    def test_sample_hull_trait_variant_samples_round_stern(self) -> None:
+        """sample_hull_trait_variant が round_stern_prob を正しくサンプリングする。"""
+        from medetect.shipgen.ship_class import ShipClass, sample_hull_trait_variant, Struct, Detail
+
+        cls = SHIP_CLASSES["fishing_trawler"]
+        assert cls.hull_trait_round_stern_prob > 0.0
+
+        results = [
+            sample_hull_trait_variant(cls, random.Random(seed))
+            for seed in range(300)
+        ]
+        round_stern_count = sum(1 for r in results if r.round_stern)
+        # With prob ~0.30, expect at least 1 hit in 300 trials (virtually certain)
+        assert round_stern_count > 0
+        # Should not be active on all samples
+        assert round_stern_count < 300
+
 
 # ── Colour system ────────────────────────────────────────────────────────
 
