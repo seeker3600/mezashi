@@ -19,6 +19,7 @@ import logging
 import math
 import random
 from dataclasses import dataclass
+from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 
@@ -90,6 +91,7 @@ class _OffNadirProjection:
 # ── SVG formatting helpers ───────────────────────────────────────────────
 
 
+@lru_cache(maxsize=8192)
 def _f(v: float) -> str:
     """Format a float for SVG coordinates (4 decimal places, strip trailing zeros)."""
     return f"{v:.4f}".rstrip("0").rstrip(".")
@@ -1638,6 +1640,7 @@ def generate_ship_svg(
 
     if ship_class == "debug_rect":
         hull_pts = _debug_rect_points(lb_ratio)
+        hull_attr = _polygon_attr(hull_pts)
         fill = _rgb_css(rng.choice(_DEBUG_RECT_COLORS))
 
         out = StringIO()
@@ -1654,12 +1657,12 @@ def generate_ship_svg(
         out.write(
             f'  <defs>\n'
             f'    <clipPath id="h">\n'
-            f'      <polygon points="{_polygon_attr(hull_pts)}"/>\n'
+            f'      <polygon points="{hull_attr}"/>\n'
             f'    </clipPath>\n'
             f'  </defs>\n'
         )
         out.write(
-            f'  <polygon points="{_polygon_attr(hull_pts)}" '
+            f'  <polygon points="{hull_attr}" '
             f'fill="{fill}"/>\n'
         )
         out.write("</svg>\n")
@@ -1693,6 +1696,8 @@ def generate_ship_svg(
         visible_end=projection.visible_end,
         end_shift=deck_shift_y,
     )
+    hull_attr = _polygon_attr(hull_pts)
+    deck_attr = _polygon_attr(deck_pts)
 
     # Build SVG
     out = StringIO()
@@ -1711,22 +1716,22 @@ def generate_ship_svg(
     out.write(
         f'  <defs>\n'
         f'    <clipPath id="h">\n'
-        f'      <polygon points="{_polygon_attr(hull_pts)}"/>\n'
+        f'      <polygon points="{hull_attr}"/>\n'
         f'    </clipPath>\n'
         f'    <clipPath id="deck">\n'
-        f'      <polygon points="{_polygon_attr(deck_pts)}"/>\n'
+        f'      <polygon points="{deck_attr}"/>\n'
         f'    </clipPath>\n'
         f'  </defs>\n'
     )
 
     # 1) Waterline hull + exposed hull side + projected deck top
     out.write(
-        f'  <polygon points="{_polygon_attr(hull_pts)}" '
+        f'  <polygon points="{hull_attr}" '
         f'fill="{colors.hull_css()}" data-role="hull-waterline"/>\n'
     )
     _write_visible_hull_side(out, hull_pts, deck_pts, colors)
     out.write(
-        f'  <polygon points="{_polygon_attr(deck_pts)}" '
+        f'  <polygon points="{deck_attr}" '
         f'fill="{colors.hull_css()}" data-role="deck-top"/>\n'
     )
 

@@ -421,6 +421,28 @@ def _render_ship(
         length_exponent,
     )
 
+    rgba = _render_ship_from_dimensions(
+        svg_text,
+        beam_px,
+        length_px,
+        blur_sigma,
+        angle_deg=angle_deg,
+        supersample=supersample,
+    )
+
+    return rgba, ship_class, beam_px, length_px, lb_ratio
+
+
+def _render_ship_from_dimensions(
+    svg_text: str,
+    beam_px: int,
+    length_px: int,
+    blur_sigma: float,
+    *,
+    angle_deg: float = 0.0,
+    supersample: int = 4,
+) -> NDArray[np.uint8]:
+    """Render one ship from pre-resolved dimensions."""
     rgba = rasterize_ship_svg(
         svg_text,
         beam_px,
@@ -432,7 +454,7 @@ def _render_ship(
     if blur_sigma > 0 and min(beam_px, length_px) > 2:
         rgba = gaussian_blur_rgba_premultiplied(rgba, blur_sigma)
 
-    return rgba, ship_class, beam_px, length_px, lb_ratio
+    return rgba
 
 
 def _rasterize_ship_scene(

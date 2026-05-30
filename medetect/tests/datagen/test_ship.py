@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import pathlib
 import random
+import xml.etree.ElementTree as ET
 
 import pytest
+
+import medetect.datagen.ship as ship_mod
+import medetect.shipgen.gen as shipgen_gen
 
 from medetect.datagen.ship import (
     MIN_SHIP_BEAM_PX,
     _LB_OUTER_BAND_MULTIPLIER,
     _MAX_REASONABLE_LB_RATIO_MULTIPLIER,
+    _pick_svg,
     _SvgMeta,
     _load_svg_metas,
     _min_reasonable_lb_ratio,
@@ -123,6 +128,33 @@ class TestScaleShipPixelSize:
             "destroyer", lb_ratio=8.0, resolution_m=10.0, rng=rng, length_range=None,
         )
         assert length_px >= 3
+
+
+class TestPickSvgCaching:
+    def test_onthefly_pool_keeps_multiple_variants(self, monkeypatch) -> None:
+        """同一キーのオンザフライ生成でも複数の見た目を維持する。"""
+        ship_mod._SHIPGEN_VARIANT_CALLS.clear()
+        ship_mod._generate_ship_svg_variant.cache_clear()
+        ship_mod._shipgen_class_weights.cache_clear()
+        monkeypatch.setattr(shipgen_gen, "get_ship_classes", lambda *args, **kwargs: ["patrol"])
+
+        rng = random.Random(123)
+        results = {
+            _pick_svg(
+                None,
+                rng,
+                length_range=(35.0, 80.0),
+                offnadir_deg=7.0,
+                sensor_az_ship_deg=123.0,
+                shipgen_kwargs={"deck_scatter_density": 2.5},
+            )
+            for _ in range(12)
+        }
+
+        assert len(results) >= 4
+        for svg_text in results:
+            root = ET.fromstring(svg_text)
+            assert root.get("data-ship-class") == "patrol"
 
 
 class TestShipSizeDistribution:

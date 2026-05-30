@@ -10,12 +10,16 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from functools import lru_cache
 
 import numpy as np
 from numpy.typing import NDArray
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from medetect.datagen.svg import parse_svg_metadata
+
+
+_RASTERIZE_CACHE_MAX_PIXELS = 200_000
 
 
 def parse_color(css: str) -> tuple[int, int, int, int]:
@@ -108,15 +112,22 @@ def _collect_clip_polygons(root: ET.Element) -> dict[str, list[tuple[float, floa
     return clip_polygons
 
 
-def extract_hull_polygon(svg_text: str) -> list[tuple[float, float]]:
+@lru_cache(maxsize=4096)
+def _extract_hull_polygon_cached(svg_text: str) -> tuple[tuple[float, float], ...]:
     """Extract the ship hull polygon in SVG viewBox coordinates."""
     root = ET.fromstring(svg_text)
     hull_points, _drawable_hull = _find_hull_elements(root)
     if not hull_points:
         raise ValueError("Hull polygon not found in SVG")
-    return hull_points
+    return tuple(hull_points)
 
 
+def extract_hull_polygon(svg_text: str) -> list[tuple[float, float]]:
+    """Extract the ship hull polygon in SVG viewBox coordinates."""
+    return list(_extract_hull_polygon_cached(svg_text))
+
+
+@lru_cache(maxsize=4096)
 def extract_hull_fill(svg_text: str) -> tuple[int, int, int, int]:
     """Extract the RGBA fill colour of the drawable hull polygon."""
     root = ET.fromstring(svg_text)
@@ -496,7 +507,7 @@ def _draw_elements(
                     _composite_masked_layer(img, layer, element_mask)
 
 
-def rasterize_ship_svg(
+def _rasterize_ship_svg_uncached(
     svg_text: str,
     width_px: int,
     height_px: int,
@@ -614,3 +625,52 @@ def rasterize_ship_svg(
         img = _resize_premultiplied(img, out_w, out_h)
 
     return np.array(img)
+
+
+@lru_cache(maxsize=512)
+def _rasterize_ship_svg_cached(
+    svg_text: str,
+    width_px: int,
+    height_px: int,
+    *,
+    angle_deg: float,
+    supersample: int,
+    exclude_hull: bool,
+) -> NDArray[np.uint8]:
+    return _rasterize_ship_svg_uncached(
+        svg_text,
+        width_px,
+        height_px,
+        angle_deg=angle_deg,
+        supersample=supersample,
+        exclude_hull=exclude_hull,
+    )
+
+
+def rasterize_ship_svg(
+    svg_text: str,
+    width_px: int,
+    height_px: int,
+    *,
+    angle_deg: float = 0.0,
+    supersample: int = 4,
+    exclude_hull: bool = False,
+) -> NDArray[np.uint8]:
+    """Render an SVG ship to a fresh RGBA numpy array."""
+    if width_px * height_px <= _RASTERIZE_CACHE_MAX_PIXELS:
+        return _rasterize_ship_svg_cached(
+            svg_text,
+            width_px,
+            height_px,
+            angle_deg=angle_deg,
+            supersample=supersample,
+            exclude_hull=exclude_hull,
+        ).copy()
+    return _rasterize_ship_svg_uncached(
+        svg_text,
+        width_px,
+        height_px,
+        angle_deg=angle_deg,
+        supersample=supersample,
+        exclude_hull=exclude_hull,
+    )

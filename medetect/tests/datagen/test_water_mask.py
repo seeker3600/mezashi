@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import medetect.datagen.water_mask as water_mask_mod
+
 from medetect.datagen.water_mask import (
     CoastlineIndex,
     erode_mask,
@@ -177,6 +179,26 @@ class TestCoastlineIndex:
         idx = CoastlineIndex(tmp_path / "lines.shp")
         results = idx.query((10.0, 10.0, 11.0, 11.0))
         assert len(results) == 0
+
+    def test_reuses_bbox_cache_on_second_init(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """2回目の初期化では bbox キャッシュを再利用する。"""
+        shp_path = tmp_path / "lines.shp"
+        _write_test_shapefile(
+            shp_path,
+            [[(0.0, 0.0), (1.0, 0.0)]],
+        )
+
+        CoastlineIndex(shp_path)
+        assert water_mask_mod._bbox_cache_path(shp_path).exists()
+
+        def _unexpected_read(_path: Path):
+            raise AssertionError("bbox cache should have been reused")
+
+        monkeypatch.setattr(water_mask_mod, "_read_shp_bboxes", _unexpected_read)
+
+        idx = CoastlineIndex(shp_path)
+        results = idx.query((0.0, -0.5, 0.5, 0.5))
+        assert len(results) >= 1
 
 
 class TestMakeWaterMaskFromCoastline:

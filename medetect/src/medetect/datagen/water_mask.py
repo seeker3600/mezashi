@@ -119,6 +119,54 @@ def erode_mask(
 _SHP_BBOX_TYPES: frozenset[int] = frozenset({3, 5, 13, 15, 23, 25})
 
 
+def _bbox_cache_path(shp_path: Path) -> Path:
+    return shp_path.with_suffix(".bbox-cache.npz")
+
+
+def _load_bbox_cache(
+    shp_path: Path,
+) -> tuple[NDArray[np.float64], list[int]] | None:
+    cache_path = _bbox_cache_path(shp_path)
+    shx_path = shp_path.with_suffix(".shx")
+    if not cache_path.exists() or not shx_path.exists():
+        return None
+
+    try:
+        with np.load(cache_path, allow_pickle=False) as cache:
+            shp_size = int(cache["shp_size"])
+            shx_size = int(cache["shx_size"])
+            if shp_size != shp_path.stat().st_size or shx_size != shx_path.stat().st_size:
+                return None
+            bbox_arr = np.asarray(cache["bbox_arr"], dtype=np.float64)
+            valid_indices = np.asarray(cache["valid_indices"], dtype=np.int64).tolist()
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to load coastline bbox cache: %s", cache_path, exc_info=True)
+        return None
+
+    if bbox_arr.ndim != 2 or bbox_arr.shape[1] != 4:
+        return None
+    return bbox_arr, valid_indices
+
+
+def _save_bbox_cache(
+    shp_path: Path,
+    bbox_arr: NDArray[np.float64],
+    valid_indices: list[int],
+) -> None:
+    cache_path = _bbox_cache_path(shp_path)
+    shx_path = shp_path.with_suffix(".shx")
+    try:
+        np.savez(
+            cache_path,
+            bbox_arr=bbox_arr,
+            valid_indices=np.asarray(valid_indices, dtype=np.int64),
+            shp_size=np.asarray(shp_path.stat().st_size, dtype=np.int64),
+            shx_size=np.asarray(shx_path.stat().st_size, dtype=np.int64),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to write coastline bbox cache: %s", cache_path, exc_info=True)
+
+
 def _read_shp_bboxes(
     shp_path: Path,
 ) -> tuple[NDArray[np.float64], list[int]]:
@@ -196,7 +244,12 @@ class CoastlineIndex:
         self._path = Path(shapefile_path)
         logger.info("Building coastline bbox index: %s", self._path)
 
-        bbox_arr, valid_indices = _read_shp_bboxes(self._path)
+        cached = _load_bbox_cache(self._path)
+        if cached is None:
+            bbox_arr, valid_indices = _read_shp_bboxes(self._path)
+            _save_bbox_cache(self._path, bbox_arr, valid_indices)
+        else:
+            bbox_arr, valid_indices = cached
         logger.info("Indexed %d coastline bboxes", len(valid_indices))
 
         if len(valid_indices) > 0:

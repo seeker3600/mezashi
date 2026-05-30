@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -174,13 +175,13 @@ def _iter_polygon_geometries(geometry: BaseGeometry):
             yield from _iter_polygon_geometries(child)
 
 
-def _local_hull_geometry(
+@lru_cache(maxsize=4096)
+def _base_local_hull_geometry(
     svg_text: str,
     beam_px: int,
     length_px: int,
-    angle_deg: float,
 ) -> BaseGeometry:
-    """Return the ship hull geometry in pixel units centred at the origin."""
+    """Return the unrotated ship hull geometry in pixel units centred at the origin."""
     _ship_class, lb_ratio = parse_svg_metadata(svg_text)
     hull_points = extract_hull_polygon(svg_text)
     sy = float(length_px) / max(lb_ratio, 1e-6)
@@ -188,7 +189,18 @@ def _local_hull_geometry(
         ((x - 0.5) * float(beam_px), (y - lb_ratio / 2.0) * sy)
         for x, y in hull_points
     ]
-    geometry = Polygon(pts).buffer(0)
+    return Polygon(pts).buffer(0)
+
+
+@lru_cache(maxsize=4096)
+def _local_hull_geometry(
+    svg_text: str,
+    beam_px: int,
+    length_px: int,
+    angle_deg: float,
+) -> BaseGeometry:
+    """Return the ship hull geometry in pixel units centred at the origin."""
+    geometry = _base_local_hull_geometry(svg_text, beam_px, length_px)
     if angle_deg != 0.0:
         geometry = affinity.rotate(geometry, angle_deg, origin=(0.0, 0.0), use_radians=False)
     return geometry
@@ -336,6 +348,9 @@ def _geometry_intrudes_land(
     return _geometry_hits_mask(land_mask, inner_geom)
 
 
+_ORIGINAL_GEOMETRY_INTRUDES_LAND = _geometry_intrudes_land
+
+
 def _resolve_berth_land_intrusion(
     water_mask: NDArray[np.bool_],
     hull_geom: BaseGeometry,
@@ -354,6 +369,11 @@ def _resolve_berth_land_intrusion(
     """
     max_shift_px = max(0.0, max_shift_px)
     precision_px = max(step_px, 1e-6)
+    use_fast_intrusion_check = _geometry_intrudes_land is _ORIGINAL_GEOMETRY_INTRUDES_LAND
+    land_mask = ~water_mask
+    inner_hull_geom = hull_geom.buffer(-_BERTH_LAND_CLEARANCE_PX, join_style=2)
+    if inner_hull_geom.is_empty:
+        inner_hull_geom = hull_geom.representative_point().buffer(0.05)
 
     evaluated: dict[float, tuple[float, float, BaseGeometry, bool]] = {}
 
@@ -365,17 +385,27 @@ def _resolve_berth_land_intrusion(
 
         if clamped_shift <= 0.0:
             shifted_geom = hull_geom
+            shifted_inner_geom = inner_hull_geom
         else:
+            xoff = water_nx * clamped_shift
+            yoff = water_ny * clamped_shift
             shifted_geom = affinity.translate(
                 hull_geom,
-                xoff=water_nx * clamped_shift,
-                yoff=water_ny * clamped_shift,
+                xoff=xoff,
+                yoff=yoff,
+            )
+            shifted_inner_geom = affinity.translate(
+                inner_hull_geom,
+                xoff=xoff,
+                yoff=yoff,
             )
         result = (
             cx + water_nx * clamped_shift,
             cy + water_ny * clamped_shift,
             shifted_geom,
-            _geometry_intrudes_land(water_mask, shifted_geom),
+            _geometry_hits_mask(land_mask, shifted_inner_geom)
+            if use_fast_intrusion_check
+            else _geometry_intrudes_land(water_mask, shifted_geom),
         )
         evaluated[clamped_shift] = result
         return result
@@ -934,12 +964,13 @@ def _place_berthed_cluster(
     offnadir_deg: float = 0.0,
     sensor_az_world_deg: float = 0.0,
     shipgen_kwargs: dict[str, Any] | None = None,
+    berth_runs: list[_BerthRun] | None = None,
 ) -> list[str]:
     labels: list[str] = []
-    if not berth_segments:
+    runs = list(berth_runs) if berth_runs is not None else _build_berth_runs(berth_segments, berth_water_mask)
+    if not runs:
         return labels
 
-    runs = _build_berth_runs(berth_segments, berth_water_mask)
     rng.shuffle(runs)
     cluster_alpha = rng.uniform(*alpha_range)
     ship_gap = 4.0
@@ -1465,6 +1496,7 @@ def _place_cluster(
     berth_stern_prob: float = 0.5,
     berth_water_mask: NDArray[np.bool_] | None = None,
     berth_segments: list[_BerthSegment] | None = None,
+    berth_runs: list[_BerthRun] | None = None,
     shadow_azimuth_rad: float | None = None,
     shadow_length: float | None = None,
     shadow_alpha: float = 0.0,
@@ -1508,6 +1540,7 @@ def _place_cluster(
             offnadir_deg=offnadir_deg,
             sensor_az_world_deg=sensor_az_world_deg,
             shipgen_kwargs=shipgen_kwargs,
+            berth_runs=berth_runs,
         )
         if berthed_labels:
             return berthed_labels

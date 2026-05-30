@@ -148,6 +148,16 @@ class TestRasterizeShipSvg:
         result_zero_angle = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80, angle_deg=0.0)
         np.testing.assert_array_almost_equal(result_no_angle, result_zero_angle)
 
+    def test_cached_result_returns_fresh_copy(self) -> None:
+        """キャッシュ済みの rasterize 結果を共有破壊しない。"""
+        first = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80)
+        original = tuple(first[0, 0])
+
+        first[0, 0] = (255, 0, 0, 255)
+        second = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80)
+
+        assert tuple(second[0, 0]) == original
+
     def test_rotation_90_returns_rotated_bbox(self) -> None:
         """90度回転で幅と高さが入れ替わる。"""
         result = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80, angle_deg=90.0)

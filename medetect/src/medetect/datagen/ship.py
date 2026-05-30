@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
+import pickle
 import random
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -39,6 +42,14 @@ _MAX_REASONABLE_LB_RATIO_MULTIPLIER = 1.9
 # are scored 0 and never used.  The ratio _LB_OUTER_BAND_MULTIPLIER /
 # _MAX_REASONABLE_LB_RATIO_MULTIPLIER is kept ≈ 1.26 (same as before).
 _LB_OUTER_BAND_MULTIPLIER = 2.4
+_SHIPGEN_PROJECTION_BUCKET = 0.03
+_SHIPGEN_VARIANT_WARMUP = 8
+_SHIPGEN_VARIANT_GROWTH_INTERVAL = 6
+_SHIPGEN_VARIANT_MAX = 32
+
+_ShipgenKwargsKey = tuple[tuple[str, bytes], ...]
+_ShipgenVariantKey = tuple[str, tuple[int, int], _ShipgenKwargsKey]
+_SHIPGEN_VARIANT_CALLS: dict[_ShipgenVariantKey, int] = {}
 
 
 def compute_ship_pixel_size(
@@ -82,6 +93,7 @@ def compute_ship_pixel_size(
     return beam_px, length_px
 
 
+@lru_cache(maxsize=512)
 def _load_svg(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -159,6 +171,132 @@ def _svg_lb_weight(lb_ratio: float, target_length_m: float) -> float:
     return math.exp(-(upper_excess + lower_deficit))
 
 
+def _freeze_shipgen_kwargs(shipgen_kwargs: dict[str, Any] | None) -> _ShipgenKwargsKey:
+    if not shipgen_kwargs:
+        return ()
+    return tuple(
+        sorted(
+            (key, pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL))
+            for key, value in shipgen_kwargs.items()
+        )
+    )
+
+
+def _thaw_shipgen_kwargs(shipgen_kwargs_key: _ShipgenKwargsKey) -> dict[str, Any]:
+    return {
+        key: pickle.loads(value)
+        for key, value in shipgen_kwargs_key
+    }
+
+
+def _quantize_projection_bucket(
+    offnadir_deg: float,
+    sensor_az_ship_deg: float,
+) -> tuple[int, int]:
+    tan_theta = math.tan(math.radians(max(0.0, offnadir_deg)))
+    azimuth_rad = math.radians(sensor_az_ship_deg % 360.0)
+    side_component = tan_theta * math.sin(azimuth_rad)
+    length_component = tan_theta * math.cos(azimuth_rad)
+    return (
+        round(side_component / _SHIPGEN_PROJECTION_BUCKET),
+        round(length_component / _SHIPGEN_PROJECTION_BUCKET),
+    )
+
+
+def _projection_bucket_to_angles(bucket: tuple[int, int]) -> tuple[float, float]:
+    side_component = bucket[0] * _SHIPGEN_PROJECTION_BUCKET
+    length_component = bucket[1] * _SHIPGEN_PROJECTION_BUCKET
+    offnadir_deg = math.degrees(math.atan(math.hypot(side_component, length_component)))
+    sensor_az_ship_deg = math.degrees(math.atan2(side_component, length_component)) % 360.0
+    return offnadir_deg, sensor_az_ship_deg
+
+
+def _shipgen_variant_key(
+    ship_class: str,
+    offnadir_deg: float,
+    sensor_az_ship_deg: float,
+    shipgen_kwargs: dict[str, Any] | None,
+) -> _ShipgenVariantKey:
+    return (
+        ship_class,
+        _quantize_projection_bucket(offnadir_deg, sensor_az_ship_deg),
+        _freeze_shipgen_kwargs(shipgen_kwargs),
+    )
+
+
+def _shipgen_variant_pool_size(call_count: int) -> int:
+    if call_count <= 0:
+        return 0
+    if call_count <= _SHIPGEN_VARIANT_WARMUP:
+        return call_count
+    extra_calls = call_count - _SHIPGEN_VARIANT_WARMUP
+    return min(
+        _SHIPGEN_VARIANT_MAX,
+        _SHIPGEN_VARIANT_WARMUP + extra_calls // _SHIPGEN_VARIANT_GROWTH_INTERVAL,
+    )
+
+
+def _stable_variant_seed(
+    ship_class: str,
+    projection_bucket: tuple[int, int],
+    shipgen_kwargs_key: _ShipgenKwargsKey,
+    variant_index: int,
+) -> int:
+    payload = pickle.dumps(
+        (ship_class, projection_bucket, shipgen_kwargs_key, variant_index),
+        protocol=pickle.HIGHEST_PROTOCOL,
+    )
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, "big")
+
+
+@lru_cache(maxsize=64)
+def _shipgen_class_weights(
+    target_m: float | None,
+) -> tuple[tuple[str, ...], tuple[float, ...] | None]:
+    from medetect.shipgen.gen import get_ship_classes
+    from medetect.shipgen.ship_class import SHIP_CLASSES
+
+    classes = tuple(get_ship_classes())
+    if target_m is None:
+        return classes, None
+    weights = tuple(
+        _svg_lb_weight(
+            (SHIP_CLASSES[ship_class].lb[0] + SHIP_CLASSES[ship_class].lb[1]) / 2.0,
+            target_m,
+        )
+        for ship_class in classes
+    )
+    return classes, weights
+
+
+@lru_cache(maxsize=4096)
+def _generate_ship_svg_variant(
+    ship_class: str,
+    projection_bucket: tuple[int, int],
+    shipgen_kwargs_key: _ShipgenKwargsKey,
+    variant_index: int,
+) -> str:
+    from medetect.shipgen.gen import generate_ship_svg
+
+    offnadir_deg, sensor_az_ship_deg = _projection_bucket_to_angles(projection_bucket)
+    variant_rng = random.Random(
+        _stable_variant_seed(
+            ship_class,
+            projection_bucket,
+            shipgen_kwargs_key,
+            variant_index,
+        )
+    )
+    return generate_ship_svg(
+        ship_class,
+        rng=variant_rng,
+        offnadir_deg=offnadir_deg,
+        sensor_az_ship_deg=sensor_az_ship_deg,
+        **_thaw_shipgen_kwargs(shipgen_kwargs_key),
+    )
+
+
 def _pick_svg(
     svg_metas: list[_SvgMeta] | None,
     rng: random.Random,
@@ -180,24 +318,34 @@ def _pick_svg(
             meta = rng.choice(svg_metas)
         return _load_svg(meta.path)
 
-    from medetect.shipgen.gen import generate_ship_svg, get_ship_classes
-    from medetect.shipgen.ship_class import SHIP_CLASSES
-
-    classes = get_ship_classes()
-    if target_m is not None:
-        weights = [
-            _svg_lb_weight(
-                (SHIP_CLASSES[c].lb[0] + SHIP_CLASSES[c].lb[1]) / 2.0,
-                target_m,
-            )
-            for c in classes
-        ]
+    classes, weights = _shipgen_class_weights(target_m)
+    if weights is not None:
         (cls,) = rng.choices(classes, weights=weights, k=1)
     else:
         cls = rng.choice(classes)
-    return generate_ship_svg(
-        cls, rng=rng, offnadir_deg=offnadir_deg, sensor_az_ship_deg=sensor_az_ship_deg,
-        **(shipgen_kwargs or {}),
+    variant_key = _shipgen_variant_key(
+        cls,
+        offnadir_deg,
+        sensor_az_ship_deg,
+        shipgen_kwargs,
+    )
+    call_count = _SHIPGEN_VARIANT_CALLS.get(variant_key, 0) + 1
+    _SHIPGEN_VARIANT_CALLS[variant_key] = call_count
+
+    pool_size = _shipgen_variant_pool_size(call_count)
+    previous_pool_size = _shipgen_variant_pool_size(call_count - 1)
+    if call_count <= _SHIPGEN_VARIANT_WARMUP:
+        variant_index = call_count - 1
+    elif pool_size > previous_pool_size:
+        variant_index = pool_size - 1
+    else:
+        variant_index = rng.randrange(pool_size)
+
+    return _generate_ship_svg_variant(
+        cls,
+        variant_key[1],
+        variant_key[2],
+        variant_index,
     )
 
 

@@ -20,6 +20,7 @@ import medetect.datagen.pipeline as _pipeline
 from medetect.datagen.obb import compute_obb_corners, format_obb_label
 from medetect.datagen.placement import (
     _RaftShipPlacement,
+    _build_berth_runs,
     _geometry_projection_extents,
     _place_berthed_cluster,
     _place_area_cluster,
@@ -39,6 +40,7 @@ from medetect.datagen.scene import (
     _edge_hardness_to_blur_sigma,
     _rasterize_ship_scene,
     _render_ship,
+    _render_ship_from_dimensions,
     _sample_shadow_alpha,
     _sample_water_tint,
     _shadow_alpha_for_ship,
@@ -47,7 +49,16 @@ from medetect.datagen.scene import (
     blend_shadow,
     blend_ship,
 )
-from medetect.datagen.ship import _SvgMeta, _pick_svg, _ship_class_id
+from medetect.datagen.ship import (
+    MIN_SHIP_BEAM_PX,
+    MIN_SHIP_LENGTH_PX,
+    SHIP_LENGTHS_M,
+    _DEFAULT_LENGTH_M,
+    _SvgMeta,
+    _pick_svg,
+    _resolve_ship_dimensions,
+    _ship_class_id,
+)
 from medetect.datagen.wake import pick_motion_state, render_wake
 from medetect.datagen.water_mask import (
     CoastlineIndex,
@@ -68,6 +79,7 @@ logger = logging.getLogger(__name__)
 
 _DARK_TILE_THRESHOLD: float = 10.0
 _COASTLINE_CRS = CRS.from_epsg(4326)
+_PLACEMENT_FAILURE_CHECK_INTERVAL = 8
 
 __all__ = [
     "SingleShipPlacement",
@@ -174,6 +186,47 @@ def _reproject_coastline_geometries(
         if not transformed.is_empty:
             reprojected.append(transformed)
     return reprojected
+
+
+def _minimum_ship_bbox(
+    ship_resolution: float,
+    ship_length_range: tuple[float, float] | None,
+) -> tuple[int, int]:
+    min_length_m = min(
+        _DEFAULT_LENGTH_M[0],
+        *(lo for lo, _hi in SHIP_LENGTHS_M.values()),
+    )
+    if ship_length_range is not None:
+        min_length_m = ship_length_range[0]
+    min_length_px = max(MIN_SHIP_LENGTH_PX, round(min_length_m / ship_resolution))
+    return MIN_SHIP_BEAM_PX + 2, min_length_px + 2
+
+
+def _has_full_open_box(
+    mask: NDArray[np.bool_],
+    box_w: int,
+    box_h: int,
+) -> bool:
+    if box_w <= 0 or box_h <= 0:
+        return False
+
+    mask_h, mask_w = mask.shape
+    if box_w > mask_w or box_h > mask_h:
+        return False
+
+    integral = np.pad(
+        mask.astype(np.int32),
+        ((1, 0), (1, 0)),
+        mode="constant",
+        constant_values=0,
+    ).cumsum(axis=0).cumsum(axis=1)
+    window_sums = (
+        integral[box_h:, box_w:]
+        - integral[:-box_h, box_w:]
+        - integral[box_h:, :-box_w]
+        + integral[:-box_h, :-box_w]
+    )
+    return bool(np.any(window_sums == box_w * box_h))
 
 
 def augment_tile(
@@ -349,6 +402,7 @@ def _compose_one(
 
             berth_water_mask: NDArray[np.bool_] | None = None
             berth_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+            berth_runs = None
 
             if coastline_index is not None:
                 window = Window(col, row, src_tile, src_tile)
@@ -399,6 +453,8 @@ def _compose_one(
                     image_size,
                     image_size,
                 )
+                if berth_water_mask is not None and berth_segments:
+                    berth_runs = _build_berth_runs(berth_segments, berth_water_mask)
 
             water_mask = erode_mask(water_mask, erode_coast)
 
@@ -423,6 +479,9 @@ def _compose_one(
     labels: list[str] = []
     n_clusters = 0
     single_ships: list[SingleShipPlacement] = []
+    failed_placements = 0
+    checked_failure_streak = False
+    min_box_w, min_box_h = _minimum_ship_bbox(ship_resolution, ship_length_range)
     tile_shadow_azimuth = shadow_azimuth_rad if shadow_azimuth_rad is not None else rng.uniform(0.0, 2.0 * math.pi)
     shadow_length_min, shadow_length_max = shadow_length_range
     shadow_length_min, shadow_length_max = sorted((shadow_length_min, shadow_length_max))
@@ -436,6 +495,7 @@ def _compose_one(
 
     for _ in range(n_events):
         is_cluster = rng.random() < cluster_prob
+        placed_event = False
 
         if is_cluster:
             new_labels = _place_cluster(
@@ -462,6 +522,7 @@ def _compose_one(
                 berth_stern_prob=berth_stern_prob,
                 berth_water_mask=berth_water_mask,
                 berth_segments=berth_segments,
+                berth_runs=berth_runs,
                 offnadir_deg=tile_offnadir_deg,
                 sensor_az_world_deg=tile_sensor_az_world_deg,
                 shipgen_kwargs=shipgen_kwargs,
@@ -469,6 +530,7 @@ def _compose_one(
             labels.extend(new_labels)
             if new_labels:
                 n_clusters += 1
+                placed_event = True
         else:
             if berth_water_mask is not None and berth_segments and rng.random() < max(0.0, min(1.0, berth_prob)):
                 berthed_labels = _place_berthed_cluster(
@@ -496,81 +558,105 @@ def _compose_one(
                     offnadir_deg=tile_offnadir_deg,
                     sensor_az_world_deg=tile_sensor_az_world_deg,
                     shipgen_kwargs=shipgen_kwargs,
+                    berth_runs=berth_runs,
                 )
                 if berthed_labels:
                     labels.extend(berthed_labels)
-                    continue
+                    placed_event = True
 
-            angle_deg = rng.uniform(0, 360)
-            sensor_az_ship_deg = (tile_sensor_az_world_deg - angle_deg) % 360.0
-            svg_text = _pick_svg(
-                svg_metas, rng, ship_length_range,
-                tile_offnadir_deg,
-                sensor_az_ship_deg,
-                shipgen_kwargs=shipgen_kwargs,
-            )
-            angle_rad = math.radians(angle_deg)
-            rotated, _cls_name, bw, lh, _lb = _render_ship(
-                svg_text,
-                ship_resolution,
-                rng,
-                blur_sigma,
-                ship_length_range,
-                angle_deg=angle_deg,
-                length_exponent=length_exponent,
-                supersample=4,
-            )
+            if not placed_event:
+                angle_deg = rng.uniform(0, 360)
+                sensor_az_ship_deg = (tile_sensor_az_world_deg - angle_deg) % 360.0
+                svg_text = _pick_svg(
+                    svg_metas, rng, ship_length_range,
+                    tile_offnadir_deg,
+                    sensor_az_ship_deg,
+                    shipgen_kwargs=shipgen_kwargs,
+                )
+                angle_rad = math.radians(angle_deg)
+                _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
+                    svg_text,
+                    ship_resolution,
+                    rng,
+                    ship_length_range,
+                    length_exponent=length_exponent,
+                )
 
-            available = water_mask & ~occupancy
-            pos = find_water_position(available, bw, lh, angle_rad, rng)
-            if pos is None:
-                continue
+                available = water_mask & ~occupancy
+                pos = find_water_position(available, bw, lh, angle_rad, rng)
+                if pos is not None:
+                    rotated = _render_ship_from_dimensions(
+                        svg_text,
+                        bw,
+                        lh,
+                        blur_sigma,
+                        angle_deg=angle_deg,
+                        supersample=4,
+                    )
+                    cx, cy = pos
+                    alpha = rng.uniform(*ship_alpha)
+                    water_tint = _sample_water_tint(tile, cx, cy)
+                    ship_state = pick_motion_state(rng)
+                    shadow_rgba = None
+                    if shadow_alpha_scale > 0.0 and tile_shadow_alpha > 0.0:
+                        offset_x, offset_y = _shadow_offset_pixels(
+                            bw,
+                            lh,
+                            tile_shadow_azimuth,
+                            tile_shadow_length,
+                        )
+                        cast_length = math.hypot(offset_x, offset_y)
+                        shadow_rgba = _make_shadow_rgba(
+                            rotated,
+                            offset_x=offset_x,
+                            offset_y=offset_y,
+                            blur_sigma=_shadow_blur_sigma(bw, lh, cast_length),
+                            alpha_scale=_shadow_alpha_for_ship(bw, lh),
+                        )
+                    _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
+                    corners = compute_obb_corners(
+                        float(cx),
+                        float(cy),
+                        float(bw),
+                        float(lh),
+                        angle_rad,
+                    )
+                    cid = _ship_class_id(lh, ship_resolution, class_id, size_thresholds)
+                    single_ships.append(
+                        SingleShipPlacement(
+                            cx=cx,
+                            cy=cy,
+                            rotated=rotated,
+                            bw=bw,
+                            lh=lh,
+                            angle_rad=angle_rad,
+                            alpha=alpha,
+                            water_tint=water_tint,
+                            shadow_rgba=shadow_rgba,
+                            ship_state=ship_state,
+                            class_id=cid,
+                            corners=corners,
+                        )
+                    )
+                    placed_event = True
 
-            cx, cy = pos
-            alpha = rng.uniform(*ship_alpha)
-            water_tint = _sample_water_tint(tile, cx, cy)
-            ship_state = pick_motion_state(rng)
-            shadow_rgba = None
-            if shadow_alpha_scale > 0.0 and tile_shadow_alpha > 0.0:
-                offset_x, offset_y = _shadow_offset_pixels(
-                    bw,
-                    lh,
-                    tile_shadow_azimuth,
-                    tile_shadow_length,
-                )
-                cast_length = math.hypot(offset_x, offset_y)
-                shadow_rgba = _make_shadow_rgba(
-                    rotated,
-                    offset_x=offset_x,
-                    offset_y=offset_y,
-                    blur_sigma=_shadow_blur_sigma(bw, lh, cast_length),
-                    alpha_scale=_shadow_alpha_for_ship(bw, lh),
-                )
-            _stamp_occupancy(occupancy, cx, cy, bw, lh, angle_rad)
-            corners = compute_obb_corners(
-                float(cx),
-                float(cy),
-                float(bw),
-                float(lh),
-                angle_rad,
-            )
-            cid = _ship_class_id(lh, ship_resolution, class_id, size_thresholds)
-            single_ships.append(
-                SingleShipPlacement(
-                    cx=cx,
-                    cy=cy,
-                    rotated=rotated,
-                    bw=bw,
-                    lh=lh,
-                    angle_rad=angle_rad,
-                    alpha=alpha,
-                    water_tint=water_tint,
-                    shadow_rgba=shadow_rgba,
-                    ship_state=ship_state,
-                    class_id=cid,
-                    corners=corners,
-                )
-            )
+        if placed_event:
+            failed_placements = 0
+            checked_failure_streak = False
+            continue
+
+        failed_placements += 1
+        if failed_placements < _PLACEMENT_FAILURE_CHECK_INTERVAL or checked_failure_streak:
+            continue
+
+        available = water_mask & ~occupancy
+        checked_failure_streak = True
+        if not _has_full_open_box(available, min_box_w, min_box_h) and not _has_full_open_box(
+            available,
+            min_box_h,
+            min_box_w,
+        ):
+            break
 
     for ship in single_ships:
         render_wake(

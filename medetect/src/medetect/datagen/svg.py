@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import xml.etree.ElementTree as ET
 
 
+@lru_cache(maxsize=4096)
 def parse_svg_metadata(svg_text: str) -> tuple[str, float]:
     """Extract ship class and L/B ratio from SVG attributes.
 

@@ -236,6 +236,25 @@ class TestIsDarkTile:
         assert is_dark_tile(mostly_dark)
 
 
+class TestOpenBoxSearch:
+    def test_detects_existing_open_box(self) -> None:
+        """指定サイズの空き矩形がある場合は True を返す。"""
+        mask = np.zeros((8, 8), dtype=bool)
+        mask[2:5, 3:5] = True
+
+        assert compose_mod._has_full_open_box(mask, 2, 3)
+
+    def test_detects_missing_open_box(self) -> None:
+        """断片化した空き領域しかない場合は False を返す。"""
+        mask = np.zeros((8, 8), dtype=bool)
+        mask[1, 1] = True
+        mask[1, 5] = True
+        mask[5, 1] = True
+        mask[5, 5] = True
+
+        assert not compose_mod._has_full_open_box(mask, 2, 2)
+
+
 class TestMakeNodataMask:
     """純黒 (#000000) の no-data 領域検出テスト。"""
 
@@ -390,6 +409,47 @@ class TestAugmentTile:
 
 class TestComposeShadows:
     """_compose_one における影レイヤ順と方向のテスト。"""
+
+    def test_single_ship_skips_render_until_position_exists(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """単船の配置位置が見つからないとき rasterize まで進まない。"""
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: "<svg/>")
+        monkeypatch.setattr(compose_mod, "_resolve_ship_dimensions", lambda *args, **kwargs: ("mock", 6, 12, 2.0))
+        monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: None)
+
+        def _unexpected_render(*args, **kwargs):
+            raise AssertionError("ship rasterization should be skipped when no position exists")
+
+        monkeypatch.setattr(compose_mod, "_render_ship_from_dimensions", _unexpected_render)
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(1, 1),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=1.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=random.Random(7),
+        )
+
+        assert result is not None
+        _tile, labels, n_clusters = result
+        assert labels == []
+        assert n_clusters == 0
 
     def test_single_ship_shadows_render_between_wakes_and_hulls(
         self,
@@ -685,6 +745,11 @@ class TestComposeBerth:
             "_coastline_to_pixel_segments",
             lambda *args, **kwargs: [((12.0, 8.0), (12.0, 56.0))],
         )
+        monkeypatch.setattr(
+            compose_mod,
+            "_build_berth_runs",
+            lambda *args, **kwargs: ["precomputed-run"],
+        )
 
         def _capture_place_cluster(*args, **kwargs):
             del args
@@ -721,6 +786,7 @@ class TestComposeBerth:
         assert isinstance(captured["berth_water_mask"], np.ndarray)
         assert captured["berth_water_mask"].shape == (64, 64)
         assert captured["berth_segments"]
+        assert captured["berth_runs"] == ["precomputed-run"]
 
     def test_cluster_forwards_connected_polyline_segments_to_place_cluster(
         self,
