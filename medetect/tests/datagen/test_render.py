@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import medetect.datagen.render as render_mod
 
 from medetect.datagen.render import (
     downsample_rgba_premultiplied_exact,
+    extract_hull_fill,
     extract_hull_polygon,
     parse_color,
     parse_svg_metadata,
@@ -157,6 +159,30 @@ class TestRasterizeShipSvg:
         second = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80)
 
         assert tuple(second[0, 0]) == original
+
+    def test_shared_parse_cache_reuses_svg_parse_across_extract_and_rasterize(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """同じ SVG では extract 系と rasterize 系で XML parse を共有する。"""
+        parse_calls: list[str] = []
+        original_fromstring = render_mod.ET.fromstring
+
+        def _count_fromstring(svg_text: str):
+            parse_calls.append(svg_text)
+            return original_fromstring(svg_text)
+
+        render_mod._parse_svg_assets.cache_clear()
+        monkeypatch.setattr(render_mod.ET, "fromstring", _count_fromstring)
+
+        points = extract_hull_polygon(self._SIMPLE_SVG)
+        fill = extract_hull_fill(self._SIMPLE_SVG)
+        raster = rasterize_ship_svg(self._SIMPLE_SVG, 20, 80)
+
+        assert points
+        assert fill == (128, 128, 128, 255)
+        assert raster.shape == (80, 20, 4)
+        assert parse_calls == [self._SIMPLE_SVG]
 
     def test_rotation_90_returns_rotated_bbox(self) -> None:
         """90度回転で幅と高さが入れ替わる。"""

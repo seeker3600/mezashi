@@ -98,7 +98,8 @@ def _f(v: float) -> str:
 
 
 def _polygon_attr(pts: list[tuple[float, float]]) -> str:
-    return " ".join(f"{_f(x)},{_f(y)}" for x, y in pts)
+    fmt = _f
+    return " ".join(f"{fmt(x)},{fmt(y)}" for x, y in pts)
 
 
 def _rgb_css(color: tuple[int, int, int]) -> str:
@@ -903,22 +904,21 @@ def _write_hull_tone_band(
 
     left = max(-0.98, min(0.98, left_frac))
     right = max(-0.98, min(0.98, right_frac))
-    pts: list[tuple[float, float]] = []
+    parts: list[str] = []
+    append = parts.append
+    y_scale = lb_ratio / max(n - 1, 1)
+    fmt = _f
     for i in range(i_start, i_end + 1):
-        t = i / (n - 1)
-        y = t * lb_ratio
+        y = i * y_scale
         hw = float(half_widths[i])
-        pts.append((0.5 + hw * right, y))
+        append(f"{fmt(0.5 + hw * right)},{fmt(y)}")
     for i in range(i_end, i_start - 1, -1):
-        t = i / (n - 1)
-        y = t * lb_ratio
+        y = i * y_scale
         hw = float(half_widths[i])
-        pts.append((0.5 + hw * left, y))
+        append(f"{fmt(0.5 + hw * left)},{fmt(y)}")
 
-    if len(pts) >= 3:
-        out.write(
-            f'  <polygon points="{_polygon_attr(pts)}" fill="{fill}"/>\n'
-        )
+    if len(parts) >= 3:
+        out.write(f'  <polygon points="{" ".join(parts)}" fill="{fill}"/>\n')
 
 
 def _side_interval(side_sign: int, inner_frac: float, outer_frac: float) -> tuple[float, float]:

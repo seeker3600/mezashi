@@ -113,13 +113,31 @@ def _collect_clip_polygons(root: ET.Element) -> dict[str, list[tuple[float, floa
 
 
 @lru_cache(maxsize=4096)
+def _parse_svg_assets(
+    svg_text: str,
+) -> tuple[
+    ET.Element,
+    tuple[tuple[float, float], ...],
+    ET.Element | None,
+    dict[str, list[tuple[float, float]]],
+    tuple[float, float, float, float],
+]:
+    """Parse shared SVG structures once per document."""
+    root = ET.fromstring(svg_text)
+    hull_points, drawable_hull = _find_hull_elements(root)
+    clip_polygons = _collect_clip_polygons(root)
+    vb = root.get("viewBox", "0 0 1 1").split()
+    view_box = (float(vb[0]), float(vb[1]), float(vb[2]), float(vb[3]))
+    return root, tuple(hull_points), drawable_hull, clip_polygons, view_box
+
+
+@lru_cache(maxsize=4096)
 def _extract_hull_polygon_cached(svg_text: str) -> tuple[tuple[float, float], ...]:
     """Extract the ship hull polygon in SVG viewBox coordinates."""
-    root = ET.fromstring(svg_text)
-    hull_points, _drawable_hull = _find_hull_elements(root)
+    _root, hull_points, _drawable_hull, _clip_polygons, _view_box = _parse_svg_assets(svg_text)
     if not hull_points:
         raise ValueError("Hull polygon not found in SVG")
-    return tuple(hull_points)
+    return hull_points
 
 
 def extract_hull_polygon(svg_text: str) -> list[tuple[float, float]]:
@@ -130,8 +148,7 @@ def extract_hull_polygon(svg_text: str) -> list[tuple[float, float]]:
 @lru_cache(maxsize=4096)
 def extract_hull_fill(svg_text: str) -> tuple[int, int, int, int]:
     """Extract the RGBA fill colour of the drawable hull polygon."""
-    root = ET.fromstring(svg_text)
-    _hull_points, drawable_hull = _find_hull_elements(root)
+    _root, _hull_points, drawable_hull, _clip_polygons, _view_box = _parse_svg_assets(svg_text)
     if drawable_hull is None:
         return (128, 128, 128, 255)
     return parse_color(drawable_hull.get("fill", "rgb(128,128,128)"))
@@ -552,12 +569,8 @@ def _rasterize_ship_svg_uncached(
     """
     import math
 
-    root = ET.fromstring(svg_text)
-    _hull_points, drawable_hull = _find_hull_elements(root)
-    clip_polygons = _collect_clip_polygons(root)
-    vb = root.get("viewBox", "0 0 1 1").split()
-    vb_x, vb_y = float(vb[0]), float(vb[1])
-    vb_w, vb_h = float(vb[2]), float(vb[3])
+    root, _hull_points, drawable_hull, clip_polygons, view_box = _parse_svg_assets(svg_text)
+    vb_x, vb_y, vb_w, vb_h = view_box
 
     ss = max(1, supersample)
     render_w = width_px * ss

@@ -1866,6 +1866,74 @@ class TestClusterRenderHelpers:
 
         assert blur_calls == [pytest.approx(1.6)]
 
+    def test_vector_cluster_shadow_source_keeps_hull_alpha(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """shadow source は detail が空でも hull alpha を保持する。"""
+        observed_alpha_max: list[int] = []
+        svg_text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 4">'
+            '  <polygon points="0.5,0 1,1 1,3 0.5,4 0,3 0,1" fill="rgb(190,190,190)"/>'
+            '</svg>'
+        )
+        ships = [
+            placement_mod._RaftShipPlacement(
+                svg_text=svg_text,
+                cx=30.0,
+                cy=40.0,
+                bw=6,
+                lh=24,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=0,
+                hull_geom=box(27.0, 28.0, 33.0, 52.0),
+                hull_fill=(190, 190, 190, 255),
+            ),
+        ]
+
+        def _empty_detail_raster(
+            svg_text: str,
+            bw: int,
+            lh: int,
+            angle_deg: float = 0.0,
+            supersample: int = 4,
+            exclude_hull: bool = False,
+        ) -> np.ndarray:
+            del svg_text, angle_deg, supersample, exclude_hull
+            return np.zeros((lh, bw, 4), dtype=np.uint8)
+
+        def _capture_shadow_source(
+            ship_rgba: np.ndarray,
+            *,
+            offset_x: int,
+            offset_y: int,
+            blur_sigma: float,
+            alpha_scale: float,
+        ) -> np.ndarray:
+            del offset_x, offset_y, blur_sigma, alpha_scale
+            observed_alpha_max.append(int(ship_rgba[:, :, 3].max()))
+            return np.zeros_like(ship_rgba)
+
+        monkeypatch.setattr(placement_mod, "rasterize_ship_svg", _empty_detail_raster)
+        monkeypatch.setattr(placement_mod, "_make_shadow_rgba", _capture_shadow_source)
+        monkeypatch.setattr(placement_mod, "_shadow_offset_pixels", lambda *args, **kwargs: (3, 1))
+        monkeypatch.setattr(placement_mod, "_shadow_blur_sigma", lambda *args, **kwargs: 1.0)
+        monkeypatch.setattr(placement_mod, "_shadow_alpha_for_ship", lambda *args, **kwargs: 1.0)
+
+        placement_mod._render_vector_raft_cluster(
+            ships,
+            image_size=self._IMAGE_SIZE,
+            blur_sigma=0.0,
+            scene_scale=placement_mod._CLUSTER_SCENE_SUPERSAMPLE,
+            shadow_azimuth_rad=math.pi / 6.0,
+            shadow_length=2.0,
+            shadow_alpha=0.12,
+            shadow_alpha_scale=1.0,
+        )
+
+        assert observed_alpha_max == [255]
+
     def test_area_cluster_shares_shadow_length(
         self,
         scene,

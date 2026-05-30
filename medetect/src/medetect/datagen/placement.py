@@ -176,20 +176,32 @@ def _iter_polygon_geometries(geometry: BaseGeometry):
 
 
 @lru_cache(maxsize=4096)
+def _normalized_local_hull_geometry(
+    svg_text: str,
+) -> BaseGeometry:
+    """Return the ship hull geometry normalized to a unit beam/length box."""
+    _ship_class, lb_ratio = parse_svg_metadata(svg_text)
+    hull_points = extract_hull_polygon(svg_text)
+    pts = [
+        (x - 0.5, y / max(lb_ratio, 1e-6) - 0.5)
+        for x, y in hull_points
+    ]
+    return Polygon(pts).buffer(0)
+
+
+@lru_cache(maxsize=4096)
 def _base_local_hull_geometry(
     svg_text: str,
     beam_px: int,
     length_px: int,
 ) -> BaseGeometry:
     """Return the unrotated ship hull geometry in pixel units centred at the origin."""
-    _ship_class, lb_ratio = parse_svg_metadata(svg_text)
-    hull_points = extract_hull_polygon(svg_text)
-    sy = float(length_px) / max(lb_ratio, 1e-6)
-    pts = [
-        ((x - 0.5) * float(beam_px), (y - lb_ratio / 2.0) * sy)
-        for x, y in hull_points
-    ]
-    return Polygon(pts).buffer(0)
+    return affinity.scale(
+        _normalized_local_hull_geometry(svg_text),
+        xfact=float(beam_px),
+        yfact=float(length_px),
+        origin=(0.0, 0.0),
+    )
 
 
 @lru_cache(maxsize=4096)
@@ -259,6 +271,30 @@ def _draw_geometry_fill(
     for poly in _iter_polygon_geometries(geometry):
         exterior = [(x * scale, y * scale) for x, y in poly.exterior.coords]
         draw.polygon(exterior, fill=fill)
+
+
+def _shadow_source_rgba(
+    detail_rgba: NDArray[np.uint8],
+    scaled_hull: BaseGeometry,
+    x0_scene: int,
+    y0_scene: int,
+) -> NDArray[np.uint8]:
+    """Build a shadow silhouette from detail alpha plus the hull polygon."""
+    shadow_source = np.zeros_like(detail_rgba)
+    shadow_source[:, :, 3] = detail_rgba[:, :, 3]
+
+    hull_alpha = Image.new("L", (detail_rgba.shape[1], detail_rgba.shape[0]), 0)
+    translated_hull = affinity.translate(scaled_hull, xoff=-x0_scene, yoff=-y0_scene)
+    draw = ImageDraw.Draw(hull_alpha)
+    for poly in _iter_polygon_geometries(translated_hull):
+        draw.polygon(list(poly.exterior.coords), fill=255)
+
+    np.maximum(
+        shadow_source[:, :, 3],
+        np.array(hull_alpha, dtype=np.uint8),
+        out=shadow_source[:, :, 3],
+    )
+    return shadow_source
 
 
 def _tight_cluster_bridge_geometry(
@@ -503,21 +539,33 @@ def _render_vector_raft_cluster(
 
     detail_items: list[tuple[NDArray[np.uint8], int, int]] = []
     shadow_items: list[tuple[NDArray[np.uint8], int, int]] = []
-    if (
+    render_shadows = (
         shadow_alpha > 0.0
         and shadow_alpha_scale > 0.0
         and shadow_azimuth_rad is not None
         and shadow_length is not None
-    ):
-        for ship in ships:
-            ship_rgba = _rasterize_ship_scene(
-                ship.svg_text,
-                ship.bw,
-                ship.lh,
-                angle_deg=ship.angle_deg,
-                blur_sigma=0.0,
-                scene_scale=scene_scale,
-            )
+    )
+
+    for ship, (scaled_hull, _fill) in zip(ships, hull_entries[-len(ships):], strict=True):
+        detail_rgba = rasterize_ship_svg(
+            ship.svg_text,
+            max(1, ship.bw * scene_scale),
+            max(1, ship.lh * scene_scale),
+            angle_deg=ship.angle_deg,
+            supersample=1,
+            exclude_hull=True,
+        )
+        x0_scene, y0_scene = _cluster_scene_origin(
+            ship.cx,
+            ship.cy,
+            detail_rgba,
+            scene_scale,
+        )
+        detail_items.append((detail_rgba, x0_scene, y0_scene))
+        layer_bounds.append(_rgba_scene_rect(detail_rgba, x0_scene, y0_scene))
+
+        if render_shadows:
+            shadow_source = _shadow_source_rgba(detail_rgba, scaled_hull, x0_scene, y0_scene)
             offset_x, offset_y = _shadow_offset_pixels(
                 ship.bw,
                 ship.lh,
@@ -527,7 +575,7 @@ def _render_vector_raft_cluster(
             )
             cast_length = math.hypot(offset_x, offset_y)
             shadow_rgba = _make_shadow_rgba(
-                ship_rgba,
+                shadow_source,
                 offset_x=offset_x,
                 offset_y=offset_y,
                 blur_sigma=_shadow_blur_sigma(
@@ -545,24 +593,6 @@ def _render_vector_raft_cluster(
                 scene_scale,
             )
             shadow_items.append((shadow_rgba, shadow_x0, shadow_y0))
-
-    for ship in ships:
-        detail_rgba = rasterize_ship_svg(
-            ship.svg_text,
-            max(1, ship.bw * scene_scale),
-            max(1, ship.lh * scene_scale),
-            angle_deg=ship.angle_deg,
-            supersample=1,
-            exclude_hull=True,
-        )
-        x0_scene, y0_scene = _cluster_scene_origin(
-            ship.cx,
-            ship.cy,
-            detail_rgba,
-            scene_scale,
-        )
-        detail_items.append((detail_rgba, x0_scene, y0_scene))
-        layer_bounds.append(_rgba_scene_rect(detail_rgba, x0_scene, y0_scene))
 
     patch_bounds = _scene_patch_bounds(
         layer_bounds,
@@ -1641,6 +1671,15 @@ def _place_cluster(
         cy = base_cy + row_offset * sin_base + longitudinal_offset * cos_base
         return cx, cy, _translate_hull_geometry(local_hull, cx, cy)
 
+    def _candidate_center(
+        row_offset: float,
+        longitudinal_offset: float,
+    ) -> tuple[float, float]:
+        return (
+            base_cx + row_offset * cos_base + longitudinal_offset * (-sin_base),
+            base_cy + row_offset * sin_base + longitudinal_offset * cos_base,
+        )
+
     def _candidate_in_bounds(hull_geom: BaseGeometry) -> bool:
         min_x, min_y, max_x, max_y = hull_geom.bounds
         return min_x >= 0.0 and min_y >= 0.0 and max_x <= image_size and max_y <= image_size
@@ -1677,21 +1716,34 @@ def _place_cluster(
         if prev_hull is None:
             return None
         obb_penetration_limit = max(1.0, min(prev_proj_half, proj_half) * 0.22)
+        local_min_x, local_min_y, local_max_x, local_max_y = map(float, local_hull.bounds)
         samples: list[tuple[float, float, float, float, BaseGeometry]] = []
 
         def _sample_contact(row_offset: float) -> tuple[float, float, float, BaseGeometry] | None:
-            cx, cy, hull_geom = _candidate_geometry(local_hull, row_offset, longitudinal_offset)
-            if strict:
-                if not _candidate_valid(cx, cy, hull_geom, bw, lh, angle_rad):
-                    return None
-            elif not _candidate_in_bounds(hull_geom):
-                return None
-
             penetration = prev_row_offset + prev_max_proj - (row_offset + min_proj)
             obb_penetration = prev_row_offset + prev_proj_half - (row_offset - proj_half)
             if penetration > 1.0 or obb_penetration > obb_penetration_limit:
                 return None
 
+            cx, cy = _candidate_center(row_offset, longitudinal_offset)
+            if (
+                local_min_x + cx < 0.0
+                or local_min_y + cy < 0.0
+                or local_max_x + cx > image_size
+                or local_max_y + cy > image_size
+            ):
+                return None
+
+            if strict:
+                if not _obb_on_water(water_mask, cx, cy, bw, lh, angle_rad):
+                    return None
+                cx0, cy0, cx1, cy1 = _obb_aabb_bounds(
+                    cx, cy, bw, lh, angle_rad, image_size, padding=0.0,
+                )
+                if pre_occupancy[cy0:cy1, cx0:cx1].any():
+                    return None
+
+            hull_geom = _translate_hull_geometry(local_hull, cx, cy)
             signed_gap = _signed_geometry_gap(prev_hull, hull_geom)
             return signed_gap, cx, cy, hull_geom
 
