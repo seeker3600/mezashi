@@ -125,6 +125,21 @@ def _struct_start_positions(svg: str) -> list[float]:
     ]
 
 
+def _appearance_variant_from_svg(svg: str) -> str:
+    root = ET.fromstring(svg)
+    return root.attrib.get("data-appearance-variant", "none")
+
+
+def _hull_waterline_color(svg: str) -> tuple[int, int, int]:
+    root = ET.fromstring(svg)
+    polygon = next(
+        element
+        for element in root.iter(f"{{{SVG_NS}}}polygon")
+        if element.attrib.get("data-role") == "hull-waterline"
+    )
+    return _parse_rgb(polygon.attrib["fill"])
+
+
 # ── Hull interpolation ───────────────────────────────────────────────────
 
 
@@ -673,6 +688,31 @@ class TestSmallShipRareVariants:
         assert oversized_only >= 1
         assert bright_only >= 1
 
+    def test_targeted_fishing_classes_sample_cover_variants_sparsely(self) -> None:
+        """対象漁船では dark/wood cover が低頻度かつ別個に出る。"""
+        ship_class = SHIP_CLASSES["fishing_trawler"]
+        variants = [
+            sample_ship_appearance_variant(ship_class, random.Random(seed))
+            for seed in range(1024)
+        ]
+
+        dark_cover = sum(variant.dark_cover_struct for variant in variants)
+        wood_cover = sum(variant.wood_cover_struct for variant in variants)
+        overlap = sum(
+            variant.dark_cover_struct and variant.wood_cover_struct
+            for variant in variants
+        )
+        cover_with_other = sum(
+            (variant.dark_cover_struct or variant.wood_cover_struct)
+            and (variant.oversized_struct or variant.bright_white_struct)
+            for variant in variants
+        )
+
+        assert 2 <= dark_cover <= 24
+        assert 2 <= wood_cover <= 24
+        assert overlap == 0
+        assert cover_with_other == 0
+
     @pytest.mark.parametrize(
         ("ship_class", "min_long_foredeck", "max_long_foredeck"),
         [
@@ -758,6 +798,8 @@ class TestSmallShipRareVariants:
         dark = 0
         for seed in range(384):
             svg = generate_ship_svg(ship_class, rng=random.Random(seed))
+            if _appearance_variant_from_svg(svg) == "dark_cover_struct":
+                continue
             if any(
                 _luminance(rgb) <= 76.0 and _chroma(rgb) <= 20
                 for rgb in _struct_rect_colors(svg)
@@ -775,6 +817,46 @@ class TestSmallShipRareVariants:
                 oversized += 1
 
         assert 3 <= oversized <= 12
+
+    def test_dark_cover_variant_uses_dark_cover_over_blue_green_hull(self) -> None:
+        """dark cover variant は暗い大型カバーと青緑系デッキを出す。"""
+        matches = [
+            generate_ship_svg("fishing_trawler", rng=random.Random(seed))
+            for seed in range(2048)
+            if _appearance_variant_from_svg(
+                generate_ship_svg("fishing_trawler", rng=random.Random(seed))
+            ) == "dark_cover_struct"
+        ]
+
+        assert matches
+        svg = matches[0]
+        first_struct = _struct_rect_colors(svg)[0]
+        hull = _hull_waterline_color(svg)
+
+        assert _luminance(first_struct) <= 84.0
+        assert _struct_area_ratio(svg) >= 0.42
+        assert max(hull[1], hull[2]) >= hull[0] + 18
+        assert min(_struct_start_positions(svg)) <= 0.22
+
+    def test_wood_cover_variant_uses_earth_tone_cover_with_short_foredeck(self) -> None:
+        """wood cover variant は木系の色味と短い前甲板を出す。"""
+        matches = [
+            generate_ship_svg("fishing_longliner", rng=random.Random(seed))
+            for seed in range(2048)
+            if _appearance_variant_from_svg(
+                generate_ship_svg("fishing_longliner", rng=random.Random(seed))
+            ) == "wood_cover_struct"
+        ]
+
+        assert matches
+        svg = matches[0]
+        first_struct = _struct_rect_colors(svg)[0]
+
+        assert first_struct[0] >= first_struct[2] + 18
+        assert first_struct[1] >= first_struct[2] + 8
+        assert 60.0 <= _luminance(first_struct) <= 150.0
+        assert _struct_area_ratio(svg) >= 0.42
+        assert min(_struct_start_positions(svg)) <= 0.18
 
     def test_hull_mottling_adds_polygons(self) -> None:
         """船体ムラ処理で半透明ポリゴンが追加される。"""
