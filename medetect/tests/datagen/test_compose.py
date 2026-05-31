@@ -532,6 +532,98 @@ class TestComposeShadows:
         assert len({round(value, 6) for value in shadow_lengths}) == 1
         assert shadow_lengths[0] == pytest.approx(2.5)
 
+    def test_single_ship_wakes_receive_other_ship_occlusion_mask(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """各単船 wake は自船を除く占有領域だけを遮蔽マスクとして受け取る。"""
+        positions = [(24, 24), (48, 48)]
+        ship_rgba = np.zeros((12, 6, 4), dtype=np.uint8)
+        ship_rgba[:, :, :3] = 180
+        ship_rgba[:, :, 3] = 255
+        wake_calls: list[tuple[float, float, int, int, float, np.ndarray | None]] = []
+
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: "<svg/>")
+        monkeypatch.setattr(compose_mod, "_resolve_ship_dimensions", lambda *args, **kwargs: ("mock", 6, 12, 2.0))
+        monkeypatch.setattr(compose_mod, "_render_ship_from_dimensions", lambda *args, **kwargs: ship_rgba.copy())
+        monkeypatch.setattr(compose_mod, "find_water_position", lambda *args, **kwargs: positions.pop(0))
+        monkeypatch.setattr(
+            compose_mod,
+            "_sample_water_tint",
+            lambda *args, **kwargs: np.array([40.0, 50.0, 60.0], dtype=np.float32),
+        )
+
+        def _capture_render_wake(
+            background: np.ndarray,
+            water_mask: np.ndarray,
+            cx: float,
+            cy: float,
+            beam_px: int,
+            length_px: int,
+            angle_rad: float,
+            state,
+            rng: random.Random,
+            *,
+            wake_prob_scale: float = 1.0,
+            wake_alpha_scale: float = 1.0,
+            occlusion_mask: np.ndarray | None = None,
+        ) -> None:
+            del background, water_mask, state, rng, wake_prob_scale, wake_alpha_scale
+            wake_calls.append(
+                (
+                    cx,
+                    cy,
+                    beam_px,
+                    length_px,
+                    angle_rad,
+                    None if occlusion_mask is None else occlusion_mask.copy(),
+                )
+            )
+
+        monkeypatch.setattr(compose_mod, "render_wake", _capture_render_wake)
+        monkeypatch.setattr(compose_mod, "blend_ship", lambda *args, **kwargs: None)
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(2, 2),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=1.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            shadow_alpha_scale=0.0,
+            rng=random.Random(7),
+        )
+
+        assert result is not None
+        assert len(wake_calls) == 2
+
+        first_call = wake_calls[0]
+        second_call = wake_calls[1]
+        assert first_call[5] is not None
+        assert second_call[5] is not None
+
+        first_ship_mask = np.zeros((64, 64), dtype=bool)
+        compose_mod._stamp_occupancy(first_ship_mask, first_call[0], first_call[1], first_call[2], first_call[3], first_call[4])
+        second_ship_mask = np.zeros((64, 64), dtype=bool)
+        compose_mod._stamp_occupancy(second_ship_mask, second_call[0], second_call[1], second_call[2], second_call[3], second_call[4])
+
+        assert not np.any(first_call[5] & first_ship_mask)
+        assert not np.any(second_call[5] & second_ship_mask)
+        np.testing.assert_array_equal(first_call[5], second_ship_mask)
+        np.testing.assert_array_equal(second_call[5], first_ship_mask)
+
     def test_single_ship_shadows_share_tile_alpha_with_size_bias(
         self,
         water_tif: pathlib.Path,

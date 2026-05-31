@@ -252,6 +252,7 @@ def _compute_path(
 def _render_foam(
     background: NDArray[np.uint8],
     water_mask: NDArray[np.bool_],
+    occlusion_mask: NDArray[np.bool_] | None,
     foam_cx: float,
     foam_cy: float,
     foam_half_l: float,
@@ -299,8 +300,11 @@ def _render_foam(
         pil = pil.filter(ImageFilter.GaussianBlur(radius=blur_radius))
         foam_alpha = np.asarray(pil).astype(np.float32) / 255.0
 
-    # Water mask + scale.
-    foam_alpha *= water_mask[y0:y1, x0:x1].astype(np.float32)
+    # Respect water-only rendering and optional ship-occlusion suppression.
+    valid_mask = water_mask[y0:y1, x0:x1]
+    if occlusion_mask is not None:
+        valid_mask = valid_mask & ~occlusion_mask[y0:y1, x0:x1]
+    foam_alpha *= valid_mask.astype(np.float32)
     foam_alpha = np.clip(foam_alpha * foam_alpha_max, 0.0, 1.0)
 
     bm = foam_alpha > 0.003
@@ -315,6 +319,7 @@ def _render_foam(
 def _render_trail(
     background: NDArray[np.uint8],
     water_mask: NDArray[np.bool_],
+    occlusion_mask: NDArray[np.bool_] | None,
     points: list[tuple[float, float]],
     trail_width: int,
     trail_color: NDArray[np.float32],
@@ -362,8 +367,11 @@ def _render_trail(
         pil = pil.filter(ImageFilter.GaussianBlur(radius=blur_radius))
         trail_alpha = np.asarray(pil).astype(np.float32) / 255.0
 
-    # Water mask + scale.
-    trail_alpha *= water_mask[y0:y1, x0:x1].astype(np.float32)
+    # Respect water-only rendering and optional ship-occlusion suppression.
+    valid_mask = water_mask[y0:y1, x0:x1]
+    if occlusion_mask is not None:
+        valid_mask = valid_mask & ~occlusion_mask[y0:y1, x0:x1]
+    trail_alpha *= valid_mask.astype(np.float32)
     trail_alpha *= trail_alpha_max
 
     bm = trail_alpha > 0.002
@@ -391,6 +399,7 @@ def render_wake(
     *,
     wake_prob_scale: float = 1.0,
     wake_alpha_scale: float = 1.0,
+    occlusion_mask: NDArray[np.bool_] | None = None,
 ) -> None:
     """Render a ship wake trail onto *background* in-place.
 
@@ -451,6 +460,10 @@ def render_wake(
         This is independent of *wake_prob_scale*: a ship's wake can be
         likely to occur (high ``wake_prob_scale``) but subtle when it does
         (low ``wake_alpha_scale``), or vice-versa.
+    occlusion_mask:
+        Optional boolean mask ``(H × W)`` whose ``True`` pixels suppress wake
+        rendering even over water. This is used by compose to keep wakes from
+        appearing above other ship footprints.
     """
     if wake_prob_scale <= 0.0 or wake_alpha_scale <= 0.0:
         return
@@ -520,7 +533,7 @@ def render_wake(
     # ── Render trail first (lower visual priority) ────────────────────
     if has_trail and trail_length >= 2.0:
         _render_trail(
-            background, water_mask, main_path, trail_width,
+            background, water_mask, occlusion_mask, main_path, trail_width,
             trail_color, trail_alpha, rng, trail_blur,
         )
 
@@ -541,7 +554,7 @@ def render_wake(
                 len_r, 0.0, max(10, int(len_r / 4)),
             )
             _render_trail(
-                background, water_mask, path_r, 1,
+                background, water_mask, occlusion_mask, path_r, 1,
                 trail_color, side_alpha, rng, trail_blur,
             )
 
@@ -554,13 +567,13 @@ def render_wake(
                 len_l, 0.0, max(10, int(len_l / 4)),
             )
             _render_trail(
-                background, water_mask, path_l, 1,
+                background, water_mask, occlusion_mask, path_l, 1,
                 trail_color, side_alpha, rng, trail_blur,
             )
 
     # ── Render foam last (highest visual priority) ────────────────────
     _render_foam(
-        background, water_mask, foam_cx, foam_cy,
+        background, water_mask, occlusion_mask, foam_cx, foam_cy,
         foam_half_l, foam_half_w, angle_rad, foam_color,
         foam_alpha, foam_blur,
     )

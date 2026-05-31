@@ -229,6 +229,23 @@ def _has_full_open_box(
     return bool(np.any(window_sums == box_w * box_h))
 
 
+def _wake_occlusion_mask(
+    occupancy: NDArray[np.bool_],
+    ship: SingleShipPlacement,
+) -> NDArray[np.bool_]:
+    """Return occupied pixels excluding the wake source ship footprint."""
+    source_mask = np.zeros_like(occupancy)
+    _stamp_occupancy(
+        source_mask,
+        ship.cx,
+        ship.cy,
+        ship.bw,
+        ship.lh,
+        ship.angle_rad,
+    )
+    return occupancy & ~source_mask
+
+
 def augment_tile(
     tile: NDArray[np.uint8],
     rng: random.Random,
@@ -671,6 +688,7 @@ def _compose_one(
             rng,
             wake_prob_scale=wake_prob_scale,
             wake_alpha_scale=wake_alpha_scale,
+            occlusion_mask=_wake_occlusion_mask(occupancy, ship),
         )
 
     for ship in single_ships:

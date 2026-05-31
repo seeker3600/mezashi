@@ -249,6 +249,47 @@ class TestRenderWake:
                 assert diff[:64, :].max() == 0, "Wake appeared on land"
                 break
 
+    def test_occlusion_mask_suppresses_wake(self) -> None:
+        """occlusion_mask=True の画素には航跡が描画されない。"""
+        size = 128
+        original = self._make_background(size)
+        water_mask = self._all_water_mask(size)
+        occlusion_mask = np.ones((size, size), dtype=bool)
+
+        for seed in range(30):
+            baseline = original.copy()
+            render_wake(
+                baseline,
+                water_mask,
+                64.0,
+                40.0,
+                8,
+                24,
+                angle_rad=0.0,
+                state=MotionState.FAST,
+                rng=random.Random(seed),
+            )
+            if np.array_equal(baseline, original):
+                continue
+
+            blocked = original.copy()
+            render_wake(
+                blocked,
+                water_mask,
+                64.0,
+                40.0,
+                8,
+                24,
+                angle_rad=0.0,
+                state=MotionState.FAST,
+                rng=random.Random(seed),
+                occlusion_mask=occlusion_mask,
+            )
+            np.testing.assert_array_equal(blocked, original)
+            break
+        else:
+            raise AssertionError("No seed produced a wake to validate occlusion masking")
+
     def test_background_dtype_preserved(self) -> None:
         """背景 ndarray の dtype が uint8 のまま保たれる。"""
         bg = self._make_background()
