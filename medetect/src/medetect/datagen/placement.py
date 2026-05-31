@@ -127,6 +127,15 @@ class _BerthRun:
     length: float
 
 
+def _fork_rng(rng: random.Random) -> random.Random:
+    forked = type(rng).__new__(type(rng))
+    random.Random.__init__(forked)
+    if hasattr(rng, "__dict__"):
+        forked.__dict__.update(rng.__dict__)
+    forked.setstate(rng.getstate())
+    return forked
+
+
 def find_water_position(
     water_mask: NDArray[np.bool_],
     ship_w: int,
@@ -785,6 +794,72 @@ def _max_berthed_ships_for_run(
     return max(0, math.floor((run_length + ship_gap) / (min_ship_span + ship_gap)))
 
 
+def _max_berthed_capacity_for_runs(
+    berth_runs: list[_BerthRun],
+    ship_gap: float,
+    resolution_m: float,
+    length_range: tuple[float, float] | None,
+    berth_stern: bool,
+) -> int:
+    """Return the maximum physically feasible ship count across shoreline runs."""
+    if not berth_runs:
+        return 0
+
+    return max(
+        _max_berthed_ships_for_run(
+            run.length,
+            ship_gap,
+            resolution_m,
+            length_range,
+            berth_stern,
+        )
+        for run in berth_runs
+    )
+
+
+def _ordered_berth_mode_attempts(
+    berth_runs: list[_BerthRun],
+    resolution_m: float,
+    length_range: tuple[float, float] | None,
+    rng: random.Random,
+    *,
+    berth_stern_prob: float,
+    ship_gap: float,
+    min_required_ships: int = 1,
+) -> tuple[bool, ...]:
+    """Return feasible berth orientations in the order they should be attempted."""
+    required = max(1, min_required_ships)
+    alongside_capacity = _max_berthed_capacity_for_runs(
+        berth_runs,
+        ship_gap,
+        resolution_m,
+        length_range,
+        berth_stern=False,
+    )
+    stern_capacity = _max_berthed_capacity_for_runs(
+        berth_runs,
+        ship_gap,
+        resolution_m,
+        length_range,
+        berth_stern=True,
+    )
+
+    feasible_modes: list[bool] = []
+    if alongside_capacity >= required:
+        feasible_modes.append(False)
+    if stern_capacity >= required:
+        feasible_modes.append(True)
+    if not feasible_modes:
+        return ()
+    if len(feasible_modes) == 1:
+        return tuple(feasible_modes)
+
+    prefer_stern = rng.random() < max(0.0, min(1.0, berth_stern_prob))
+    primary = True if prefer_stern else False
+    secondary = not primary
+    return tuple(mode for mode in (primary, secondary) if mode in feasible_modes)
+
+
 def _segment_endpoint_distance(
     point_a: tuple[float, float],
     point_b: tuple[float, float],
@@ -1293,6 +1368,361 @@ def _place_berthed_cluster(
     return labels
 
 
+def _place_coastal_raft_cluster(
+    berth_water_mask: NDArray[np.bool_],
+    occupancy: NDArray[np.bool_],
+    berth_segments: list[_BerthSegment],
+    svg_metas: list[_SvgMeta] | None,
+    resolution_m: float,
+    rng: random.Random,
+    n_ships: int,
+    alpha_range: tuple[float, float],
+    class_id: int,
+    image_size: int,
+    background: NDArray[np.uint8],
+    length_range: tuple[float, float] | None,
+    length_exponent: float,
+    size_thresholds: tuple[float, ...] | None,
+    mixed: bool,
+    berth_stern: bool,
+    blur_sigma: float,
+    shadow_azimuth_rad: float | None = None,
+    shadow_length: float | None = None,
+    shadow_alpha: float = 0.0,
+    shadow_alpha_scale: float = 1.0,
+    offnadir_deg: float = 0.0,
+    sensor_az_world_deg: float = 0.0,
+    shipgen_kwargs: dict[str, Any] | None = None,
+    berth_runs: list[_BerthRun] | None = None,
+    min_cluster_ships: int = 2,
+) -> list[str]:
+    """Place a shoreline-attached tight raft while preserving contact density."""
+    labels: list[str] = []
+    runs = list(berth_runs) if berth_runs is not None else _build_berth_runs(berth_segments, berth_water_mask)
+    if not runs:
+        return labels
+
+    required_cluster_ships = max(2, min_cluster_ships)
+    runs = [
+        run
+        for run in runs
+        if _max_berthed_ships_for_run(
+            run.length,
+            0.0,
+            resolution_m,
+            length_range,
+            berth_stern,
+        ) >= required_cluster_ships
+    ]
+    if not runs:
+        return labels
+
+    rng.shuffle(runs)
+    cluster_alpha = rng.uniform(*alpha_range)
+    scene_scale = _CLUSTER_SCENE_SUPERSAMPLE
+
+    for run in runs:
+        if run.length <= 1e-6:
+            continue
+
+        target_ship_count = min(
+            n_ships,
+            _max_berthed_ships_for_run(
+                run.length,
+                0.0,
+                resolution_m,
+                length_range,
+                berth_stern,
+            ),
+        )
+        if target_ship_count < required_cluster_ships:
+            continue
+
+        anchor_s = run.length / 2.0
+        anchor_sample = _sample_berth_run(run, anchor_s)
+        if anchor_sample is None:
+            continue
+        anchor_x, anchor_y, tan_x, tan_y, water_nx, water_ny = anchor_sample
+        stern_dx = -water_nx if berth_stern else tan_x
+        stern_dy = -water_ny if berth_stern else tan_y
+        angle_deg = _angle_deg_from_stern_direction(stern_dx, stern_dy)
+        angle_rad = math.radians(angle_deg)
+        ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
+        canonical_angle_deg = _angle_deg_from_stern_direction(-1.0, 0.0) if berth_stern else 0.0
+
+        if not mixed:
+            svg_text_ref = _pick_svg(
+                svg_metas,
+                rng,
+                length_range,
+                offnadir_deg,
+                ship_sensor_az,
+                shipgen_kwargs=shipgen_kwargs,
+            )
+            _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
+                svg_text_ref,
+                resolution_m,
+                rng,
+                length_range,
+                length_exponent,
+            )
+
+        ship_specs: list[
+            tuple[
+                str,
+                int,
+                int,
+                tuple[int, int, int, int],
+                float,
+                float,
+                float,
+                BaseGeometry,
+            ]
+        ] = []
+        for index in range(target_ship_count):
+            if mixed:
+                svg_text_i = _pick_svg(
+                    svg_metas,
+                    rng,
+                    length_range,
+                    offnadir_deg,
+                    ship_sensor_az,
+                    shipgen_kwargs=shipgen_kwargs,
+                )
+                _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
+                    svg_text_i,
+                    resolution_m,
+                    rng,
+                    length_range,
+                    length_exponent,
+                )
+            else:
+                svg_text_i = svg_text_ref
+                if index == 0:
+                    bw, lh = bw0, lh0
+                else:
+                    scale = rng.uniform(0.9, 1.1)
+                    bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
+
+            canonical_hull = _local_hull_geometry(svg_text_i, bw, lh, canonical_angle_deg)
+            min_t, max_t = _geometry_projection_extents(canonical_hull, 0.0, 1.0)
+            min_n, _max_n = _geometry_projection_extents(canonical_hull, 1.0, 0.0)
+            ship_specs.append(
+                (
+                    svg_text_i,
+                    bw,
+                    lh,
+                    extract_hull_fill(svg_text_i),
+                    min_t,
+                    max_t,
+                    -min_n,
+                    _local_hull_geometry(svg_text_i, bw, lh, angle_deg),
+                )
+            )
+
+        active_ship_specs = list(ship_specs)
+        while active_ship_specs:
+            total_span = sum(
+                max_t - min_t
+                for _svg_text_i, _bw, _lh, _hull_fill, min_t, max_t, _water_offset, _local_hull in active_ship_specs
+            )
+            if total_span <= run.length:
+                break
+            active_ship_specs.pop()
+
+        if len(active_ship_specs) < required_cluster_ships:
+            continue
+
+        required_shifts: list[float] = []
+        base_placements: list[
+            tuple[str, int, int, tuple[int, int, int, int], BaseGeometry, float, float]
+        ] = []
+        cursor = -total_span / 2.0
+        valid = True
+
+        for svg_text_i, bw, lh, hull_fill, min_t, max_t, water_offset, local_hull in active_ship_specs:
+            center_offset = cursor - min_t
+            line_x = anchor_x + tan_x * center_offset
+            line_y = anchor_y + tan_y * center_offset
+            cx = line_x + water_nx * water_offset
+            cy = line_y + water_ny * water_offset
+            hull_geom = _translate_hull_geometry(local_hull, cx, cy)
+            min_x, min_y, max_x, max_y = hull_geom.bounds
+            if min_x < 0.0 or min_y < 0.0 or max_x > image_size or max_y > image_size:
+                valid = False
+                break
+
+            resolved = _resolve_berth_land_intrusion(
+                berth_water_mask,
+                hull_geom,
+                cx,
+                cy,
+                water_nx,
+                water_ny,
+                max_shift_px=max(6.0, water_offset + 3.0),
+            )
+            if resolved is None:
+                valid = False
+                break
+
+            resolved_cx, resolved_cy, _resolved_geom = resolved
+            required_shift = max(
+                0.0,
+                ((resolved_cx - cx) * water_nx) + ((resolved_cy - cy) * water_ny),
+            )
+            required_shifts.append(required_shift)
+            base_placements.append((svg_text_i, bw, lh, hull_fill, local_hull, cx, cy))
+            cursor = center_offset + max_t
+
+        if not valid:
+            continue
+
+        shared_shift = max(required_shifts, default=0.0)
+        if shared_shift > 4.0:
+            continue
+        if shared_shift - min(required_shifts, default=shared_shift) > 3.0:
+            continue
+
+        pre_occupancy = occupancy.copy()
+        placed: list[_RaftShipPlacement] = []
+        for svg_text_i, bw, lh, hull_fill, local_hull, base_cx, base_cy in base_placements:
+            cx = base_cx + water_nx * shared_shift
+            cy = base_cy + water_ny * shared_shift
+            hull_geom = _translate_hull_geometry(local_hull, cx, cy)
+            min_x, min_y, max_x, max_y = hull_geom.bounds
+            if min_x < 0.0 or min_y < 0.0 or max_x > image_size or max_y > image_size:
+                placed = []
+                break
+
+            if _geometry_intrudes_land(berth_water_mask, hull_geom):
+                placed = []
+                break
+
+            if not _obb_on_berth_water(
+                berth_water_mask,
+                cx,
+                cy,
+                bw,
+                lh,
+                angle_rad,
+                water_nx,
+                water_ny,
+            ):
+                placed = []
+                break
+
+            cx0, cy0, cx1, cy1 = _obb_aabb_bounds(
+                cx,
+                cy,
+                bw,
+                lh,
+                angle_rad,
+                image_size,
+                padding=0.0,
+            )
+            if pre_occupancy[cy0:cy1, cx0:cx1].any():
+                placed = []
+                break
+
+            if placed and _signed_geometry_gap(placed[-1].hull_geom, hull_geom) > 0.8:
+                placed = []
+                break
+
+            placed.append(
+                _RaftShipPlacement(
+                    svg_text=svg_text_i,
+                    cx=float(cx),
+                    cy=float(cy),
+                    bw=bw,
+                    lh=lh,
+                    angle_deg=angle_deg,
+                    angle_rad=angle_rad,
+                    class_id=_ship_class_id(
+                        lh,
+                        resolution_m,
+                        class_id,
+                        size_thresholds,
+                    ),
+                    hull_geom=hull_geom,
+                    hull_fill=hull_fill,
+                )
+            )
+
+        if not placed:
+            continue
+
+        staged_occupancy = occupancy.copy()
+        for ship in placed:
+            _stamp_geometry_occupancy(staged_occupancy, ship.hull_geom)
+        occupancy[:] = staged_occupancy
+        water_tint = _sample_water_tint(background, round(anchor_x), round(anchor_y))
+        rendered_cluster = _render_vector_raft_cluster(
+            placed,
+            image_size,
+            blur_sigma,
+            scene_scale,
+            join_tolerance=0.75,
+            shadow_azimuth_rad=shadow_azimuth_rad,
+            shadow_length=shadow_length,
+            shadow_alpha=shadow_alpha,
+            shadow_alpha_scale=shadow_alpha_scale,
+        )
+        shadow_alpha_factor = shadow_alpha * shadow_alpha_scale
+        if (
+            isinstance(rendered_cluster, tuple)
+            and len(rendered_cluster) == 2
+            and isinstance(rendered_cluster[1], RgbaLayerPatch)
+        ):
+            shadow_patch, cluster_patch = rendered_cluster
+            if shadow_alpha_factor > 0.0 and shadow_patch is not None:
+                _darken_rgba_patch(
+                    background,
+                    shadow_patch,
+                    shadow_alpha_factor,
+                    clip_mask=berth_water_mask,
+                )
+            _blend_rgba_patch(
+                background,
+                cluster_patch,
+                cluster_alpha,
+                water_tint,
+            )
+        else:
+            shadow_layer: NDArray[np.uint8]
+            cluster_layer: NDArray[np.uint8]
+            if isinstance(rendered_cluster, tuple):
+                shadow_layer, cluster_layer = rendered_cluster
+            else:
+                shadow_layer = np.zeros((image_size, image_size, 4), dtype=np.uint8)
+                cluster_layer = rendered_cluster
+            if shadow_alpha_factor > 0.0:
+                _darken_rgba_layer(
+                    background,
+                    shadow_layer,
+                    shadow_alpha_factor,
+                    clip_mask=berth_water_mask,
+                )
+            _blend_rgba_layer(
+                background,
+                cluster_layer,
+                cluster_alpha,
+                water_tint,
+            )
+
+        for ship in placed:
+            corners = compute_obb_corners(
+                float(ship.cx),
+                float(ship.cy),
+                float(ship.bw),
+                float(ship.lh),
+                ship.angle_rad,
+            )
+            labels.append(format_obb_label(ship.class_id, corners, image_size, image_size))
+        return labels
+
+    return labels
+
+
 def _place_area_cluster(
     water_mask: NDArray[np.bool_],
     occupancy: NDArray[np.bool_],
@@ -1524,6 +1954,8 @@ def _place_cluster(
     raft_open_contact_prob: float = 0.5,
     berth_prob: float = 0.25,
     berth_stern_prob: float = 0.5,
+    coastal_raft_tight_prob: float = 0.6,
+    coastal_raft_min_ships: int = 2,
     berth_water_mask: NDArray[np.bool_] | None = None,
     berth_segments: list[_BerthSegment] | None = None,
     berth_runs: list[_BerthRun] | None = None,
@@ -1545,35 +1977,96 @@ def _place_cluster(
         and berth_segments
         and rng.random() < max(0.0, min(1.0, berth_prob))
     ):
-        berthed_labels = _place_berthed_cluster(
-            berth_water_mask,
-            occupancy,
-            berth_segments,
-            svg_metas,
-            resolution_m,
-            rng,
-            n_ships,
-            alpha_range,
-            class_id,
-            image_size,
-            background,
-            length_range,
-            length_exponent,
-            size_thresholds,
-            mixed,
-            berth_stern=rng.random() < max(0.0, min(1.0, berth_stern_prob)),
-            blur_sigma=blur_sigma,
-            shadow_azimuth_rad=shadow_azimuth_rad,
-            shadow_length=shadow_length,
-            shadow_alpha=shadow_alpha,
-            shadow_alpha_scale=shadow_alpha_scale,
-            offnadir_deg=offnadir_deg,
-            sensor_az_world_deg=sensor_az_world_deg,
-            shipgen_kwargs=shipgen_kwargs,
-            berth_runs=berth_runs,
-        )
-        if berthed_labels:
-            return berthed_labels
+        runs = list(berth_runs) if berth_runs is not None else _build_berth_runs(berth_segments, berth_water_mask)
+        if runs:
+            coastal_required_ships = max(2, coastal_raft_min_ships)
+            coastal_modes = _ordered_berth_mode_attempts(
+                runs,
+                resolution_m,
+                length_range,
+                rng,
+                berth_stern_prob=berth_stern_prob,
+                ship_gap=0.0,
+                min_required_ships=coastal_required_ships,
+            )
+            if (
+                n_ships >= coastal_required_ships
+                and coastal_modes
+                and rng.random() < max(0.0, min(1.0, coastal_raft_tight_prob))
+            ):
+                coastal_rng = _fork_rng(rng)
+                for berth_stern in coastal_modes:
+                    coastal_labels = _place_coastal_raft_cluster(
+                        berth_water_mask,
+                        occupancy,
+                        berth_segments,
+                        svg_metas,
+                        resolution_m,
+                        coastal_rng,
+                        n_ships,
+                        alpha_range,
+                        class_id,
+                        image_size,
+                        background,
+                        length_range,
+                        length_exponent,
+                        size_thresholds,
+                        mixed,
+                        berth_stern=berth_stern,
+                        blur_sigma=blur_sigma,
+                        shadow_azimuth_rad=shadow_azimuth_rad,
+                        shadow_length=shadow_length,
+                        shadow_alpha=shadow_alpha,
+                        shadow_alpha_scale=shadow_alpha_scale,
+                        offnadir_deg=offnadir_deg,
+                        sensor_az_world_deg=sensor_az_world_deg,
+                        shipgen_kwargs=shipgen_kwargs,
+                        berth_runs=runs,
+                        min_cluster_ships=coastal_required_ships,
+                    )
+                    if coastal_labels:
+                        rng.setstate(coastal_rng.getstate())
+                        return coastal_labels
+
+            berthed_modes = _ordered_berth_mode_attempts(
+                runs,
+                resolution_m,
+                length_range,
+                rng,
+                berth_stern_prob=berth_stern_prob,
+                ship_gap=4.0,
+                min_required_ships=1,
+            )
+            for berth_stern in berthed_modes:
+                berthed_labels = _place_berthed_cluster(
+                    berth_water_mask,
+                    occupancy,
+                    berth_segments,
+                    svg_metas,
+                    resolution_m,
+                    rng,
+                    n_ships,
+                    alpha_range,
+                    class_id,
+                    image_size,
+                    background,
+                    length_range,
+                    length_exponent,
+                    size_thresholds,
+                    mixed,
+                    berth_stern=berth_stern,
+                    blur_sigma=blur_sigma,
+                    shadow_azimuth_rad=shadow_azimuth_rad,
+                    shadow_length=shadow_length,
+                    shadow_alpha=shadow_alpha,
+                    shadow_alpha_scale=shadow_alpha_scale,
+                    offnadir_deg=offnadir_deg,
+                    sensor_az_world_deg=sensor_az_world_deg,
+                    shipgen_kwargs=shipgen_kwargs,
+                    berth_runs=runs,
+                )
+                if berthed_labels:
+                    return berthed_labels
 
     layout = rng.choices(
         ["raft_tight", "raft_open", "area_scattered"],

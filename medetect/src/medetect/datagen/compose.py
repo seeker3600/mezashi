@@ -22,6 +22,7 @@ from medetect.datagen.placement import (
     _RaftShipPlacement,
     _build_berth_runs,
     _geometry_projection_extents,
+    _ordered_berth_mode_attempts,
     _place_berthed_cluster,
     _place_area_cluster,
     _place_cluster,
@@ -327,6 +328,8 @@ def _compose_one(
     length_exponent: float = 1.0,
     berth_prob: float = 0.25,
     berth_stern_prob: float = 0.5,
+    coastal_raft_tight_prob: float = 0.6,
+    coastal_raft_min_ships: int = 2,
     rng: random.Random,
     max_crop_attempts: int = 20,
     size_thresholds: tuple[float, ...] | None = None,
@@ -520,6 +523,8 @@ def _compose_one(
                 shadow_alpha_scale=shadow_alpha_scale,
                 berth_prob=berth_prob,
                 berth_stern_prob=berth_stern_prob,
+                coastal_raft_tight_prob=coastal_raft_tight_prob,
+                coastal_raft_min_ships=coastal_raft_min_ships,
                 berth_water_mask=berth_water_mask,
                 berth_segments=berth_segments,
                 berth_runs=berth_runs,
@@ -533,36 +538,48 @@ def _compose_one(
                 placed_event = True
         else:
             if berth_water_mask is not None and berth_segments and rng.random() < max(0.0, min(1.0, berth_prob)):
-                berthed_labels = _place_berthed_cluster(
-                    berth_water_mask,
-                    occupancy,
-                    berth_segments,
-                    svg_metas,
+                runs = list(berth_runs) if berth_runs is not None else _build_berth_runs(berth_segments, berth_water_mask)
+                berth_modes = _ordered_berth_mode_attempts(
+                    runs,
                     ship_resolution,
-                    rng,
-                    1,
-                    ship_alpha,
-                    class_id,
-                    image_size,
-                    tile,
                     ship_length_range,
-                    length_exponent,
-                    size_thresholds,
-                    False,
-                    berth_stern=rng.random() < max(0.0, min(1.0, berth_stern_prob)),
-                    blur_sigma=blur_sigma,
-                    shadow_azimuth_rad=tile_shadow_azimuth,
-                    shadow_length=tile_shadow_length,
-                    shadow_alpha=tile_shadow_alpha,
-                    shadow_alpha_scale=shadow_alpha_scale,
-                    offnadir_deg=tile_offnadir_deg,
-                    sensor_az_world_deg=tile_sensor_az_world_deg,
-                    shipgen_kwargs=shipgen_kwargs,
-                    berth_runs=berth_runs,
+                    rng,
+                    berth_stern_prob=berth_stern_prob,
+                    ship_gap=4.0,
+                    min_required_ships=1,
                 )
-                if berthed_labels:
-                    labels.extend(berthed_labels)
-                    placed_event = True
+                for berth_stern in berth_modes:
+                    berthed_labels = _place_berthed_cluster(
+                        berth_water_mask,
+                        occupancy,
+                        berth_segments,
+                        svg_metas,
+                        ship_resolution,
+                        rng,
+                        1,
+                        ship_alpha,
+                        class_id,
+                        image_size,
+                        tile,
+                        ship_length_range,
+                        length_exponent,
+                        size_thresholds,
+                        False,
+                        berth_stern=berth_stern,
+                        blur_sigma=blur_sigma,
+                        shadow_azimuth_rad=tile_shadow_azimuth,
+                        shadow_length=tile_shadow_length,
+                        shadow_alpha=tile_shadow_alpha,
+                        shadow_alpha_scale=shadow_alpha_scale,
+                        offnadir_deg=tile_offnadir_deg,
+                        sensor_az_world_deg=tile_sensor_az_world_deg,
+                        shipgen_kwargs=shipgen_kwargs,
+                        berth_runs=runs,
+                    )
+                    if berthed_labels:
+                        labels.extend(berthed_labels)
+                        placed_event = True
+                        break
 
             if not placed_event:
                 angle_deg = rng.uniform(0, 360)

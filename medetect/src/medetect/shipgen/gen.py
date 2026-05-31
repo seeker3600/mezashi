@@ -34,6 +34,7 @@ from medetect.shipgen.hull import (
 )
 from medetect.shipgen.ship_class import (
     HullTraitVariant,
+    ShipAppearanceVariant,
     SHIP_CLASSES,
     Detail,
     ShipColors,
@@ -133,6 +134,24 @@ def _format_hull_trait_metadata(variant: HullTraitVariant | object | None) -> st
     if bool(getattr(variant, "square_stern", False)):
         traits.append("square_stern")
     return ",".join(traits) if traits else "none"
+
+
+def _format_appearance_variant_metadata(variant: ShipAppearanceVariant | object | None) -> str:
+    if isinstance(variant, ShipAppearanceVariant):
+        return variant.metadata_value()
+
+    if variant is None:
+        return "none"
+
+    variants: list[str] = []
+    if bool(getattr(variant, "oversized_struct", False)):
+        variants.append("oversized_struct")
+    if bool(getattr(variant, "bright_white_struct", False)):
+        variants.append("bright_white_struct")
+    cover_preset = str(getattr(variant, "cover_preset", "none"))
+    if cover_preset != "none":
+        variants.append(cover_preset)
+    return ",".join(variants) if variants else "none"
 
 
 def _debug_rect_points(lb_ratio: float) -> list[tuple[float, float]]:
@@ -424,6 +443,29 @@ def _apply_oversized_struct_geometry(
     return x0, x1, w_frac
 
 
+def _apply_cover_struct_geometry(
+    x0: float,
+    x1: float,
+    w_frac: float,
+    rng: random.Random,
+    cover_preset: str,
+) -> tuple[float, float, float]:
+    if cover_preset == "dark_cover_struct":
+        x0 = rng.uniform(0.18, 0.30)
+        x1 = max(rng.uniform(0.76, 0.90), x0 + 0.50)
+        w_frac = rng.uniform(0.82, 0.94)
+    elif cover_preset == "wood_cover_struct":
+        x0 = rng.uniform(0.08, 0.18)
+        x1 = max(rng.uniform(0.80, 0.92), x0 + 0.60)
+        w_frac = rng.uniform(0.84, 0.96)
+    else:
+        return x0, x1, w_frac
+
+    x1 = min(x1, 0.96)
+    x0 = max(0.04, min(x0, x1 - 0.36))
+    return x0, x1, w_frac
+
+
 def _apply_long_foredeck_struct_geometry(
     x0: float,
     x1: float,
@@ -448,6 +490,7 @@ def _resolve_struct_rect(
     rng: random.Random,
     *,
     oversized_variant: bool = False,
+    cover_preset: str = "none",
     long_foredeck_variant: bool = False,
     beam_shift: float = 0.0,
     length_shift: float = 0.0,
@@ -459,6 +502,8 @@ def _resolve_struct_rect(
     w_frac = rng.uniform(*spec.w)
     if oversized_variant:
         x0, x1, w_frac = _apply_oversized_struct_geometry(x0, x1, w_frac)
+    if cover_preset != "none":
+        x0, x1, w_frac = _apply_cover_struct_geometry(x0, x1, w_frac, rng, cover_preset)
     if long_foredeck_variant:
         x0, x1 = _apply_long_foredeck_struct_geometry(x0, x1)
 
@@ -525,6 +570,7 @@ def _estimate_struct_zone(
     *,
     lb_ratio: float,
     oversized_variant: bool = False,
+    cover_preset: str = "none",
     long_foredeck_variant: bool = False,
     length_shift: float = 0.0,
 ) -> tuple[float, float]:
@@ -532,6 +578,10 @@ def _estimate_struct_zone(
     x1 = spec.x1[1]
     if oversized_variant:
         x0, x1, _ = _apply_oversized_struct_geometry(x0, x1, spec.w[1])
+    if cover_preset == "dark_cover_struct":
+        x0, x1 = 0.18, 0.84
+    elif cover_preset == "wood_cover_struct":
+        x0, x1 = 0.08, 0.88
     if long_foredeck_variant:
         x0, x1 = _apply_long_foredeck_struct_geometry(x0, x1)
     y0 = min(lb_ratio, max(0.0, x0 * lb_ratio + length_shift))
@@ -1651,6 +1701,7 @@ def generate_ship_svg(
             f'data-trim-mode="none" '
             f'data-visible-side="none" '
             f'data-visible-end="none" '
+            f'data-appearance-variant="none" '
             f'data-hull-traits="none" '
             f'data-lb-ratio="{_f(lb_ratio)}">\n'
         )
@@ -1708,6 +1759,7 @@ def generate_ship_svg(
         f'data-trim-mode="{colors.trim.primary_mode}" '
         f'data-visible-side="{colors.trim.visible_side}" '
         f'data-visible-end="{projection.visible_end}" '
+        f'data-appearance-variant="{_format_appearance_variant_metadata(appearance_variant)}" '
         f'data-hull-traits="{_format_hull_trait_metadata(hull_trait_variant)}" '
         f'data-lb-ratio="{_f(lb_ratio)}">\n'
     )
@@ -1732,7 +1784,7 @@ def generate_ship_svg(
     _write_visible_hull_side(out, hull_pts, deck_pts, colors)
     out.write(
         f'  <polygon points="{deck_attr}" '
-        f'fill="{colors.hull_css()}" data-role="deck-top"/>\n'
+        f'fill="{colors.deck_css()}" data-role="deck-top"/>\n'
     )
 
     # 2) Superstructures (with directional shadow)
@@ -1877,15 +1929,22 @@ def generate_ship_svg(
 
     # Compute approximate superstructure exclusion zones early (used by
     # panel divisions, deck wear, and scatter).
+    cover_preset = appearance_variant.cover_preset
+    struct_specs = cls.structs[:1] if cover_preset != "none" else cls.structs
     struct_zones = [
         _estimate_struct_zone(
             spec,
             lb_ratio=lb_ratio,
-            oversized_variant=appearance_variant.oversized_struct and index == 0,
-            long_foredeck_variant=getattr(hull_trait_variant, "long_foredeck", False) and index == 0,
+            oversized_variant=appearance_variant.oversized_struct and cover_preset == "none" and index == 0,
+            cover_preset=cover_preset if index == 0 else "none",
+            long_foredeck_variant=(
+                getattr(hull_trait_variant, "long_foredeck", False)
+                and cover_preset == "none"
+                and index == 0
+            ),
             length_shift=length_shift,
         )
-        for index, spec in enumerate(cls.structs)
+        for index, spec in enumerate(struct_specs)
     ]
 
     # 1g) Deck panel divisions — centreline, seam lines, zone fills
@@ -1898,15 +1957,20 @@ def generate_ship_svg(
     _write_deck_wear(out, lb_ratio, half_widths, rng, struct_zones)
     out.write('  </g>\n')
 
-    for index, s in enumerate(cls.structs):
+    for index, s in enumerate(struct_specs):
         if rng.random() < s.prob:
             rect = _resolve_struct_rect(
                 s,
                 lb_ratio,
                 half_widths,
                 rng,
-                oversized_variant=appearance_variant.oversized_struct and index == 0,
-                long_foredeck_variant=getattr(hull_trait_variant, "long_foredeck", False) and index == 0,
+                oversized_variant=appearance_variant.oversized_struct and cover_preset == "none" and index == 0,
+                cover_preset=cover_preset if index == 0 else "none",
+                long_foredeck_variant=(
+                    getattr(hull_trait_variant, "long_foredeck", False)
+                    and cover_preset == "none"
+                    and index == 0
+                ),
                 beam_shift=beam_shift,
                 length_shift=length_shift,
             )

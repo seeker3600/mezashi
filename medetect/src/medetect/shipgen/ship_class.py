@@ -296,6 +296,33 @@ _SMALL_SHIP_STRUCT_HULL_GAPS: dict[str, float] = {
 }
 
 
+_COVER_STRUCT_PALETTES: dict[str, list[tuple[int, int, int]]] = {
+    "dark_cover_struct": [
+        (6, 8, 10),
+        (10, 12, 16),
+        (14, 16, 20),
+        (18, 20, 24),
+        (22, 24, 28),
+    ],
+    "wood_cover_struct": [
+        (96, 74, 50),
+        (108, 82, 56),
+        (118, 90, 62),
+        (126, 98, 68),
+        (138, 108, 78),
+    ],
+}
+
+
+_DARK_COVER_DECK_PALETTES: tuple[tuple[int, int, int], ...] = (
+    (48, 104, 82),
+    (54, 118, 92),
+    (60, 128, 98),
+    (56, 98, 138),
+    (62, 108, 150),
+)
+
+
 _STRUCT_FAMILY_ALIASES: dict[str, str] = {
     "blue_variants": "fishing_mixed",
     "red_orange": "work_mixed",
@@ -574,6 +601,17 @@ class ShipAppearanceVariant:
     small_ship: bool = False
     oversized_struct: bool = False
     bright_white_struct: bool = False
+    cover_preset: str = "none"
+
+    def metadata_value(self) -> str:
+        variants: list[str] = []
+        if self.oversized_struct:
+            variants.append("oversized_struct")
+        if self.bright_white_struct:
+            variants.append("bright_white_struct")
+        if self.cover_preset != "none":
+            variants.append(self.cover_preset)
+        return ",".join(variants) if variants else "none"
 
 
 @dataclass(frozen=True)
@@ -607,6 +645,32 @@ def _sample_bright_white_small_ship_struct(
     tone = rng.choice(_STRUCT_NEUTRALS["fishing_white"])
     bright = _lift_rgb(_desaturate_toward_gray(tone, 0.70), rng.randint(18, 28))
     return _jitter_rgb(_cap_luminance(bright, 226.0), rng, 2)
+
+
+def _sample_cover_struct_base(
+    cover_preset: str,
+    hull: tuple[int, int, int],
+    rng: random.Random,
+) -> tuple[int, int, int]:
+    tone = rng.choice(_COVER_STRUCT_PALETTES[cover_preset])
+    if cover_preset == "dark_cover_struct":
+        mixed = _mix_rgb(tone, _desaturate_toward_gray(hull, 0.72), rng.uniform(0.04, 0.12))
+        capped = _cap_luminance(mixed, 28.0)
+        return _jitter_rgb(capped, rng, 2)
+
+    mixed = _mix_rgb(tone, _desaturate_toward_gray(hull, 0.35), rng.uniform(0.06, 0.18))
+    mixed = _floor_luminance(mixed, 88.0)
+    capped = _cap_luminance(mixed, 126.0)
+    return _jitter_rgb(capped, rng, 4)
+
+
+def _sample_dark_cover_deck_base(
+    hull: tuple[int, int, int],
+    rng: random.Random,
+) -> tuple[int, int, int]:
+    tone = rng.choice(_DARK_COVER_DECK_PALETTES)
+    mixed = _mix_rgb(tone, hull, rng.uniform(0.08, 0.18))
+    return _jitter_rgb(mixed, rng, 4)
 
 
 def _apply_small_ship_struct_base_variant(
@@ -644,11 +708,22 @@ def sample_ship_appearance_variant(
     has_small_ship_variant = (
         ship_class.rare_oversized_struct_prob > 0.0
         or ship_class.rare_bright_white_struct_prob > 0.0
+        or ship_class.rare_dark_cover_struct_prob > 0.0
+        or ship_class.rare_wood_cover_struct_prob > 0.0
     )
     if not has_small_ship_variant:
         return ShipAppearanceVariant()
 
     forked = _fork_rng(rng)
+    cover_roll = forked.random()
+    dark_cover_prob = max(0.0, min(1.0, ship_class.rare_dark_cover_struct_prob))
+    wood_cover_prob = max(0.0, min(1.0, ship_class.rare_wood_cover_struct_prob))
+    cover_preset = "none"
+    if cover_roll < dark_cover_prob:
+        cover_preset = "dark_cover_struct"
+    elif cover_roll < dark_cover_prob + wood_cover_prob:
+        cover_preset = "wood_cover_struct"
+
     return ShipAppearanceVariant(
         small_ship=has_small_ship_variant,
         oversized_struct=(
@@ -659,6 +734,7 @@ def sample_ship_appearance_variant(
             forked.random() < ship_class.rare_bright_white_struct_prob
             if has_small_ship_variant else False
         ),
+        cover_preset=cover_preset,
     )
 
 
@@ -705,9 +781,15 @@ class ShipColors:
     struct_base: tuple[int, int, int]
     trim: HullTrimStyle = field(default_factory=HullTrimStyle)
     struct_brightness_bias: int = 0
+    deck_base: tuple[int, int, int] | None = None
 
     def hull_css(self) -> str:
         r, g, b = self.hull
+        return f"rgb({r},{g},{b})"
+
+    def deck_css(self) -> str:
+        base = self.hull if self.deck_base is None else self.deck_base
+        r, g, b = base
         return f"rgb({r},{g},{b})"
 
     def struct_css(
@@ -794,6 +876,8 @@ def sample_colors(
         _clamp(base[1] + rng.randint(-12, 12)),
         _clamp(base[2] + rng.randint(-12, 12)),
     )
+    struct_brightness_bias = 0
+    deck_base: tuple[int, int, int] | None = None
 
     struct_base: tuple[int, int, int]
     if family == "navy_gray":
@@ -814,13 +898,20 @@ def sample_colors(
         # Civilian ships keep family-specific wheelhouse palettes instead of
         # defaulting most dark hulls to the same bright white block.
         struct_base = _sample_civilian_struct_base(family, hull, rng)
-    struct_base = _apply_small_ship_struct_base_variant(
-        family,
-        hull,
-        struct_base,
-        rng,
-        appearance_variant,
-    )
+    if appearance_variant is not None and appearance_variant.cover_preset != "none":
+        cover_rng = _fork_rng(rng)
+        struct_base = _sample_cover_struct_base(appearance_variant.cover_preset, hull, cover_rng)
+        if appearance_variant.cover_preset == "dark_cover_struct":
+            struct_brightness_bias = -10
+            deck_base = _sample_dark_cover_deck_base(hull, cover_rng)
+    else:
+        struct_base = _apply_small_ship_struct_base_variant(
+            family,
+            hull,
+            struct_base,
+            rng,
+            appearance_variant,
+        )
     trim = _sample_hull_trim_style(
         family,
         hull,
@@ -832,6 +923,8 @@ def sample_colors(
         hull=hull,
         struct_base=struct_base,
         trim=trim,
+        struct_brightness_bias=struct_brightness_bias,
+        deck_base=deck_base,
     )
 
 
@@ -883,6 +976,8 @@ class ShipClass:
     debug_only: bool = False
     rare_oversized_struct_prob: float = 0.0
     rare_bright_white_struct_prob: float = 0.0
+    rare_dark_cover_struct_prob: float = 0.0
+    rare_wood_cover_struct_prob: float = 0.0
     hull_trait_pointed_bow_prob: float = 0.0
     hull_trait_long_foredeck_prob: float = 0.0
     hull_trait_straight_sides_prob: float = 0.0
@@ -1296,6 +1391,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.02,
+        rare_dark_cover_struct_prob=0.02,
+        rare_wood_cover_struct_prob=0.015,
         hull_trait_straight_sides_prob=0.25,
         hull_trait_round_stern_prob=0.30,
     ),
@@ -1343,6 +1440,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         hull_trait_square_stern_prob=0.10,
         hull_trait_round_stern_prob=0.25,
         hull_trait_combined_prob=0.18,
+        rare_dark_cover_struct_prob=0.018,
+        rare_wood_cover_struct_prob=0.015,
     ),
     "fishing_longliner": ShipClass(
         hull="fishing",
@@ -1374,6 +1473,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.01,
+        rare_dark_cover_struct_prob=0.015,
+        rare_wood_cover_struct_prob=0.02,
         hull_trait_pointed_bow_prob=0.10,
         hull_trait_long_foredeck_prob=0.24,
         hull_trait_straight_sides_prob=0.10,
@@ -1587,6 +1688,8 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         rare_oversized_struct_prob=0.02,
         rare_bright_white_struct_prob=0.02,
+        rare_dark_cover_struct_prob=0.015,
+        rare_wood_cover_struct_prob=0.01,
         hull_trait_pointed_bow_prob=0.08,
         hull_trait_long_foredeck_prob=0.20,
         hull_trait_straight_sides_prob=0.14,

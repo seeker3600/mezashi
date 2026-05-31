@@ -48,6 +48,8 @@ class _ComposeTaskConfig:
     length_exponent: float
     berth_prob: float
     berth_stern_prob: float
+    coastal_raft_tight_prob: float
+    coastal_raft_min_ships: int
     size_thresholds: tuple[float, ...] | None
     wake_prob_scale: float
     wake_alpha_scale: float
@@ -296,6 +298,8 @@ def generate_dataset(
     length_exponent: float = 1.0,
     berth_prob: float = 0.25,
     berth_stern_prob: float = 0.5,
+    coastal_raft_tight_prob: float = 0.6,
+    coastal_raft_min_ships: int = 2,
     seed: int | None = None,
     size_thresholds: tuple[float, ...] | None = None,
     wake_prob_scale: float = 1.0,
@@ -373,6 +377,10 @@ def generate_dataset(
         msg = f"max_workers must be >= 0, got {max_workers}"
         raise ValueError(msg)
 
+    if coastal_raft_min_ships < 2:
+        msg = f"coastal_raft_min_ships must be >= 2, got {coastal_raft_min_ships}"
+        raise ValueError(msg)
+
     stats: dict[str, Any] = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
 
     task_config = _ComposeTaskConfig(
@@ -392,6 +400,8 @@ def generate_dataset(
         length_exponent=length_exponent,
         berth_prob=berth_prob,
         berth_stern_prob=berth_stern_prob,
+        coastal_raft_tight_prob=coastal_raft_tight_prob,
+        coastal_raft_min_ships=coastal_raft_min_ships,
         size_thresholds=size_thresholds,
         wake_prob_scale=wake_prob_scale,
         wake_alpha_scale=wake_alpha_scale,
@@ -530,6 +540,8 @@ def generate_dataset(
         "length_exponent": length_exponent,
         "berth_prob": berth_prob,
         "berth_stern_prob": berth_stern_prob,
+        "coastal_raft_tight_prob": coastal_raft_tight_prob,
+        "coastal_raft_min_ships": coastal_raft_min_ships,
         "berth_cluster_auto_truncate": True,
         "seed": seed,
         "size_thresholds": (
@@ -599,6 +611,8 @@ def _run_compose_task(
         length_exponent=config.length_exponent,
         berth_prob=config.berth_prob,
         berth_stern_prob=config.berth_stern_prob,
+        coastal_raft_tight_prob=config.coastal_raft_tight_prob,
+        coastal_raft_min_ships=config.coastal_raft_min_ships,
         rng=rng,
         size_thresholds=config.size_thresholds,
         wake_prob_scale=config.wake_prob_scale,
