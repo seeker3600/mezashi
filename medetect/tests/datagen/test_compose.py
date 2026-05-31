@@ -776,8 +776,6 @@ class TestComposeBerth:
             length_exponent=1.0,
             berth_prob=1.0,
             berth_stern_prob=0.75,
-            coastal_raft_tight_prob=0.9,
-            coastal_raft_min_ships=3,
             coastline_index=_StaticCoastlineIndex(),
             rng=random.Random(2),
         )
@@ -785,8 +783,6 @@ class TestComposeBerth:
         assert result is not None
         assert captured["berth_prob"] == pytest.approx(1.0)
         assert captured["berth_stern_prob"] == pytest.approx(0.75)
-        assert captured["coastal_raft_tight_prob"] == pytest.approx(0.9)
-        assert captured["coastal_raft_min_ships"] == 3
         assert isinstance(captured["berth_water_mask"], np.ndarray)
         assert captured["berth_water_mask"].shape == (64, 64)
         assert captured["berth_segments"]
@@ -881,15 +877,6 @@ class TestComposeBerth:
             "_coastline_to_pixel_segments",
             lambda *args, **kwargs: [((8.0, 12.0), (56.0, 12.0))],
         )
-
-        class _PrecomputedRun:
-            length = 48.0
-
-        monkeypatch.setattr(
-            compose_mod,
-            "_build_berth_runs",
-            lambda *args, **kwargs: [_PrecomputedRun()],
-        )
         monkeypatch.setattr(compose_mod, "_pick_svg", lambda *args, **kwargs: "<svg/>")
         monkeypatch.setattr(
             compose_mod,
@@ -947,83 +934,4 @@ class TestComposeBerth:
         assert len(berth_calls) == 1
         assert berth_calls[0]["n_ships"] == 1
         assert berth_calls[0]["berth_stern"] is True
-
-    def test_single_berth_retries_alternative_orientation_before_open_water(
-        self,
-        water_tif: pathlib.Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """単船 berth は優先姿勢が失敗しても別姿勢を試してから open water へ落ちる。"""
-        from shapely.geometry import LineString
-
-        berth_calls: list[bool] = []
-
-        class _StaticCoastlineIndex:
-            def query(self, bounds):
-                del bounds
-                return [LineString([(0.0, 0.0), (100.0, 0.0)])]
-
-        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
-        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
-        monkeypatch.setattr(
-            compose_mod,
-            "make_water_mask_from_coastline",
-            lambda *args, **kwargs: np.ones((64, 64), dtype=bool),
-        )
-        monkeypatch.setattr(
-            compose_mod,
-            "_coastline_to_pixel_segments",
-            lambda *args, **kwargs: [((8.0, 12.0), (56.0, 12.0))],
-        )
-
-        class _PrecomputedRun:
-            length = 48.0
-
-        monkeypatch.setattr(
-            compose_mod,
-            "_build_berth_runs",
-            lambda *args, **kwargs: [_PrecomputedRun()],
-        )
-        monkeypatch.setattr(
-            compose_mod,
-            "_pick_svg",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("open-water fallback should not run")),
-        )
-
-        def _capture_berth_helper(*args, **kwargs):
-            del args
-            berth_calls.append(bool(kwargs["berth_stern"]))
-            if kwargs["berth_stern"]:
-                return []
-            return ["alongside-label"]
-
-        monkeypatch.setattr(compose_mod, "_place_berthed_cluster", _capture_berth_helper)
-
-        result = _compose_one(
-            tif_path=water_tif,
-            svg_metas=None,
-            image_size=64,
-            resolution=10.0,
-            geo_scale=1.0,
-            ships_per_image=(1, 1),
-            cluster_prob=0.0,
-            cluster_size=(3, 3),
-            class_id=0,
-            erode_coast=0,
-            min_water_ratio=0.0,
-            edge_hardness=1.0,
-            ship_alpha=(1.0, 1.0),
-            ship_length_range=None,
-            length_exponent=1.0,
-            berth_prob=1.0,
-            berth_stern_prob=1.0,
-            coastline_index=_StaticCoastlineIndex(),
-            rng=random.Random(3),
-        )
-
-        assert result is not None
-        _tile, labels, n_clusters = result
-        assert labels == ["alongside-label"]
-        assert n_clusters == 0
-        assert berth_calls == [True, False]
 

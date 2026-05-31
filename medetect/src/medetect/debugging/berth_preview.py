@@ -7,24 +7,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-import medetect.datagen.placement as placement_mod
-from medetect.datagen.placement import (
-    _build_berth_runs,
-    _ordered_berth_mode_attempts,
-    _place_berthed_cluster,
-    _place_cluster,
-)
+from medetect.datagen.placement import _place_cluster
 
 _IMAGE_SIZE = 256
 _WATER_RGB = np.array([36, 74, 108], dtype=np.uint8)
 _LAND_RGB = np.array([110, 104, 88], dtype=np.uint8)
-
-
-def _make_background(water_mask: np.ndarray) -> np.ndarray:
-    background = np.zeros((_IMAGE_SIZE, _IMAGE_SIZE, 3), dtype=np.uint8)
-    background[:, :] = _LAND_RGB
-    background[water_mask] = _WATER_RGB
-    return background
 
 
 def _curved_shore_mask(
@@ -57,7 +44,9 @@ def _write_case(
     berth_stern_prob: float,
     seed: int,
 ) -> Path:
-    background = _make_background(water_mask)
+    background = np.zeros((_IMAGE_SIZE, _IMAGE_SIZE, 3), dtype=np.uint8)
+    background[:, :] = _LAND_RGB
+    background[water_mask] = _WATER_RGB
 
     labels = _place_cluster(
         water_mask,
@@ -91,123 +80,6 @@ def _write_case(
     Image.fromarray(background).save(image_path)
     label_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
     return image_path
-
-
-def _classify_single_seed(
-    water_mask: np.ndarray,
-    berth_segments: list[tuple[tuple[float, float], tuple[float, float]]],
-    *,
-    seed: int,
-) -> str:
-    runs = _build_berth_runs(berth_segments, water_mask)
-    rng = random.Random(seed)
-    berth_modes = _ordered_berth_mode_attempts(
-        runs,
-        3.0,
-        (20.0, 80.0),
-        rng,
-        berth_stern_prob=0.5,
-        ship_gap=4.0,
-        min_required_ships=1,
-    )
-
-    for berth_stern in berth_modes:
-        labels = _place_berthed_cluster(
-            water_mask,
-            np.zeros((_IMAGE_SIZE, _IMAGE_SIZE), dtype=bool),
-            berth_segments,
-            None,
-            resolution_m=3.0,
-            rng=rng,
-            n_ships=1,
-            alpha_range=(0.9, 0.95),
-            class_id=0,
-            image_size=_IMAGE_SIZE,
-            background=_make_background(water_mask),
-            length_range=(20.0, 80.0),
-            length_exponent=1.0,
-            size_thresholds=None,
-            mixed=False,
-            berth_stern=berth_stern,
-            blur_sigma=0.2,
-            shadow_azimuth_rad=math.pi / 5.0,
-            shadow_length=1.5,
-            shadow_alpha=0.08,
-            shadow_alpha_scale=1.0,
-        )
-        if labels:
-            return "single_stern" if berth_stern else "single_alongside"
-
-    return "fallback_open"
-
-
-def _classify_cluster_seed(
-    water_mask: np.ndarray,
-    berth_segments: list[tuple[tuple[float, float], tuple[float, float]]],
-    *,
-    seed: int,
-) -> str:
-    category: str | None = None
-    original_place_coastal = placement_mod._place_coastal_raft_cluster
-
-    def _capture_coastal(*args, **kwargs):
-        nonlocal category
-        labels = original_place_coastal(*args, **kwargs)
-        if labels:
-            category = "cluster_tight_stern" if kwargs["berth_stern"] else "cluster_tight_alongside"
-        return labels
-
-    placement_mod._place_coastal_raft_cluster = _capture_coastal
-    try:
-        _place_cluster(
-            water_mask,
-            np.zeros((_IMAGE_SIZE, _IMAGE_SIZE), dtype=bool),
-            None,
-            resolution_m=3.0,
-            rng=random.Random(seed),
-            cluster_size_range=(3, 3),
-            blur_sigma=0.2,
-            alpha_range=(0.9, 0.95),
-            class_id=0,
-            image_size=_IMAGE_SIZE,
-            background=_make_background(water_mask),
-            length_range=(20.0, 80.0),
-            mixed_prob=0.0,
-            berth_prob=1.0,
-            berth_stern_prob=0.5,
-            coastal_raft_tight_prob=1.0,
-            coastal_raft_min_ships=2,
-            berth_water_mask=water_mask,
-            berth_segments=berth_segments,
-            shadow_azimuth_rad=math.pi / 5.0,
-            shadow_length=1.5,
-            shadow_alpha=0.08,
-            shadow_alpha_scale=1.0,
-        )
-    finally:
-        placement_mod._place_coastal_raft_cluster = original_place_coastal
-
-    return category or "fallback_open"
-
-
-def count_berth_seed_sweep(seed_count: int = 64) -> dict[str, int]:
-    """Count shoreline routing outcomes across a deterministic seed sweep."""
-    vertical_water = np.zeros((_IMAGE_SIZE, _IMAGE_SIZE), dtype=bool)
-    vertical_water[:, 96:] = True
-    berth_segments = [((96.0, 24.0), (96.0, 232.0))]
-    counts = {
-        "single_alongside": 0,
-        "single_stern": 0,
-        "cluster_tight_alongside": 0,
-        "cluster_tight_stern": 0,
-        "fallback_open": 0,
-    }
-
-    for seed in range(seed_count):
-        counts[_classify_single_seed(vertical_water, berth_segments, seed=seed)] += 1
-        counts[_classify_cluster_seed(vertical_water, berth_segments, seed=seed)] += 1
-
-    return counts
 
 
 def render_berth_previews(
@@ -258,11 +130,4 @@ def render_berth_previews(
             seed=17,
         ),
     }
-    counts = count_berth_seed_sweep()
-    counts_path = output_dir / "seed_sweep_counts.txt"
-    counts_path.write_text(
-        "\n".join(f"{name}: {value}" for name, value in counts.items()) + "\n",
-        encoding="utf-8",
-    )
-    outputs["seed_sweep_counts"] = counts_path
     return outputs

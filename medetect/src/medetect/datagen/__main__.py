@@ -211,24 +211,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--coastal_raft_tight_prob",
-        type=float,
-        default=0.6,
-        help=(
-            "When shoreline cluster placement is active, probability of trying a shoreline-attached "
-            "raft_tight cluster before generic berth placement (default: 0.6). Only applies with --coastline."
-        ),
-    )
-    parser.add_argument(
-        "--coastal_raft_min_ships",
-        type=int,
-        default=2,
-        help=(
-            "Minimum ship count required for shoreline-attached raft_tight placement (default: 2). "
-            "If fewer can fit, datagen falls back to generic berth placement."
-        ),
-    )
-    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -428,8 +410,6 @@ def main() -> None:
         length_exponent=args.length_exponent,
         berth_prob=args.berth_prob,
         berth_stern_prob=args.berth_stern_prob,
-        coastal_raft_tight_prob=args.coastal_raft_tight_prob,
-        coastal_raft_min_ships=args.coastal_raft_min_ships,
         seed=args.seed,
         size_thresholds=tuple(args.size_threshold) if args.size_threshold else None,
         wake_prob_scale=args.wake_prob_scale,

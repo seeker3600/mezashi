@@ -125,24 +125,6 @@ def _struct_start_positions(svg: str) -> list[float]:
     ]
 
 
-def _appearance_variants_from_svg(svg: str) -> set[str]:
-    root = ET.fromstring(svg)
-    raw = root.attrib.get("data-appearance-variant", "none")
-    if raw == "none":
-        return set()
-    return {token for token in raw.split(",") if token}
-
-
-def _polygon_fill_by_role(svg: str, role: str) -> tuple[int, int, int]:
-    root = ET.fromstring(svg)
-    polygon = next(
-        polygon
-        for polygon in root.iter(f"{{{SVG_NS}}}polygon")
-        if polygon.attrib.get("data-role") == role
-    )
-    return _parse_rgb(polygon.attrib["fill"])
-
-
 # ── Hull interpolation ───────────────────────────────────────────────────
 
 
@@ -692,32 +674,6 @@ class TestSmallShipRareVariants:
         assert bright_only >= 1
 
     @pytest.mark.parametrize(
-        ("ship_class", "min_dark", "min_wood"),
-        [
-            ("fishing_trawler", 2, 2),
-            ("fishing_longliner", 2, 2),
-            ("workboat", 1, 1),
-        ],
-    )
-    def test_targeted_cover_structure_variants_stay_sparse(
-        self,
-        ship_class: str,
-        min_dark: int,
-        min_wood: int,
-    ) -> None:
-        """被覆構造物バリアントは対象クラスでだけ低頻度に出る。"""
-        variants = [
-            sample_ship_appearance_variant(SHIP_CLASSES[ship_class], random.Random(seed))
-            for seed in range(512)
-        ]
-
-        dark = sum(variant.cover_preset == "dark_cover_struct" for variant in variants)
-        wood = sum(variant.cover_preset == "wood_cover_struct" for variant in variants)
-
-        assert min_dark <= dark <= 24
-        assert min_wood <= wood <= 24
-
-    @pytest.mark.parametrize(
         ("ship_class", "min_long_foredeck", "max_long_foredeck"),
         [
             ("fishing_longliner", 20, 240),
@@ -792,63 +748,23 @@ class TestSmallShipRareVariants:
 
     @pytest.mark.parametrize(
         "ship_class",
-        ["fishing_trawler", "fishing_longliner", "workboat"],
+        ["fishing_longliner", "fishing_purse_seiner", "workboat"],
     )
-    def test_targeted_small_civilian_near_black_structures_stay_tied_to_dark_cover_variant(
+    def test_targeted_small_civilian_superstructures_do_not_go_near_black(
         self,
         ship_class: str,
     ) -> None:
-        """near-black 構造物は dark-cover バリアント時だけ稀に出る。"""
+        """対象小型民間船で near-black の艦橋は生成されない。"""
         dark = 0
-        stray = 0
         for seed in range(384):
             svg = generate_ship_svg(ship_class, rng=random.Random(seed))
-            has_dark_struct = any(
+            if any(
                 _luminance(rgb) <= 76.0 and _chroma(rgb) <= 20
                 for rgb in _struct_rect_colors(svg)
-            )
-            if not has_dark_struct:
-                continue
-            dark += 1
-            if "dark_cover_struct" not in _appearance_variants_from_svg(svg):
-                stray += 1
+            ):
+                dark += 1
 
-        assert 1 <= dark <= 20
-        assert stray == 0
-
-    def test_dark_cover_variant_uses_colored_deck_and_large_cover_block(self) -> None:
-        """dark-cover variant は緑青系 deck と大きい被覆構造物を持つ。"""
-        for seed in range(1024):
-            svg = generate_ship_svg("fishing_trawler", rng=random.Random(seed))
-            if "dark_cover_struct" not in _appearance_variants_from_svg(svg):
-                continue
-
-            deck_fill = _polygon_fill_by_role(svg, "deck-top")
-            hull_fill = _polygon_fill_by_role(svg, "hull-waterline")
-            assert deck_fill != hull_fill
-            assert max(deck_fill[1], deck_fill[2]) >= deck_fill[0] + 10
-            assert _struct_area_ratio(svg) >= 0.42
-            assert 0.12 <= min(_struct_start_positions(svg)) <= 0.34
-            return
-
-        pytest.fail("dark_cover_struct variant did not appear in sampled seeds")
-
-    def test_wood_cover_variant_uses_earth_tone_cover_and_small_foredeck(self) -> None:
-        """wood-cover variant は木質系構造物が上面を覆い船首 deck が少しだけ残る。"""
-        for seed in range(1024):
-            svg = generate_ship_svg("fishing_longliner", rng=random.Random(seed))
-            if "wood_cover_struct" not in _appearance_variants_from_svg(svg):
-                continue
-
-            struct_colors = _struct_rect_colors(svg)
-            assert struct_colors
-            lead = struct_colors[0]
-            assert lead[0] >= lead[1] >= lead[2] - 6
-            assert _struct_area_ratio(svg) >= 0.48
-            assert min(_struct_start_positions(svg)) <= 0.18
-            return
-
-        pytest.fail("wood_cover_struct variant did not appear in sampled seeds")
+        assert dark == 0
 
     def test_small_ship_oversized_superstructures_stay_rare(self) -> None:
         """小型船で構造物が船面積の半分超えになるのは稀に留まる。"""

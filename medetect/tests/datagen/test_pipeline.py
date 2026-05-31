@@ -290,22 +290,16 @@ class TestGenerateDatasetParams:
             count=1,
             berth_prob=0.8,
             berth_stern_prob=0.2,
-            coastal_raft_tight_prob=0.9,
-            coastal_raft_min_ships=3,
             max_workers=0,
         )
 
         assert len(seen_config) == 1
         assert seen_config[0].berth_prob == pytest.approx(0.8)
         assert seen_config[0].berth_stern_prob == pytest.approx(0.2)
-        assert seen_config[0].coastal_raft_tight_prob == pytest.approx(0.9)
-        assert seen_config[0].coastal_raft_min_ships == 3
         params = captured["params"]
         assert isinstance(params, dict)
         assert params["berth_prob"] == pytest.approx(0.8)
         assert params["berth_stern_prob"] == pytest.approx(0.2)
-        assert params["coastal_raft_tight_prob"] == pytest.approx(0.9)
-        assert params["coastal_raft_min_ships"] == 3
         assert params["berth_cluster_auto_truncate"] is True
 
 class TestFalseSourceGrid:
@@ -718,10 +712,6 @@ class TestDatagenCli:
                 "0.8",
                 "--berth_stern_prob",
                 "0.2",
-                "--coastal_raft_tight_prob",
-                "0.9",
-                "--coastal_raft_min_ships",
-                "3",
             ],
         )
 
@@ -729,6 +719,4 @@ class TestDatagenCli:
 
         assert captured["berth_prob"] == pytest.approx(0.8)
         assert captured["berth_stern_prob"] == pytest.approx(0.2)
-        assert captured["coastal_raft_tight_prob"] == pytest.approx(0.9)
-        assert captured["coastal_raft_min_ships"] == 3
 
