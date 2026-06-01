@@ -272,14 +272,12 @@ class _ForcedLayoutRandom(random.Random):
         layout: str,
         base_angle: float = 0.0,
         stagger: bool = False,
-        berth_gate_pass: bool = False,
         zero_centered_uniform_max: float = 2.0,
     ) -> None:
         super().__init__(seed)
         self._layout = layout
         self._base_angle = base_angle
         self._stagger = stagger
-        self._berth_gate_pass = berth_gate_pass
         self._zero_centered_uniform_max = zero_centered_uniform_max
         self._uniform_calls = 0
         self._random_calls = 0
@@ -287,8 +285,6 @@ class _ForcedLayoutRandom(random.Random):
     def random(self):
         call_idx = self._random_calls
         self._random_calls += 1
-        if self._berth_gate_pass and self._layout == "flush" and call_idx == 2:
-            return 0.0
         # raft_tight のみ: 3 番目の random() 呼び出しが tight_stagger_mode 判定
         # (call 0: randint 内部, call 1: mixed, call 2: tight_stagger_mode)
         # stagger=False → 1.0 を返して stagger を無効化 (RNG 状態を消費しない)
@@ -1360,37 +1356,6 @@ class TestBerthPlacement:
         }
 
     @pytest.fixture()
-    def pronounced_bulged_shore_scene(self):
-        """中間で大きく海側へ張り出す岸線シーン。"""
-        size = self._IMAGE_SIZE
-        water_mask = np.zeros((size, size), dtype=bool)
-        points = [(40.0, 20.0), (58.0, 100.0), (56.0, 180.0)]
-        shore_x = np.full(size, points[0][0], dtype=float)
-        for (x0, y0), (x1, y1) in zip(points, points[1:]):
-            y_start = max(0, int(math.floor(min(y0, y1))))
-            y_stop = min(size - 1, int(math.ceil(max(y0, y1))))
-            for y in range(y_start, y_stop + 1):
-                if y1 == y0:
-                    shore_x[y] = x1
-                    continue
-                t = (y - y0) / (y1 - y0)
-                shore_x[y] = x0 + (x1 - x0) * t
-        shore_x[: int(points[0][1])] = points[0][0]
-        shore_x[int(points[-1][1]) :] = points[-1][0]
-        for y, x in enumerate(shore_x):
-            water_mask[y, max(0, int(math.ceil(x))) :] = True
-        return {
-            "water_mask": water_mask,
-            "occupancy": np.zeros((size, size), dtype=bool),
-            "background": np.full((size, size, 3), 60, dtype=np.uint8),
-            "segments": [
-                ((40.0, 20.0), (58.0, 100.0)),
-                ((58.0, 100.0), (56.0, 180.0)),
-            ],
-            "points": points,
-        }
-
-    @pytest.fixture()
     def dock_touch_scene(self):
         """dock 側 corner が少し陸へはみ出す berth シーン。"""
         size = self._IMAGE_SIZE
@@ -1438,7 +1403,6 @@ class TestBerthPlacement:
             mixed_prob=1.0,
             berth_prob=1.0,
             berth_stern_prob=0.0,
-            coastal_raft_tight_prob=0.0,
             berth_water_mask=vertical_shore_scene["water_mask"],
             berth_segments=[((40.0, 20.0), (40.0, 180.0))],
         )
@@ -1500,303 +1464,6 @@ class TestBerthPlacement:
             assert float(np.dot(stern_dir, land_dir)) > 0.95
             _min_x, min_y, _max_x, _max_y = ship.hull_geom.bounds
             assert 39.0 <= min_y <= 45.0
-
-    def test_raft_tight_alongside_mooring_keeps_adjacent_hulls_in_contact(
-        self,
-        vertical_shore_scene,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """shoreline-attached raft_tight 横づけは先頭船を接岸し、残りを offshore 側へ raft させる。"""
-        captured = self._setup_mocks(monkeypatch)
-
-        labels = _place_cluster(
-            vertical_shore_scene["water_mask"],
-            vertical_shore_scene["occupancy"],
-            None,
-            resolution_m=5.0,
-            rng=_ForcedLayoutRandom(7, "flush", base_angle=0.0, berth_gate_pass=True),
-            cluster_size_range=(3, 3),
-            blur_sigma=0.0,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=vertical_shore_scene["background"].copy(),
-            length_range=(20.0, 80.0),
-            mixed_prob=1.0,
-            berth_prob=1.0,
-            berth_stern_prob=0.0,
-            berth_water_mask=vertical_shore_scene["water_mask"],
-            berth_segments=[((40.0, 20.0), (40.0, 180.0))],
-        )
-
-        assert len(labels) == 3
-        assert len(captured) == 3
-
-        ordered = sorted(captured, key=lambda ship: ship.cx)
-        gaps = [
-            ordered[index].hull_geom.distance(ordered[index + 1].hull_geom)
-            for index in range(len(ordered) - 1)
-        ]
-        assert max(gaps) <= 0.6
-
-        xs = [ship.cx for ship in ordered]
-        ys = [ship.cy for ship in ordered]
-        assert max(xs) - min(xs) > 12.0
-        assert max(ys) - min(ys) < 3.0
-        assert ordered[0].hull_geom.bounds[0] <= 45.0
-        assert ordered[-1].hull_geom.bounds[0] - ordered[0].hull_geom.bounds[0] > 12.0
-
-        tangent = np.array([0.0, 1.0])
-        for ship in ordered:
-            stern_dir = np.array([-math.sin(ship.angle_rad), math.cos(ship.angle_rad)])
-            assert abs(float(np.dot(stern_dir, tangent))) > 0.95
-
-    def test_coastal_raft_tight_alongside_short_run_still_attempts_coastal_cluster(
-        self,
-        vertical_shore_scene,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """横づけ shoreline raft_tight は 1 隻分の run があれば短い直線岸でも試行する。"""
-        attempted: list[bool] = []
-
-        def _capture_coastal_attempt(*args, **kwargs):
-            del args
-            attempted.append(bool(kwargs["berth_stern"]))
-            return ["coastal-label"]
-
-        monkeypatch.setattr(placement_mod, "_place_coastal_raft_cluster", _capture_coastal_attempt)
-        monkeypatch.setattr(
-            placement_mod,
-            "_place_berthed_cluster",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should stay in coastal alongside path")),
-        )
-
-        labels = _place_cluster(
-            vertical_shore_scene["water_mask"],
-            vertical_shore_scene["occupancy"],
-            None,
-            resolution_m=5.0,
-            rng=random.Random(31),
-            cluster_size_range=(3, 3),
-            blur_sigma=0.0,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=vertical_shore_scene["background"].copy(),
-            length_range=(20.0, 80.0),
-            mixed_prob=1.0,
-            berth_prob=1.0,
-            berth_stern_prob=0.0,
-            coastal_raft_tight_prob=1.0,
-            berth_water_mask=vertical_shore_scene["water_mask"],
-            berth_segments=[((40.0, 84.0), (40.0, 124.0))],
-        )
-
-        assert labels == ["coastal-label"]
-        assert attempted == [False]
-
-    def test_raft_tight_stern_to_mooring_keeps_adjacent_hulls_in_contact(
-        self,
-        horizontal_shore_scene,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """shoreline-attached raft_tight ともづけは接触密度を保ったまま stern を岸へ向ける。"""
-        captured = self._setup_mocks(monkeypatch)
-
-        labels = _place_cluster(
-            horizontal_shore_scene["water_mask"],
-            horizontal_shore_scene["occupancy"],
-            None,
-            resolution_m=5.0,
-            rng=_ForcedLayoutRandom(11, "flush", base_angle=90.0, berth_gate_pass=True),
-            cluster_size_range=(3, 3),
-            blur_sigma=0.0,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=horizontal_shore_scene["background"].copy(),
-            length_range=(20.0, 80.0),
-            mixed_prob=1.0,
-            berth_prob=1.0,
-            berth_stern_prob=1.0,
-            berth_water_mask=horizontal_shore_scene["water_mask"],
-            berth_segments=[((20.0, 40.0), (180.0, 40.0))],
-        )
-
-        assert len(labels) == 3
-        assert len(captured) == 3
-
-        ordered = sorted(captured, key=lambda ship: ship.cx)
-        gaps = [
-            ordered[index].hull_geom.distance(ordered[index + 1].hull_geom)
-            for index in range(len(ordered) - 1)
-        ]
-        assert max(gaps) <= 0.6
-        land_dir = np.array([0.0, -1.0])
-        for ship in ordered:
-            stern_dir = np.array([-math.sin(ship.angle_rad), math.cos(ship.angle_rad)])
-            assert float(np.dot(stern_dir, land_dir)) > 0.95
-
-    def test_raft_tight_curved_shore_keeps_cluster_heading_straight(
-        self,
-        curved_shore_scene,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """曲岸の shoreline-attached raft_tight でも cluster heading はほぼ一定に保つ。"""
-        captured = self._setup_mocks(monkeypatch)
-
-        labels = _place_cluster(
-            curved_shore_scene["water_mask"],
-            curved_shore_scene["occupancy"],
-            None,
-            resolution_m=5.0,
-            rng=_ForcedLayoutRandom(13, "flush", base_angle=0.0, berth_gate_pass=True),
-            cluster_size_range=(3, 3),
-            blur_sigma=0.0,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=curved_shore_scene["background"].copy(),
-            length_range=(20.0, 80.0),
-            mixed_prob=1.0,
-            berth_prob=1.0,
-            berth_stern_prob=0.0,
-            coastal_raft_tight_prob=1.0,
-            berth_water_mask=curved_shore_scene["water_mask"],
-            berth_segments=curved_shore_scene["segments"],
-        )
-
-        assert len(labels) == 3
-        assert len(captured) == 3
-
-        reference = np.array([-math.sin(captured[0].angle_rad), math.cos(captured[0].angle_rad)])
-        for ship in captured[1:]:
-            stern_dir = np.array([-math.sin(ship.angle_rad), math.cos(ship.angle_rad)])
-            assert abs(float(np.dot(stern_dir, reference))) > 0.99995
-
-        ordered = sorted(captured, key=lambda ship: ship.cy)
-        gaps = [
-            ordered[index].hull_geom.distance(ordered[index + 1].hull_geom)
-            for index in range(len(ordered) - 1)
-        ]
-        assert max(gaps) <= 0.8
-
-    def test_coastal_raft_tight_keeps_alongside_first_on_straight_shore_when_requested(
-        self,
-        vertical_shore_scene,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """straight shoreline では明示的な alongside preference を保つ。"""
-        attempted: list[bool] = []
-
-        def _capture_coastal_attempt(*args, **kwargs):
-            del args
-            attempted.append(bool(kwargs["berth_stern"]))
-            return ["coastal-label"]
-
-        monkeypatch.setattr(placement_mod, "_place_coastal_raft_cluster", _capture_coastal_attempt)
-
-        labels = _place_cluster(
-            vertical_shore_scene["water_mask"],
-            vertical_shore_scene["occupancy"],
-            None,
-            resolution_m=5.0,
-            rng=random.Random(23),
-            cluster_size_range=(3, 3),
-            blur_sigma=0.0,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=vertical_shore_scene["background"].copy(),
-            length_range=(20.0, 80.0),
-            mixed_prob=1.0,
-            berth_prob=1.0,
-            berth_stern_prob=0.0,
-            coastal_raft_tight_prob=1.0,
-            berth_water_mask=vertical_shore_scene["water_mask"],
-            berth_segments=[((40.0, 20.0), (40.0, 180.0))],
-        )
-
-        assert labels == ["coastal-label"]
-        assert attempted == [False]
-
-    def test_coastal_raft_tight_prefers_stern_first_on_bulged_shore(
-        self,
-        pronounced_bulged_shore_scene,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """大きく海側へ張り出す shoreline では alongside preference よりともづけを先に試す。"""
-        attempted: list[bool] = []
-
-        def _capture_coastal_attempt(*args, **kwargs):
-            del args
-            attempted.append(bool(kwargs["berth_stern"]))
-            return ["coastal-label"]
-
-        monkeypatch.setattr(placement_mod, "_place_coastal_raft_cluster", _capture_coastal_attempt)
-
-        labels = _place_cluster(
-            pronounced_bulged_shore_scene["water_mask"],
-            pronounced_bulged_shore_scene["occupancy"],
-            None,
-            resolution_m=5.0,
-            rng=random.Random(29),
-            cluster_size_range=(3, 3),
-            blur_sigma=0.0,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=pronounced_bulged_shore_scene["background"].copy(),
-            length_range=(20.0, 80.0),
-            mixed_prob=1.0,
-            berth_prob=1.0,
-            berth_stern_prob=0.0,
-            coastal_raft_tight_prob=1.0,
-            berth_water_mask=pronounced_bulged_shore_scene["water_mask"],
-            berth_segments=pronounced_bulged_shore_scene["segments"],
-        )
-
-        assert labels == ["coastal-label"]
-        assert attempted == [True]
-
-    def test_coastal_raft_tight_keeps_alongside_on_gently_bulged_shore(
-        self,
-        bulged_shore_scene,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """比較的 straight な shoreline では小さな bulge でも横づけを残す。"""
-        attempted: list[bool] = []
-
-        def _capture_coastal_attempt(*args, **kwargs):
-            del args
-            attempted.append(bool(kwargs["berth_stern"]))
-            return ["coastal-label"]
-
-        monkeypatch.setattr(placement_mod, "_place_coastal_raft_cluster", _capture_coastal_attempt)
-
-        labels = _place_cluster(
-            bulged_shore_scene["water_mask"],
-            bulged_shore_scene["occupancy"],
-            None,
-            resolution_m=5.0,
-            rng=random.Random(29),
-            cluster_size_range=(3, 3),
-            blur_sigma=0.0,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=bulged_shore_scene["background"].copy(),
-            length_range=(20.0, 80.0),
-            mixed_prob=1.0,
-            berth_prob=1.0,
-            berth_stern_prob=0.0,
-            coastal_raft_tight_prob=1.0,
-            berth_water_mask=bulged_shore_scene["water_mask"],
-            berth_segments=bulged_shore_scene["segments"],
-        )
-
-        assert labels == ["coastal-label"]
-        assert attempted == [False]
 
     def test_berth_alongside_cluster_accepts_connected_curved_segments(
         self,
@@ -1867,37 +1534,6 @@ class TestBerthPlacement:
         assert len(captured) == 2
         ys = [ship.cy for ship in captured]
         assert max(ys) - min(ys) > 20.0
-
-    def test_coastal_stern_raft_cluster_rejects_shrink_to_single_ship(
-        self,
-        horizontal_shore_scene,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """shoreline-attached stern-to raft_tight は単船までしか入らない run を採用しない。"""
-        captured = self._setup_mocks(monkeypatch)
-
-        labels = placement_mod._place_coastal_raft_cluster(
-            horizontal_shore_scene["water_mask"],
-            horizontal_shore_scene["occupancy"],
-            [((94.0, 40.0), (106.0, 40.0))],
-            None,
-            resolution_m=5.0,
-            rng=random.Random(29),
-            n_ships=3,
-            alpha_range=(0.8, 0.9),
-            class_id=0,
-            image_size=self._IMAGE_SIZE,
-            background=horizontal_shore_scene["background"].copy(),
-            length_range=(20.0, 80.0),
-            length_exponent=1.0,
-            size_thresholds=None,
-            mixed=False,
-            berth_stern=True,
-            blur_sigma=0.0,
-        )
-
-        assert labels == []
-        assert captured == []
 
     def test_berth_stern_to_cluster_trims_invalid_tail_ship(
         self,
