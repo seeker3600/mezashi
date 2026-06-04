@@ -1384,7 +1384,7 @@ class TestBerthPlacement:
         vertical_shore_scene,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """横づけ berth は岸線に平行に並び、船腹を岸へ向ける。"""
+        """横づけ berth は lead ship を岸へ付け、残りが沖側へ tight に連なる。"""
         captured = self._setup_mocks(monkeypatch)
 
         labels = _place_cluster(
@@ -1412,15 +1412,58 @@ class TestBerthPlacement:
 
         xs = [ship.cx for ship in captured]
         ys = [ship.cy for ship in captured]
-        assert max(xs) - min(xs) < 3.0
-        assert max(ys) - min(ys) > 30.0
+        assert xs == sorted(xs)
+        assert max(xs) - min(xs) > 12.0
+        assert max(ys) - min(ys) < 3.0
 
         tangent = np.array([0.0, 1.0])
         for ship in captured:
             stern_dir = np.array([-math.sin(ship.angle_rad), math.cos(ship.angle_rad)])
             assert abs(float(np.dot(stern_dir, tangent))) > 0.95
-            min_x, _min_y, _max_x, _max_y = ship.hull_geom.bounds
-            assert 39.0 <= min_x <= 45.0
+
+        shoremost = min(captured, key=lambda ship: ship.cx)
+        min_x, _min_y, _max_x, _max_y = shoremost.hull_geom.bounds
+        assert 39.0 <= min_x <= 45.0
+
+    def test_berth_alongside_followers_stack_offshore(
+        self,
+        vertical_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """横づけ berth の follower は lead ship の沖側へ接触気味に積まれる。"""
+        captured = self._setup_mocks(monkeypatch)
+
+        labels = placement_mod._place_berthed_cluster(
+            vertical_shore_scene["water_mask"],
+            vertical_shore_scene["occupancy"],
+            [((40.0, 20.0), (40.0, 180.0))],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(7),
+            n_ships=3,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=vertical_shore_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            length_exponent=1.0,
+            size_thresholds=None,
+            mixed=False,
+            berth_stern=False,
+            blur_sigma=0.0,
+        )
+
+        assert len(labels) == 3
+        assert len(captured) == 3
+
+        ordered = sorted(captured, key=lambda ship: ship.cx)
+        assert all(later.cx > earlier.cx for earlier, later in zip(ordered, ordered[1:]))
+        assert max(abs(later.cy - earlier.cy) for earlier, later in zip(ordered, ordered[1:])) < 2.0
+        gaps = [
+            placement_mod._signed_geometry_gap(earlier.hull_geom, later.hull_geom)
+            for earlier, later in zip(ordered, ordered[1:])
+        ]
+        assert all(abs(gap) <= 1.0 for gap in gaps)
 
     def test_berth_stern_to_cluster_points_stern_toward_horizontal_shore(
         self,
@@ -1470,7 +1513,7 @@ class TestBerthPlacement:
         curved_shore_scene,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """緩く曲がる連続 shore run にも横づけ cluster を載せられる。"""
+        """緩く曲がる連続 shore run でも横づけ lead と沖側 tight stack を置ける。"""
         captured = self._setup_mocks(monkeypatch)
 
         labels = placement_mod._place_berthed_cluster(
@@ -1496,32 +1539,42 @@ class TestBerthPlacement:
         assert len(labels) == 3
         assert len(captured) == 3
 
-        ordered = sorted(captured, key=lambda ship: ship.cy)
+        ordered = sorted(captured, key=lambda ship: ship.cx)
         xs = [ship.cx for ship in ordered]
         ys = [ship.cy for ship in ordered]
-        assert max(ys) - min(ys) > 50.0
-        assert xs[-1] - xs[0] > 4.0
+        assert xs[-1] - xs[0] > 8.0
+        assert max(ys) - min(ys) < 6.0
 
-    def test_berth_cluster_auto_truncates_to_fit_short_shore(
+        lead_stern_dir = np.array([-math.sin(ordered[0].angle_rad), math.cos(ordered[0].angle_rad)])
+        for ship in ordered[1:]:
+            stern_dir = np.array([-math.sin(ship.angle_rad), math.cos(ship.angle_rad)])
+            assert float(np.dot(stern_dir, lead_stern_dir)) > 0.95
+
+    def test_berth_alongside_cluster_stops_at_narrow_water_band(
         self,
-        vertical_shore_scene,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """berth cluster は shore run に収まる隻数まで自動で短縮される。"""
+        """横づけ follower は沖側の水域が尽きた位置で打ち切られる。"""
         captured = self._setup_mocks(monkeypatch)
 
+        size = self._IMAGE_SIZE
+        water_mask = np.zeros((size, size), dtype=bool)
+        water_mask[:, 40:64] = True
+        occupancy = np.zeros((size, size), dtype=bool)
+        background = np.full((size, size, 3), 60, dtype=np.uint8)
+
         labels = placement_mod._place_berthed_cluster(
-            vertical_shore_scene["water_mask"],
-            vertical_shore_scene["occupancy"],
+            water_mask,
+            occupancy,
             [((40.0, 64.0), (40.0, 136.0))],
             None,
             resolution_m=5.0,
             rng=random.Random(17),
-            n_ships=3,
+            n_ships=5,
             alpha_range=(0.8, 0.9),
             class_id=0,
             image_size=self._IMAGE_SIZE,
-            background=vertical_shore_scene["background"].copy(),
+            background=background.copy(),
             length_range=(20.0, 80.0),
             length_exponent=1.0,
             size_thresholds=None,
@@ -1532,8 +1585,8 @@ class TestBerthPlacement:
 
         assert len(labels) == 2
         assert len(captured) == 2
-        ys = [ship.cy for ship in captured]
-        assert max(ys) - min(ys) > 20.0
+        xs = [ship.cx for ship in captured]
+        assert xs == sorted(xs)
 
     def test_berth_stern_to_cluster_trims_invalid_tail_ship(
         self,
@@ -1668,7 +1721,7 @@ class TestBerthPlacement:
         vertical_shore_scene,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """短い berth run では入らない分の mixed SVG を生成しない。"""
+        """lead ship すら収まらない短い岸線では mixed SVG を生成しない。"""
         captured = _capture_vector_cluster(monkeypatch)
         pick_calls: list[int] = []
 
@@ -1689,7 +1742,7 @@ class TestBerthPlacement:
         labels = placement_mod._place_berthed_cluster(
             vertical_shore_scene["water_mask"],
             vertical_shore_scene["occupancy"],
-            [((40.0, 85.0), (40.0, 115.0))],
+            [((40.0, 93.0), (40.0, 107.0))],
             None,
             resolution_m=5.0,
             rng=random.Random(31),
@@ -1706,9 +1759,9 @@ class TestBerthPlacement:
             blur_sigma=0.0,
         )
 
-        assert len(labels) == 1
-        assert len(captured) == 1
-        assert len(pick_calls) == 1
+        assert len(labels) == 0
+        assert len(captured) == 0
+        assert len(pick_calls) == 0
 
     def test_resolve_berth_land_intrusion_uses_coarse_to_fine_search(
         self,

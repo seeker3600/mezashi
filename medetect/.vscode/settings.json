@@ -8,4 +8,9 @@
     "editor.defaultFormatter": "ms-python.python",
     "editor.formatOnSave": true,
     "editor.formatOnType": true,
+    "github.copilot.chat.commitMessageGeneration.instructions": [
+        {
+            "text": "コミットメッセージは日本語で書くこと。"
+        }
+    ],
 }
