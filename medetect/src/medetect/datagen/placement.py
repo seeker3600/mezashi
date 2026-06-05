@@ -60,6 +60,9 @@ _BerthSegment = tuple[tuple[float, float], tuple[float, float]]
 _BERTH_RUN_CONNECT_TOL_PX = 2.5
 _BERTH_RUN_MAX_TURN_COS = math.cos(math.radians(20.0))
 _BERTH_LAND_CLEARANCE_PX = 0.25
+# Maximum pixels to probe from a coastline segment toward water when
+# computing the water-side normal direction and shore offset.
+_BERTH_PROBE_MAX_PX: int = 50
 
 
 def _rgba_scene_rect(
@@ -119,12 +122,18 @@ class _BerthRunSegment:
     frame: _BerthFrame
     start_s: float
     end_s: float
+    # Distance in pixels from the SHP coastline segment to the nearest water
+    # pixel in the water-normal direction.  Used to pre-offset ships so they
+    # land on actual water rather than on the raw SHP arc.
+    water_dist_px: float = 0.0
 
 
 @dataclass(frozen=True)
 class _BerthRun:
     segments: tuple[_BerthRunSegment, ...]
     length: float
+    # Median water distance across segments; used for initial ship placement.
+    water_dist_px: float = 0.0
 
 
 def find_water_position(
@@ -795,7 +804,14 @@ def _segment_endpoint_distance(
 def _berth_segment_frame(
     segment: _BerthSegment,
     water_mask: NDArray[np.bool_],
-) -> _BerthFrame | None:
+) -> tuple[_BerthFrame, float] | None:
+    """Return (frame, water_dist_px) or None if no water side can be found.
+
+    Uses a pixel-by-pixel scan up to *_BERTH_PROBE_MAX_PX* pixels in each
+    candidate perpendicular direction to find the first water pixel, then
+    picks the direction in which water is nearest.  This tolerates large
+    offsets between the SHP coastline arc and the actual raster water edge.
+    """
     (x0, y0), (x1, y1) = segment
     dx = x1 - x0
     dy = y1 - y0
@@ -807,29 +823,25 @@ def _berth_segment_frame(
     ty = dy / seg_len
     mid_x = (x0 + x1) / 2.0
     mid_y = (y0 + y1) / 2.0
-    sample_dist = 2.0
+
     candidates = [(-ty, tx), (ty, -tx)]
+    best_dir: tuple[float, float] | None = None
+    best_dist = _BERTH_PROBE_MAX_PX + 1
 
-    best: tuple[float, float] | None = None
-    best_score = -1
     for nx, ny in candidates:
-        water_score = 0
-        land_score = 0
-        for offset in (sample_dist, sample_dist * 2.0, sample_dist * 3.0):
-            if _mask_contains(water_mask, mid_x + nx * offset, mid_y + ny * offset):
-                water_score += 1
-            if _mask_contains(water_mask, mid_x - nx * offset, mid_y - ny * offset):
-                land_score += 1
-        score = water_score - land_score
-        if water_score > 0 and score > best_score:
-            best = (nx, ny)
-            best_score = score
+        for d in range(1, _BERTH_PROBE_MAX_PX + 1):
+            if _mask_contains(water_mask, mid_x + nx * d, mid_y + ny * d):
+                if d < best_dist:
+                    best_dir = (nx, ny)
+                    best_dist = d
+                break  # found in this direction; no need to scan further
 
-    if best is None or best_score <= 0:
+    if best_dir is None:
         return None
 
-    nx, ny = best
-    return x0, y0, tx, ty, nx, ny, seg_len, mid_x, mid_y
+    nx, ny = best_dir
+    water_dist_px = float(best_dist)
+    return (x0, y0, tx, ty, nx, ny, seg_len, mid_x, mid_y), water_dist_px
 
 
 def _orient_berth_segment_for_connection(
@@ -858,13 +870,14 @@ def _merge_berth_segments(
             if oriented is not None:
                 segment = oriented
 
-        frame = _berth_segment_frame(segment, water_mask)
-        if frame is None:
+        frame_result = _berth_segment_frame(segment, water_mask)
+        if frame_result is None:
             if current_run:
                 merged.extend(run_segment for run_segment, _run_frame in current_run)
                 current_run = []
             continue
 
+        frame, _water_dist = frame_result
         if not current_run:
             current_run = [(segment, frame)]
             continue
@@ -891,7 +904,7 @@ def _build_berth_runs(
 ) -> list[_BerthRun]:
     """Group connected shoreline segments into berth runs while preserving bends."""
     runs: list[_BerthRun] = []
-    current_run: list[tuple[_BerthSegment, _BerthFrame]] = []
+    current_run: list[tuple[_BerthSegment, _BerthFrame, float]] = []
 
     def _flush_run() -> None:
         nonlocal current_run
@@ -899,7 +912,8 @@ def _build_berth_runs(
             return
         start_s = 0.0
         run_segments: list[_BerthRunSegment] = []
-        for run_segment, run_frame in current_run:
+        water_dists: list[float] = []
+        for run_segment, run_frame, water_dist in current_run:
             seg_len = run_frame[6]
             run_segments.append(
                 _BerthRunSegment(
@@ -907,10 +921,16 @@ def _build_berth_runs(
                     frame=run_frame,
                     start_s=start_s,
                     end_s=start_s + seg_len,
+                    water_dist_px=water_dist,
                 )
             )
+            water_dists.append(water_dist)
             start_s += seg_len
-        runs.append(_BerthRun(tuple(run_segments), start_s))
+        # Use median water distance as the representative offset for placement.
+        sorted_dists = sorted(water_dists)
+        mid = len(sorted_dists) // 2
+        run_water_dist = sorted_dists[mid] if sorted_dists else 0.0
+        runs.append(_BerthRun(tuple(run_segments), start_s, run_water_dist))
         current_run = []
 
     for raw_segment in berth_segments:
@@ -920,25 +940,26 @@ def _build_berth_runs(
             if oriented is not None:
                 segment = oriented
 
-        frame = _berth_segment_frame(segment, water_mask)
-        if frame is None:
+        frame_result = _berth_segment_frame(segment, water_mask)
+        if frame_result is None:
             _flush_run()
             continue
 
+        frame, water_dist = frame_result
         if not current_run:
-            current_run = [(segment, frame)]
+            current_run = [(segment, frame, water_dist)]
             continue
 
-        prev_segment, prev_frame = current_run[-1]
+        prev_segment, prev_frame, _prev_dist = current_run[-1]
         connected = _segment_endpoint_distance(segment[0], prev_segment[1]) <= _BERTH_RUN_CONNECT_TOL_PX
         tangent_ok = (prev_frame[2] * frame[2]) + (prev_frame[3] * frame[3]) >= _BERTH_RUN_MAX_TURN_COS
         normal_ok = (prev_frame[4] * frame[4]) + (prev_frame[5] * frame[5]) > 0.0
         if connected and tangent_ok and normal_ok:
-            current_run.append((segment, frame))
+            current_run.append((segment, frame, water_dist))
             continue
 
         _flush_run()
-        current_run = [(segment, frame)]
+        current_run = [(segment, frame, water_dist)]
 
     _flush_run()
     return runs
@@ -1190,8 +1211,11 @@ def _place_alongside_berthed_run(
     lead_local_hull = _local_hull_geometry(lead_svg_text, lead_bw, lead_lh, lead_angle_deg)
     lead_min_n, _lead_max_n = _geometry_projection_extents(lead_local_hull, water_nx, water_ny)
     lead_water_offset = -lead_min_n
-    lead_cx = lead_x + water_nx * lead_water_offset
-    lead_cy = lead_y + water_ny * lead_water_offset
+    # Pre-shift by the run's shore offset so the ship starts at the actual
+    # raster water edge instead of the raw SHP arc position.
+    shore_dist = run.water_dist_px
+    lead_cx = lead_x + water_nx * (lead_water_offset + shore_dist)
+    lead_cy = lead_y + water_ny * (lead_water_offset + shore_dist)
     lead_hull_geom = _translate_hull_geometry(lead_local_hull, lead_cx, lead_cy)
     lead_hull_fill = extract_hull_fill(lead_svg_text)
 
@@ -1202,7 +1226,7 @@ def _place_alongside_berthed_run(
         lead_cy,
         water_nx,
         water_ny,
-        max_shift_px=max(14.0, lead_water_offset + 2.0),
+        max_shift_px=max(50.0, lead_water_offset + shore_dist + 2.0),
     )
     if resolved is None:
         return None
@@ -1604,8 +1628,10 @@ def _place_berthed_cluster(
                 angle_deg = _angle_deg_from_stern_direction(stern_dx, stern_dy)
                 angle_rad = math.radians(angle_deg)
                 local_hull = _local_hull_geometry(svg_text_i, bw, lh, angle_deg)
-                cx = run_x + water_nx * water_offset
-                cy = run_y + water_ny * water_offset
+                # Pre-shift by run's shore offset to land on actual water edge.
+                shore_dist = run.water_dist_px
+                cx = run_x + water_nx * (water_offset + shore_dist)
+                cy = run_y + water_ny * (water_offset + shore_dist)
                 hull_geom = _translate_hull_geometry(local_hull, cx, cy)
 
                 resolved = _resolve_berth_land_intrusion(
@@ -1615,7 +1641,7 @@ def _place_berthed_cluster(
                     cy,
                     water_nx,
                     water_ny,
-                    max_shift_px=max(14.0, water_offset + 2.0),
+                    max_shift_px=max(50.0, water_offset + shore_dist + 2.0),
                 )
                 if resolved is None:
                     valid = False
