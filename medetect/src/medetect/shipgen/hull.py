@@ -123,6 +123,52 @@ PROFILES: dict[str, list[tuple[float, float]]] = {
 }
 
 
+def _project_non_decreasing(values: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return the closest non-decreasing fit using pool-adjacent-violators."""
+    if values.size <= 1:
+        return values.copy()
+
+    levels: list[float] = []
+    weights: list[int] = []
+    starts: list[int] = []
+
+    for idx, raw_value in enumerate(values):
+        levels.append(float(raw_value))
+        weights.append(1)
+        starts.append(idx)
+        while len(levels) >= 2 and levels[-2] > levels[-1]:
+            merged_weight = weights[-2] + weights[-1]
+            merged_level = (
+                levels[-2] * weights[-2] + levels[-1] * weights[-1]
+            ) / merged_weight
+            levels[-2] = merged_level
+            weights[-2] = merged_weight
+            del levels[-1]
+            del weights[-1]
+            del starts[-1]
+
+    result = np.empty_like(values, dtype=np.float64)
+    for block_idx, level in enumerate(levels):
+        start = starts[block_idx]
+        end = starts[block_idx + 1] if block_idx + 1 < len(starts) else values.size
+        result[start:end] = level
+    return result
+
+
+def _fair_bow_profile(half_widths: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Prevent concave dents between the bow tip and maximum beam."""
+    if half_widths.size <= 2:
+        return half_widths.copy()
+
+    peak_idx = int(np.argmax(half_widths))
+    if peak_idx <= 1:
+        return half_widths.copy()
+
+    faired = np.array(half_widths, dtype=np.float64, copy=True)
+    faired[:peak_idx + 1] = _project_non_decreasing(faired[:peak_idx + 1])
+    return faired
+
+
 def interpolate_hull(
     profile_key: str,
     bow_sharpness: float,
@@ -185,7 +231,11 @@ def apply_hull_trait_variant(
         end = max(start + 2, int(round((hw.size - 1) * 0.82)))
         mid = hw[start:end + 1]
         plateau = float(np.quantile(mid, 0.88))
-        hw[start:end + 1] = np.clip(0.25 * mid + 0.75 * plateau, 0.0, 0.5)
+        target = np.clip(0.25 * mid + 0.75 * plateau, 0.0, 0.5)
+        transition = np.linspace(0.0, 1.0, mid.size)
+        transition = np.clip(transition / 0.28, 0.0, 1.0)
+        transition = transition * transition * (3.0 - 2.0 * transition)
+        hw[start:end + 1] = mid + (target - mid) * transition
 
     round_stern_active = bool(getattr(variant, "round_stern", False))
 
@@ -231,6 +281,7 @@ def build_hull_points(
     n = len(half_widths)
     noise = np.array([rng.gauss(0, noise_scale) for _ in range(n)])
     hw = np.clip(half_widths + noise, 0.0, 0.5)
+    hw = _fair_bow_profile(hw)
 
     right: list[tuple[float, float]] = []
     left: list[tuple[float, float]] = []

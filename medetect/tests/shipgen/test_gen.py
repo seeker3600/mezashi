@@ -197,6 +197,26 @@ class TestBuildHullPoints:
         assert min(ys) >= 0.0
         assert max(ys) <= 8.0 + 0.01
 
+    def test_bow_profile_stays_non_decreasing_under_noise(self) -> None:
+        """船首から最大船幅までの半幅はノイズ後も凹まず単調に広がる。"""
+
+        class StubRng:
+            def __init__(self, samples: list[float]) -> None:
+                self._samples = iter(samples)
+
+            def gauss(self, _mu: float, _sigma: float) -> float:
+                return next(self._samples)
+
+        hw = np.array([0.0, 0.05, 0.10, 0.16, 0.22, 0.28, 0.33, 0.33])
+        rng = StubRng([0.0, 0.02, -0.04, 0.01, 0.0, 0.0, 0.0, 0.0])
+
+        pts = build_hull_points(hw, 8.0, rng, noise_scale=0.02)
+
+        right_half_widths = np.array([point[0] - 0.5 for point in pts[: len(hw)]])
+        peak_idx = int(np.argmax(right_half_widths))
+        deltas = np.diff(right_half_widths[:peak_idx + 1])
+        assert np.all(deltas >= -1e-9)
+
 
 class TestHullTraitVariants:
     def test_pointed_bow_trait_narrows_forebody(self) -> None:
@@ -248,6 +268,36 @@ class TestHullTraitVariants:
 
         mid_slice = slice(len(hw) // 4, (len(hw) * 3) // 4)
         assert float(np.std(modified[mid_slice])) < float(np.std(hw[mid_slice])) * 0.70
+
+    @pytest.mark.parametrize(
+        ("profile", "bow_sharpness", "stern_hw"),
+        [
+            ("fishing", 0.7383325346874309, 0.16428137384237518),
+            ("workboat", 0.2234093917199631, 0.1743837069570867),
+        ],
+    )
+    def test_straight_sides_does_not_create_bow_shoulder_step(
+        self,
+        profile: str,
+        bow_sharpness: float,
+        stern_hw: float,
+    ) -> None:
+        """long foredeck と straight sides の併用でも bow 肩の段差を作らない。"""
+        hw = interpolate_hull(profile, bow_sharpness, stern_hw, 64)
+
+        modified = hull_mod.apply_hull_trait_variant(
+            hw,
+            SimpleNamespace(
+                pointed_bow=False,
+                long_foredeck=True,
+                straight_sides=True,
+                square_stern=False,
+                round_stern=False,
+            ),
+        )
+
+        bow_window = modified[:18]
+        assert float(np.max(np.diff(bow_window, n=2))) < 0.01
 
     def test_square_stern_trait_broadens_transom(self) -> None:
         """square stern trait は船尾の半幅を広く保つ。"""
