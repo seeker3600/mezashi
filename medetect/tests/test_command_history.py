@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -55,9 +56,11 @@ class TestAppendCommandHistory:
         assert first_record["dataset_root"] == str(dataset_root.resolve())
         assert first_record["status"] == "success"
         assert first_record["result"] == {"images": 10, "ships": 7}
+        assert re.fullmatch(r"[0-9a-f]{40}", first_record["git_commit_hash"] or "")
         assert second_record["command"] == "expand-obb"
         assert second_record["argv"] == ["medetect-yolo", "expand-obb", "--config", "dataset.yaml"]
         assert second_record["status"] == "success"
+        assert re.fullmatch(r"[0-9a-f]{40}", second_record["git_commit_hash"] or "")
 
     def test_uses_process_defaults_for_argv_and_cwd(
         self,
@@ -80,6 +83,24 @@ class TestAppendCommandHistory:
         assert record["cwd"] == str(tmp_path.resolve())
         assert record["dataset_root"] == str(dataset_root.resolve())
         assert record["status"] == "success"
+        assert re.fullmatch(r"[0-9a-f]{40}", record["git_commit_hash"] or "")
+
+    def test_records_null_git_hash_when_lookup_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Git ハッシュ取得失敗時は null を記録する。"""
+        dataset_root = tmp_path / "dataset"
+        dataset_root.mkdir()
+        monkeypatch.setattr("medetect.command_history._git_commit_hash", lambda: None)
+
+        append_command_history(dataset_root, command="valsplit", argv=["medetect-yolo", "valsplit"])
+
+        records = read_command_history(dataset_root)
+        assert len(records) == 1
+        assert "git_commit_hash" in records[0]
+        assert records[0]["git_commit_hash"] is None
 
     def test_record_keys_are_sorted_and_indented(self, tmp_path: Path) -> None:
         """キーがアルファベット順・インデント付きで書き込まれる。"""
