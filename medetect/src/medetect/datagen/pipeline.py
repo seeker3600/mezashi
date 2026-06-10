@@ -26,8 +26,9 @@ logger = logging.getLogger(__name__)
 
 _worker_svg_metas: list[_SvgMeta] | None = None
 _worker_coastline_index: CoastlineIndex | None = None
+_SURFACE_TARGET_MAX_ATTEMPTS = 12
 
-_ComposeTaskResult = tuple[int, int]
+_ComposeTaskResult = tuple[int, int, str]
 
 
 @dataclass(frozen=True)
@@ -306,6 +307,7 @@ def generate_dataset(
     max_workers: int | None = None,
     false_dir: Path | str | None = None,
     false_ratio: float = 0.0,
+    bg_surface_mix_ratio: tuple[float, float] | None = None,
     coastline: Path | str | None = None,
     override: bool = False,
     offnadir_range: tuple[float, float] = (0.0, 0.0),
@@ -373,7 +375,16 @@ def generate_dataset(
         msg = f"max_workers must be >= 0, got {max_workers}"
         raise ValueError(msg)
 
-    stats: dict[str, Any] = {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+    stats: dict[str, Any] = {
+        "images": 0,
+        "ships": 0,
+        "clusters": 0,
+        "skipped": 0,
+        "sea_only": 0,
+        "mixed": 0,
+        "land_only": 0,
+        "surface_goal_rejected": 0,
+    }
 
     task_config = _ComposeTaskConfig(
         image_size=image_size,
@@ -402,13 +413,34 @@ def generate_dataset(
         shipgen_kwargs=shipgen_kwargs or {},
     )
 
-    def _record_compose_result(n_ships: int, n_clusters: int) -> None:
+    def _record_compose_result(n_ships: int, n_clusters: int, surface: str) -> None:
         if n_ships < 0:
             stats["skipped"] += 1
             return
         stats["images"] += 1
         stats["ships"] += n_ships
         stats["clusters"] += n_clusters
+        if surface in ("sea_only", "mixed", "land_only"):
+            stats[surface] += 1
+
+    expected_surface_by_index: dict[int, str | None] = {}
+    if bg_surface_mix_ratio is not None and synth_count > 0:
+        sea_ratio, mixed_ratio = bg_surface_mix_ratio
+        ratio_sum = sea_ratio + mixed_ratio
+        if ratio_sum <= 0.0:
+            msg = "bg_surface_mix_ratio must have positive sum"
+            raise ValueError(msg)
+        sea_target = round(synth_count * sea_ratio / ratio_sum)
+        mixed_target = synth_count - sea_target
+        targets = ["sea_only"] * sea_target + ["mixed"] * mixed_target
+        rng.shuffle(targets)
+        expected_surface_by_index = {
+            index: targets[index]
+            for index in range(synth_count)
+        }
+
+    def _expected_surface(index: int) -> str | None:
+        return expected_surface_by_index.get(index)
 
     if max_workers == 0:
         _worker_init(svg_dir, coastline_path)
@@ -427,9 +459,13 @@ def generate_dataset(
                         img_out=img_out,
                         lbl_out=lbl_out,
                         config=task_config,
+                        expected_surface=_expected_surface(index),
+                        candidate_tifs=tuple(visual_files),
                     )
-                    n_ships, n_clusters = result
-                    _record_compose_result(n_ships, n_clusters)
+                    n_ships, n_clusters, surface = result
+                    if n_ships >= 0 and _expected_surface(index) is not None and surface != _expected_surface(index):
+                        stats["surface_goal_rejected"] += 1
+                    _record_compose_result(n_ships, n_clusters, surface)
                 except Exception:
                     logger.warning(
                         "Failed to compose %s — skipping",
@@ -443,9 +479,9 @@ def generate_dataset(
         max_inflight = max_workers * 2
 
         task_iter = iter(range(synth_count))
-        pending: set[concurrent.futures.Future[tuple[int, int]]] = set()
+        pending: set[concurrent.futures.Future[_ComposeTaskResult]] = set()
         future_info: dict[
-            concurrent.futures.Future[tuple[int, int]],
+            concurrent.futures.Future[_ComposeTaskResult],
             tuple[int, Path],
         ] = {}
 
@@ -462,6 +498,8 @@ def generate_dataset(
                 img_out=img_out,
                 lbl_out=lbl_out,
                 config=task_config,
+                expected_surface=_expected_surface(index),
+                candidate_tifs=tuple(visual_files),
             )
             pending.add(future)
             future_info[future] = (index, task_tifs[index])
@@ -476,8 +514,10 @@ def generate_dataset(
                 pending.discard(future)
                 _index, tif_path = future_info.pop(future)
                 try:
-                    n_ships, n_clusters = future.result()
-                    _record_compose_result(n_ships, n_clusters)
+                    n_ships, n_clusters, surface = future.result()
+                    if n_ships >= 0 and _expected_surface(_index) is not None and surface != _expected_surface(_index):
+                        stats["surface_goal_rejected"] += 1
+                    _record_compose_result(n_ships, n_clusters, surface)
                 except Exception:
                     logger.warning(
                         "Failed to compose %s — skipping",
@@ -541,6 +581,11 @@ def generate_dataset(
         "shadow_length_range": f"{shadow_length_range[0]}:{shadow_length_range[1]}",
         "false_dir": str(false_dir) if false_dir is not None else None,
         "false_ratio": false_ratio,
+        "bg_surface_mix_ratio": (
+            f"{bg_surface_mix_ratio[0]}:{bg_surface_mix_ratio[1]}"
+            if bg_surface_mix_ratio is not None
+            else None
+        ),
         "coastline": str(coastline_path) if coastline_path is not None else None,
     }
     _write_dataset_yaml(
@@ -575,53 +620,123 @@ def _run_compose_task(
     img_out: Path,
     lbl_out: Path,
     config: _ComposeTaskConfig,
+    expected_surface: str | None = None,
+    candidate_tifs: tuple[Path, ...] = (),
+    surface_target_attempts: int = _SURFACE_TARGET_MAX_ATTEMPTS,
 ) -> _ComposeTaskResult:
     """Worker function for one dataset image."""
-    from medetect.datagen.compose import _compose_one
+    from medetect.datagen.compose import _compose_one_with_surface_category
 
     rng = random.Random(task_seed)
-    result = _compose_one(
-        tif_path=tif_path,
-        svg_metas=_worker_svg_metas,
-        image_size=config.image_size,
-        resolution=config.resolution,
-        geo_scale=config.geo_scale,
-        ships_per_image=config.ships_per_image,
-        cluster_prob=config.cluster_prob,
-        cluster_size=config.cluster_size,
-        cluster_mixed_prob=config.cluster_mixed_prob,
-        class_id=config.class_id,
-        erode_coast=config.erode_coast,
-        min_water_ratio=config.min_water_ratio,
-        edge_hardness=config.edge_hardness,
-        ship_alpha=config.ship_alpha,
-        ship_length_range=config.ship_length_range,
-        length_exponent=config.length_exponent,
-        berth_prob=config.berth_prob,
-        berth_stern_prob=config.berth_stern_prob,
-        rng=rng,
-        size_thresholds=config.size_thresholds,
-        wake_prob_scale=config.wake_prob_scale,
-        wake_alpha_scale=config.wake_alpha_scale,
-        debug_bg_color=config.debug_bg_color,
-        shadow_alpha_scale=config.shadow_alpha_scale,
-        shadow_length_range=config.shadow_length_range,
-        coastline_index=_worker_coastline_index,
-        offnadir_range=config.offnadir_range,
-        shipgen_kwargs=config.shipgen_kwargs,
-    )
+    tif_pool = candidate_tifs or ((tif_path,) if tif_path is not None else ())
 
-    if result is None:
-        return -1, -1
+    def _compose_for_tif(selected_tif: Path | None) -> tuple[int, int, str]:
+        if selected_tif is None:
+            return -1, -1, "unknown"
 
-    tile, labels, n_clusters = result
-    name = f"{index:06d}"
-    Image.fromarray(tile).save(img_out / f"{name}.png")
-    (lbl_out / f"{name}.txt").write_text(
-        "\n".join(labels) + ("\n" if labels else ""),
-        encoding="utf-8",
-    )
-    return len(labels), n_clusters
+        result = _compose_one_with_surface_category(
+            tif_path=selected_tif,
+            svg_metas=_worker_svg_metas,
+            image_size=config.image_size,
+            resolution=config.resolution,
+            geo_scale=config.geo_scale,
+            ships_per_image=config.ships_per_image,
+            cluster_prob=config.cluster_prob,
+            cluster_size=config.cluster_size,
+            cluster_mixed_prob=config.cluster_mixed_prob,
+            class_id=config.class_id,
+            erode_coast=config.erode_coast,
+            min_water_ratio=config.min_water_ratio,
+            edge_hardness=config.edge_hardness,
+            ship_alpha=config.ship_alpha,
+            ship_length_range=config.ship_length_range,
+            length_exponent=config.length_exponent,
+            berth_prob=config.berth_prob,
+            berth_stern_prob=config.berth_stern_prob,
+            rng=rng,
+            size_thresholds=config.size_thresholds,
+            wake_prob_scale=config.wake_prob_scale,
+            wake_alpha_scale=config.wake_alpha_scale,
+            debug_bg_color=config.debug_bg_color,
+            shadow_alpha_scale=config.shadow_alpha_scale,
+            shadow_length_range=config.shadow_length_range,
+            coastline_index=_worker_coastline_index,
+            offnadir_range=config.offnadir_range,
+            shipgen_kwargs=config.shipgen_kwargs,
+            required_surface=None,
+        )
+
+        if result is None:
+            return -1, -1, "unknown"
+
+        tile, labels, n_clusters, surface = result
+        name = f"{index:06d}"
+        Image.fromarray(tile).save(img_out / f"{name}.png")
+        (lbl_out / f"{name}.txt").write_text(
+            "\n".join(labels) + ("\n" if labels else ""),
+            encoding="utf-8",
+        )
+        return len(labels), n_clusters, surface
+
+    def _sample_tif(attempt: int) -> Path | None:
+        if attempt == 0 and tif_path is not None:
+            return tif_path
+        if not tif_pool:
+            return tif_path
+        return rng.choice(tif_pool)
+
+    if expected_surface is not None:
+        for attempt in range(max(1, surface_target_attempts)):
+            selected_tif = _sample_tif(attempt)
+            if selected_tif is None:
+                break
+            result = _compose_one_with_surface_category(
+                tif_path=selected_tif,
+                svg_metas=_worker_svg_metas,
+                image_size=config.image_size,
+                resolution=config.resolution,
+                geo_scale=config.geo_scale,
+                ships_per_image=config.ships_per_image,
+                cluster_prob=config.cluster_prob,
+                cluster_size=config.cluster_size,
+                cluster_mixed_prob=config.cluster_mixed_prob,
+                class_id=config.class_id,
+                erode_coast=config.erode_coast,
+                min_water_ratio=config.min_water_ratio,
+                edge_hardness=config.edge_hardness,
+                ship_alpha=config.ship_alpha,
+                ship_length_range=config.ship_length_range,
+                length_exponent=config.length_exponent,
+                berth_prob=config.berth_prob,
+                berth_stern_prob=config.berth_stern_prob,
+                rng=rng,
+                size_thresholds=config.size_thresholds,
+                wake_prob_scale=config.wake_prob_scale,
+                wake_alpha_scale=config.wake_alpha_scale,
+                debug_bg_color=config.debug_bg_color,
+                shadow_alpha_scale=config.shadow_alpha_scale,
+                shadow_length_range=config.shadow_length_range,
+                coastline_index=_worker_coastline_index,
+                offnadir_range=config.offnadir_range,
+                shipgen_kwargs=config.shipgen_kwargs,
+                required_surface=expected_surface,
+            )
+            if result is None:
+                continue
+            tile, labels, n_clusters, surface = result
+            if surface != expected_surface:
+                continue
+
+            name = f"{index:06d}"
+            Image.fromarray(tile).save(img_out / f"{name}.png")
+            (lbl_out / f"{name}.txt").write_text(
+                "\n".join(labels) + ("\n" if labels else ""),
+                encoding="utf-8",
+            )
+            return len(labels), n_clusters, surface
+
+    fallback_tif = _sample_tif(1 if expected_surface is not None else 0)
+    return _compose_for_tif(fallback_tif)
 
 
 def _write_dataset_yaml(

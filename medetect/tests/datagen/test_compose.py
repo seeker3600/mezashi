@@ -11,7 +11,16 @@ from rasterio.warp import transform, transform_bounds
 
 import medetect.datagen.compose as compose_mod
 
-from medetect.datagen.compose import _compose_one, augment_tile, is_dark_tile, make_nodata_mask
+from medetect.datagen.compose import (
+    MIXED_MIN_RATIO,
+    OPEN_WATER_MIN_RATIO,
+    _compose_one,
+    _compose_one_with_surface_category,
+    augment_tile,
+    classify_background_surface,
+    is_dark_tile,
+    make_nodata_mask,
+)
 
 
 @pytest.fixture()
@@ -234,6 +243,156 @@ class TestIsDarkTile:
         mostly_dark = np.zeros((64, 64, 3), dtype=np.uint8)
         mostly_dark[60:64, 60:64, :] = 80
         assert is_dark_tile(mostly_dark)
+
+
+class TestBackgroundSurfaceCategory:
+    """背景カテゴリ分類の境界値テスト。"""
+
+    def test_open_water_threshold_is_sea_only(self) -> None:
+        """water_ratio が上側閾値以上なら sea_only。"""
+        assert classify_background_surface(OPEN_WATER_MIN_RATIO) == "sea_only"
+        assert classify_background_surface(0.999) == "sea_only"
+
+    def test_mixed_band_between_thresholds(self) -> None:
+        """上下閾値の間は mixed。"""
+        mid = (OPEN_WATER_MIN_RATIO + MIXED_MIN_RATIO) / 2.0
+        assert classify_background_surface(mid) == "mixed"
+
+    def test_land_only_threshold_is_inclusive(self) -> None:
+        """water_ratio が下側閾値以下なら land_only。"""
+        assert classify_background_surface(MIXED_MIN_RATIO) == "land_only"
+        assert classify_background_surface(0.0) == "land_only"
+
+    def test_category_uses_original_background_before_augmentation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        water_tif: pathlib.Path,
+    ) -> None:
+        """背景カテゴリ判定は最終画像ではなく採用背景タイル基準で行う。"""
+
+        def _force_land_like_output(tile: np.ndarray, rng: random.Random) -> np.ndarray:
+            del tile, rng
+            out = np.zeros((64, 64, 3), dtype=np.uint8)
+            out[:, :, 0] = 120
+            out[:, :, 1] = 100
+            out[:, :, 2] = 70
+            return out
+
+        monkeypatch.setattr(compose_mod, "augment_tile", _force_land_like_output)
+
+        result = _compose_one_with_surface_category(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=0.75,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=random.Random(0),
+        )
+
+        assert result is not None
+        _tile, _labels, _clusters, surface = result
+        assert surface == "sea_only"
+
+    def test_category_uses_coastline_surface_mask_for_open_water(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        water_tif: pathlib.Path,
+    ) -> None:
+        """coastline 入力時は雲などで RGB 水面率が落ちても外洋を sea_only に保つ。"""
+
+        class _DummyCoastlineIndex:
+            def query(self, bounds):
+                del bounds
+                return []
+
+        def _sparse_rgb_water(tile: np.ndarray) -> np.ndarray:
+            mask = np.zeros(tile.shape[:2], dtype=bool)
+            mask[:, : tile.shape[1] // 4] = True
+            return mask
+
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", _sparse_rgb_water)
+
+        result = _compose_one_with_surface_category(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=0.75,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=random.Random(0),
+            coastline_index=_DummyCoastlineIndex(),
+        )
+
+        assert result is not None
+        _tile, _labels, _clusters, surface = result
+        assert surface == "sea_only"
+
+    def test_required_surface_retries_within_same_tif(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        water_tif: pathlib.Path,
+    ) -> None:
+        """required_surface 指定時は同じ TIF 内で一致する crop まで再試行する。"""
+        masks = [
+            np.ones((64, 64), dtype=bool),
+            np.zeros((64, 64), dtype=bool),
+        ]
+        masks[1][:, :32] = True
+        call_count = {"value": 0}
+
+        def _sequence_rgb_water(tile: np.ndarray) -> np.ndarray:
+            del tile
+            index = min(call_count["value"], len(masks) - 1)
+            call_count["value"] += 1
+            return masks[index]
+
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", _sequence_rgb_water)
+        monkeypatch.setattr(compose_mod, "_read_scl_tile", lambda *args, **kwargs: None)
+
+        result = _compose_one_with_surface_category(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=0.75,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=random.Random(0),
+            max_crop_attempts=2,
+            required_surface="mixed",
+        )
+
+        assert result is not None
+        _tile, _labels, _clusters, surface = result
+        assert surface == "mixed"
+        assert call_count["value"] >= 2
 
 
 class TestOpenBoxSearch:
