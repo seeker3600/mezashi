@@ -133,7 +133,6 @@ class TestScaleShipPixelSize:
 class TestPickSvgCaching:
     def test_onthefly_pool_keeps_multiple_variants(self, monkeypatch) -> None:
         """同一キーのオンザフライ生成でも複数の見た目を維持する。"""
-        ship_mod._SHIPGEN_VARIANT_CALLS.clear()
         ship_mod._generate_ship_svg_variant.cache_clear()
         ship_mod._shipgen_class_weights.cache_clear()
         monkeypatch.setattr(shipgen_gen, "get_ship_classes", lambda *args, **kwargs: ["patrol"])
@@ -155,6 +154,34 @@ class TestPickSvgCaching:
         for svg_text in results:
             root = ET.fromstring(svg_text)
             assert root.get("data-ship-class") == "patrol"
+
+    def test_seeded_sequence_is_history_independent(self, monkeypatch) -> None:
+        """同一 seed の選択列は過去実行履歴に依存しない。"""
+        ship_mod._generate_ship_svg_variant.cache_clear()
+        ship_mod._shipgen_class_weights.cache_clear()
+        monkeypatch.setattr(shipgen_gen, "get_ship_classes", lambda *args, **kwargs: ["patrol"])
+
+        def _sequence(seed: int) -> list[str]:
+            rng = random.Random(seed)
+            return [
+                _pick_svg(
+                    None,
+                    rng,
+                    length_range=(35.0, 80.0),
+                    offnadir_deg=7.0,
+                    sensor_az_ship_deg=123.0,
+                    shipgen_kwargs={"deck_scatter_density": 2.5},
+                )
+                for _ in range(12)
+            ]
+
+        baseline = _sequence(777)
+
+        _sequence(1)
+        _sequence(2026)
+
+        repeated = _sequence(777)
+        assert repeated == baseline
 
 
 class TestShipSizeDistribution:
