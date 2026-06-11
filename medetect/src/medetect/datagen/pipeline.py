@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 _worker_svg_metas: list[_SvgMeta] | None = None
 _worker_coastline_index: CoastlineIndex | None = None
-_SURFACE_TARGET_MAX_ATTEMPTS = 12
+_SURFACE_TARGET_MAX_ATTEMPTS = 24
+_SURFACE_TARGET_CROP_ATTEMPTS = 64
 
 _ComposeTaskResult = tuple[int, int, str]
 
@@ -623,6 +624,7 @@ def _run_compose_task(
     expected_surface: str | None = None,
     candidate_tifs: tuple[Path, ...] = (),
     surface_target_attempts: int = _SURFACE_TARGET_MAX_ATTEMPTS,
+    surface_crop_attempts: int = _SURFACE_TARGET_CROP_ATTEMPTS,
 ) -> _ComposeTaskResult:
     """Worker function for one dataset image."""
     from medetect.datagen.compose import _compose_one_with_surface_category
@@ -678,12 +680,27 @@ def _run_compose_task(
         )
         return len(labels), n_clusters, surface
 
-    def _sample_tif(attempt: int) -> Path | None:
-        if attempt == 0 and tif_path is not None:
-            return tif_path
+    def _target_tif_sequence() -> list[Path | None]:
         if not tif_pool:
+            return [tif_path]
+
+        ordered_unique: list[Path] = []
+        seen: set[Path] = set()
+        if tif_path is not None and tif_path in tif_pool:
+            ordered_unique.append(tif_path)
+            seen.add(tif_path)
+
+        rest = [path for path in tif_pool if path not in seen]
+        rng.shuffle(rest)
+        ordered_unique.extend(rest)
+        return ordered_unique or [tif_path]
+
+    target_tifs = _target_tif_sequence()
+
+    def _sample_tif(attempt: int) -> Path | None:
+        if not target_tifs:
             return tif_path
-        return rng.choice(tif_pool)
+        return target_tifs[attempt % len(target_tifs)]
 
     if expected_surface is not None:
         for attempt in range(max(1, surface_target_attempts)):
@@ -720,6 +737,7 @@ def _run_compose_task(
                 offnadir_range=config.offnadir_range,
                 shipgen_kwargs=config.shipgen_kwargs,
                 required_surface=expected_surface,
+                max_crop_attempts=max(1, surface_crop_attempts),
             )
             if result is None:
                 continue

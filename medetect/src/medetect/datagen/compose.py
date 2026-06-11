@@ -578,6 +578,8 @@ def _compose_one(
                 break
         else:
             try:
+                if required_surface is not None:
+                    return None
                 if include_surface_category:
                     return tile, [], 0, background_surface  # type: ignore[possibly-undefined]
                 return tile, [], 0  # type: ignore[possibly-undefined]
