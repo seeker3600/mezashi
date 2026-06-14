@@ -46,10 +46,23 @@ _SHIPGEN_PROJECTION_BUCKET = 0.03
 _SHIPGEN_VARIANT_WARMUP = 8
 _SHIPGEN_VARIANT_GROWTH_INTERVAL = 6
 _SHIPGEN_VARIANT_MAX = 32
+_RNG_VARIANT_STATE_ATTR = "_medetect_shipgen_variant_calls"
 
 _ShipgenKwargsKey = tuple[tuple[str, bytes], ...]
 _ShipgenVariantKey = tuple[str, tuple[int, int], _ShipgenKwargsKey]
-_SHIPGEN_VARIANT_CALLS: dict[_ShipgenVariantKey, int] = {}
+
+
+def _variant_calls_for_rng(rng: random.Random) -> dict[_ShipgenVariantKey, int]:
+    """Return per-RNG variant call counters used for deterministic pooling.
+
+    The state is attached to the RNG instance so repeated datagen runs with the
+    same seed are independent from previous process-level calls.
+    """
+    calls = getattr(rng, _RNG_VARIANT_STATE_ATTR, None)
+    if calls is None:
+        calls = {}
+        setattr(rng, _RNG_VARIANT_STATE_ATTR, calls)
+    return calls
 
 
 def compute_ship_pixel_size(
@@ -329,8 +342,9 @@ def _pick_svg(
         sensor_az_ship_deg,
         shipgen_kwargs,
     )
-    call_count = _SHIPGEN_VARIANT_CALLS.get(variant_key, 0) + 1
-    _SHIPGEN_VARIANT_CALLS[variant_key] = call_count
+    variant_calls = _variant_calls_for_rng(rng)
+    call_count = variant_calls.get(variant_key, 0) + 1
+    variant_calls[variant_key] = call_count
 
     pool_size = _shipgen_variant_pool_size(call_count)
     previous_pool_size = _shipgen_variant_pool_size(call_count - 1)

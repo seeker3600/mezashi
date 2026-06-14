@@ -80,6 +80,8 @@ logger = logging.getLogger(__name__)
 _DARK_TILE_THRESHOLD: float = 10.0
 _COASTLINE_CRS = CRS.from_epsg(4326)
 _PLACEMENT_FAILURE_CHECK_INTERVAL = 8
+OPEN_WATER_MIN_RATIO: float = 0.75
+MIXED_MIN_RATIO: float = 0.35
 
 __all__ = [
     "SingleShipPlacement",
@@ -324,6 +326,87 @@ def _scl_path_for(visual_path: Path) -> Path:
     return visual_path.parent / scl_name
 
 
+def classify_background_surface(water_ratio: float) -> str:
+    """Classify tile background into sea-only / mixed / land-only buckets."""
+    if water_ratio >= OPEN_WATER_MIN_RATIO:
+        return "sea_only"
+    if water_ratio <= MIXED_MIN_RATIO:
+        return "land_only"
+    return "mixed"
+
+
+def _compose_one_with_surface_category(
+    *,
+    tif_path: Path,
+    svg_metas: list[_SvgMeta] | None,
+    image_size: int,
+    resolution: float | None,
+    geo_scale: float | None,
+    ships_per_image: tuple[int, int],
+    cluster_prob: float,
+    cluster_size: tuple[int, int],
+    cluster_mixed_prob: float = 0.5,
+    class_id: int = 0,
+    erode_coast: int = 3,
+    min_water_ratio: float = 0.3,
+    edge_hardness: float = DEFAULT_EDGE_HARDNESS,
+    ship_alpha: tuple[float, float] = (0.7, 0.95),
+    ship_length_range: tuple[float, float] | None = None,
+    length_exponent: float = 1.0,
+    berth_prob: float = 0.25,
+    berth_stern_prob: float = 0.5,
+    rng: random.Random,
+    max_crop_attempts: int = 20,
+    size_thresholds: tuple[float, ...] | None = None,
+    wake_prob_scale: float = 1.0,
+    wake_alpha_scale: float = 1.0,
+    debug_bg_color: tuple[int, int, int] | None = None,
+    shadow_alpha_scale: float = 1.0,
+    shadow_length_range: tuple[float, float] = (0.0, 3.75),
+    shadow_azimuth_rad: float | None = None,
+    coastline_index: CoastlineIndex | None = None,
+    offnadir_range: tuple[float, float] = (0.0, 0.0),
+    shipgen_kwargs: dict | None = None,
+    required_surface: str | None = None,
+) -> tuple[NDArray[np.uint8], list[str], int, str] | None:
+    """Compose one training image and include a background surface category."""
+    result = _compose_one(
+        tif_path=tif_path,
+        svg_metas=svg_metas,
+        image_size=image_size,
+        resolution=resolution,
+        geo_scale=geo_scale,
+        ships_per_image=ships_per_image,
+        cluster_prob=cluster_prob,
+        cluster_size=cluster_size,
+        cluster_mixed_prob=cluster_mixed_prob,
+        class_id=class_id,
+        erode_coast=erode_coast,
+        min_water_ratio=min_water_ratio,
+        edge_hardness=edge_hardness,
+        ship_alpha=ship_alpha,
+        ship_length_range=ship_length_range,
+        length_exponent=length_exponent,
+        berth_prob=berth_prob,
+        berth_stern_prob=berth_stern_prob,
+        rng=rng,
+        max_crop_attempts=max_crop_attempts,
+        size_thresholds=size_thresholds,
+        wake_prob_scale=wake_prob_scale,
+        wake_alpha_scale=wake_alpha_scale,
+        debug_bg_color=debug_bg_color,
+        shadow_alpha_scale=shadow_alpha_scale,
+        shadow_length_range=shadow_length_range,
+        shadow_azimuth_rad=shadow_azimuth_rad,
+        coastline_index=coastline_index,
+        offnadir_range=offnadir_range,
+        shipgen_kwargs=shipgen_kwargs,
+        include_surface_category=True,
+        required_surface=required_surface,
+    )
+    return result
+
+
 def _compose_one(
     *,
     tif_path: Path,
@@ -356,7 +439,9 @@ def _compose_one(
     coastline_index: CoastlineIndex | None = None,
     offnadir_range: tuple[float, float] = (0.0, 0.0),
     shipgen_kwargs: dict | None = None,
-) -> tuple[NDArray[np.uint8], list[str], int] | None:
+    include_surface_category: bool = False,
+    required_surface: str | None = None,
+) -> tuple[NDArray[np.uint8], list[str], int] | tuple[NDArray[np.uint8], list[str], int, str] | None:
     """Compose one training image. Returns ``(tile, labels, n_clusters)``."""
     with rasterio.open(tif_path) as src:
         if geo_scale is not None:
@@ -408,6 +493,7 @@ def _compose_one(
                 )
                 continue
 
+            nodata_mask = make_nodata_mask(tile)
             scl_file = _scl_path_for(tif_path)
             scl = _read_scl_tile(scl_file, col, row, src_tile, image_size)
             if scl is not None:
@@ -415,7 +501,9 @@ def _compose_one(
             else:
                 water_mask = make_water_mask_from_rgb(tile)
 
-            water_mask &= ~make_nodata_mask(tile)
+            water_mask &= ~nodata_mask
+            surface_water_mask = water_mask.copy()
+            surface_valid_mask = ~nodata_mask
 
             berth_water_mask: NDArray[np.bool_] | None = None
             berth_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
@@ -462,6 +550,7 @@ def _compose_one(
                     image_size,
                     image_size,
                 )
+                surface_water_mask = coastline_mask
                 water_mask &= coastline_mask
                 berth_water_mask = water_mask.copy()
                 berth_segments = _coastline_to_pixel_segments(
@@ -476,10 +565,23 @@ def _compose_one(
             water_mask = erode_mask(water_mask, erode_coast)
 
             water_ratio = water_mask.sum() / water_mask.size
+            if surface_valid_mask.any():
+                surface_ratio = float(surface_water_mask[surface_valid_mask].mean())
+            else:
+                surface_ratio = 0.0
+            background_surface = classify_background_surface(surface_ratio)
+            if water_ratio < min_water_ratio:
+                continue
+            if required_surface is not None and background_surface != required_surface:
+                continue
             if water_ratio >= min_water_ratio:
                 break
         else:
             try:
+                if required_surface is not None:
+                    return None
+                if include_surface_category:
+                    return tile, [], 0, background_surface  # type: ignore[possibly-undefined]
                 return tile, [], 0  # type: ignore[possibly-undefined]
             except NameError:
                 return None
@@ -713,4 +815,6 @@ def _compose_one(
         )
         labels.append(format_obb_label(ship.class_id, ship.corners, image_size, image_size))
 
+    if include_surface_category:
+        return tile, labels, n_clusters, background_surface
     return tile, labels, n_clusters

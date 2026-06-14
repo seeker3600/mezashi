@@ -343,6 +343,20 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--bg_surface_mix_ratio",
+        type=_parse_float_range,
+        default=None,
+        metavar="SEA_ONLY:MIXED",
+        help=(
+            "Effort-target ratio for synthetic backgrounds after false-ratio split. "
+            "Specify sea-only:mixed (e.g. 0.6:0.4). "
+            "This applies only to the synthetic remainder (count - false_count). "
+            "If omitted, current behavior is preserved. "
+            "When targets are infeasible for available backgrounds, generation falls back "
+            "to unconstrained behavior."
+        ),
+    )
+    parser.add_argument(
         "--coastline",
         type=Path,
         default=None,
@@ -388,6 +402,12 @@ def main() -> None:
         parser.error("--false_ratio requires --false_dir")
     if args.false_dir and not (0.0 < args.false_ratio < 1.0):
         parser.error("--false_ratio must be in (0, 1) when --false_dir is set")
+    if args.bg_surface_mix_ratio is not None:
+        sea_ratio, mixed_ratio = args.bg_surface_mix_ratio
+        if sea_ratio < 0.0 or mixed_ratio < 0.0:
+            parser.error("--bg_surface_mix_ratio values must be >= 0")
+        if sea_ratio + mixed_ratio <= 0.0:
+            parser.error("--bg_surface_mix_ratio sum must be > 0")
 
     stats = generate_dataset(
         bg_dir=args.bg_dir,
@@ -419,6 +439,7 @@ def main() -> None:
         shadow_length_range=args.shadow_length,
         false_dir=args.false_dir,
         false_ratio=args.false_ratio,
+        bg_surface_mix_ratio=args.bg_surface_mix_ratio,
         max_workers=args.workers,
         coastline=args.coastline,
         override=args.override,

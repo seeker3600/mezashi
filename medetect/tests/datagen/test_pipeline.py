@@ -5,6 +5,7 @@ import random
 
 import numpy as np
 import pytest
+from PIL import Image
 
 import medetect.datagen.pipeline as pipeline_mod
 
@@ -205,8 +206,11 @@ class TestGenerateDatasetParams:
             img_out: pathlib.Path,
             lbl_out: pathlib.Path,
             config: object,
-        ) -> tuple[int, int]:
-            del task_seed, img_out, lbl_out
+            expected_surface: str | None = None,
+            candidate_tifs: tuple[pathlib.Path, ...] = (),
+            surface_target_attempts: int = 12,
+        ) -> tuple[int, int, str]:
+            del task_seed, img_out, lbl_out, candidate_tifs, surface_target_attempts
             calls.append(
                 (
                     index,
@@ -215,7 +219,8 @@ class TestGenerateDatasetParams:
                     getattr(config, "edge_hardness"),
                 )
             )
-            return 1, 0
+            assert expected_surface is None
+            return 1, 0, "mixed"
 
         monkeypatch.setattr(
             pipeline_mod.concurrent.futures,
@@ -275,10 +280,14 @@ class TestGenerateDatasetParams:
             img_out: pathlib.Path,
             lbl_out: pathlib.Path,
             config: object,
-        ) -> tuple[int, int]:
-            del index, task_seed, tif_path, img_out, lbl_out
+            expected_surface: str | None = None,
+            candidate_tifs: tuple[pathlib.Path, ...] = (),
+            surface_target_attempts: int = 12,
+        ) -> tuple[int, int, str]:
+            del index, task_seed, tif_path, img_out, lbl_out, candidate_tifs, surface_target_attempts
             seen_config.append(config)
-            return 0, 0
+            assert expected_surface is None
+            return 0, 0, "mixed"
 
         monkeypatch.setattr(pipeline_mod, "_write_dataset_yaml", _capture_yaml)
         monkeypatch.setattr(pipeline_mod, "_run_compose_task", _capture_compose_task)
@@ -571,6 +580,193 @@ class TestFalseRatioSplit:
             assert synth_count + false_count == total
 
 
+class TestBackgroundSurfaceMixRatio:
+    """合成背景比率オプションの適用とフォールバックを検証する。"""
+
+    def test_applies_to_synth_remainder_after_false_ratio(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """false_ratio 後の synth_count 件にだけ surface 比率が適用される。"""
+        bg_dir = tmp_path / "bg"
+        bg_dir.mkdir()
+        (bg_dir / "scene_visual.tif").write_bytes(b"placeholder")
+
+        constrained_calls: list[int] = []
+
+        def _capture_compose_task(
+            *,
+            index: int,
+            task_seed: int,
+            tif_path: pathlib.Path | None,
+            img_out: pathlib.Path,
+            lbl_out: pathlib.Path,
+            config: object,
+            expected_surface: str | None = None,
+            candidate_tifs: tuple[pathlib.Path, ...] = (),
+            surface_target_attempts: int = 12,
+        ) -> tuple[int, int, str]:
+            del task_seed, tif_path, img_out, lbl_out, config, candidate_tifs, surface_target_attempts
+            if expected_surface is not None:
+                constrained_calls.append(index)
+                assert expected_surface == "sea_only"
+            return 1, 0, "sea_only"
+
+        monkeypatch.setattr(pipeline_mod, "_run_compose_task", _capture_compose_task)
+        monkeypatch.setattr(pipeline_mod, "_write_dataset_yaml", lambda *args, **kwargs: None)
+        monkeypatch.setattr(pipeline_mod, "_worker_init", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            pipeline_mod,
+            "generate_false_negatives",
+            lambda *args, **kwargs: 3,
+        )
+
+        stats = pipeline_mod.generate_dataset(
+            bg_dir=bg_dir,
+            output_dir=tmp_path / "out",
+            count=10,
+            false_dir=tmp_path,
+            false_ratio=0.3,
+            bg_surface_mix_ratio=(1.0, 0.0),
+            max_workers=0,
+        )
+
+        # count=10, false_ratio=0.3 -> synth_count=7
+        assert sorted(constrained_calls) == list(range(7))
+        assert stats["images"] == 7
+        assert stats["false_negatives"] == 3
+
+    def test_unmet_target_falls_back_to_unconstrained(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """カテゴリ未達時は同じ index を制約なしで再試行して埋める。"""
+        bg_dir = tmp_path / "bg"
+        bg_dir.mkdir()
+        (bg_dir / "scene_visual.tif").write_bytes(b"placeholder")
+
+        retry_counts: dict[int, int] = {}
+
+        def _capture_compose_task(
+            *,
+            index: int,
+            task_seed: int,
+            tif_path: pathlib.Path | None,
+            img_out: pathlib.Path,
+            lbl_out: pathlib.Path,
+            config: object,
+            expected_surface: str | None = None,
+            candidate_tifs: tuple[pathlib.Path, ...] = (),
+            surface_target_attempts: int = 12,
+        ) -> tuple[int, int, str]:
+            del task_seed, tif_path, img_out, lbl_out, config, candidate_tifs
+            retry_counts[index] = surface_target_attempts
+            return 1, 0, "mixed"
+
+        monkeypatch.setattr(pipeline_mod, "_run_compose_task", _capture_compose_task)
+        monkeypatch.setattr(pipeline_mod, "_write_dataset_yaml", lambda *args, **kwargs: None)
+        monkeypatch.setattr(pipeline_mod, "_worker_init", lambda *args, **kwargs: None)
+
+        stats = pipeline_mod.generate_dataset(
+            bg_dir=bg_dir,
+            output_dir=tmp_path / "out",
+            count=5,
+            bg_surface_mix_ratio=(1.0, 0.0),
+            max_workers=0,
+        )
+
+        assert stats["images"] == 5
+        assert stats["surface_goal_rejected"] == 5
+        assert stats["mixed"] == 5
+        assert all(retry_counts[index] == 12 for index in range(5))
+
+
+class TestRunComposeTaskSurfaceTarget:
+    """_run_compose_task の surface target retry を検証する。"""
+
+    def test_retries_until_expected_surface_matches(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """expected_surface 指定時は一致するまで複数回試行する。"""
+        import medetect.datagen.compose as compose_mod
+
+        image_out = tmp_path / "images"
+        label_out = tmp_path / "labels"
+        image_out.mkdir()
+        label_out.mkdir()
+
+        tif_a = tmp_path / "a.tif"
+        tif_b = tmp_path / "b.tif"
+        tif_a.write_bytes(b"a")
+        tif_b.write_bytes(b"b")
+
+        attempts: list[pathlib.Path] = []
+
+        def _fake_compose_one_with_surface_category(**kwargs):
+            tif_path = kwargs["tif_path"]
+            attempts.append(tif_path)
+            tile = np.zeros((32, 32, 3), dtype=np.uint8)
+            if len(attempts) < 3:
+                return tile, [], 0, "sea_only"
+            return tile, [], 0, "mixed"
+
+        monkeypatch.setattr(
+            compose_mod,
+            "_compose_one_with_surface_category",
+            _fake_compose_one_with_surface_category,
+        )
+
+        config = pipeline_mod._ComposeTaskConfig(
+            image_size=32,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            cluster_mixed_prob=0.5,
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=0.75,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            berth_prob=0.0,
+            berth_stern_prob=0.0,
+            size_thresholds=None,
+            wake_prob_scale=1.0,
+            wake_alpha_scale=1.0,
+            debug_bg_color=None,
+            shadow_alpha_scale=1.0,
+            shadow_length_range=(0.0, 0.0),
+            offnadir_range=(0.0, 0.0),
+            shipgen_kwargs={},
+        )
+
+        result = pipeline_mod._run_compose_task(
+            index=0,
+            task_seed=0,
+            tif_path=tif_a,
+            img_out=image_out,
+            lbl_out=label_out,
+            config=config,
+            expected_surface="mixed",
+            candidate_tifs=(tif_a, tif_b),
+            surface_target_attempts=4,
+        )
+
+        assert result == (0, 0, "mixed")
+        assert len(attempts) == 3
+        assert (image_out / "000000.png").exists()
+        assert (label_out / "000000.txt").exists()
+        with Image.open(image_out / "000000.png") as output:
+            assert output.size == (32, 32)
+
+
 class TestDatagenCli:
     """datagen CLI の公開オプション整合を検証する。"""
 
@@ -599,6 +795,7 @@ class TestDatagenCli:
         assert "--cluster_blend_strength" not in help_text
         assert "--disable-water-tint" not in help_text
         assert "--shadow_elevation" not in help_text
+        assert "--bg_surface_mix_ratio" in help_text
         assert "placement events per image" in help_text
         assert "single ships only" in help_text
         assert "reusing the same ship" in help_text
@@ -719,4 +916,68 @@ class TestDatagenCli:
 
         assert captured["berth_prob"] == pytest.approx(0.8)
         assert captured["berth_stern_prob"] == pytest.approx(0.2)
+
+    def test_bg_surface_mix_ratio_is_forwarded(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """bg_surface_mix_ratio は CLI から generate_dataset へ渡る。"""
+        import sys
+
+        import medetect.datagen.__main__ as datagen_main
+
+        captured: dict[str, object] = {}
+
+        def _capture_generate_dataset(**kwargs):
+            captured.update(kwargs)
+            return {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+
+        monkeypatch.setattr(datagen_main, "generate_dataset", _capture_generate_dataset)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "medetect.datagen",
+                "--bg_dir",
+                "bg",
+                "--output_dir",
+                "out",
+                "--count",
+                "1",
+                "--bg_surface_mix_ratio",
+                "0.6:0.4",
+            ],
+        )
+
+        datagen_main.main()
+
+        assert captured["bg_surface_mix_ratio"] == (0.6, 0.4)
+
+    def test_bg_surface_mix_ratio_sum_must_be_positive(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """bg_surface_mix_ratio の和が 0 以下ならエラーになる。"""
+        import sys
+
+        import medetect.datagen.__main__ as datagen_main
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "medetect.datagen",
+                "--bg_dir",
+                "bg",
+                "--output_dir",
+                "out",
+                "--count",
+                "1",
+                "--bg_surface_mix_ratio",
+                "0:0",
+            ],
+        )
+
+        with pytest.raises(SystemExit):
+            datagen_main.main()
 

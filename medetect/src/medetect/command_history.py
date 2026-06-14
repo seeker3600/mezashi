@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -27,6 +28,7 @@ def append_command_history(
     root.mkdir(parents=True, exist_ok=True)
     record: dict[str, Any] = {
         "timestamp": _timestamp_now(),
+        "git_commit_hash": _git_commit_hash(),
         "command": command,
         "argv": list(sys.argv if argv is None else argv),
         "cwd": str(Path.cwd().resolve() if cwd is None else Path(cwd).resolve()),
@@ -60,6 +62,23 @@ def read_command_history(dataset_root: str | Path) -> list[dict[str, Any]]:
 
 def _timestamp_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _git_commit_hash() -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit_hash = completed.stdout.strip()
+    if len(commit_hash) == 40:
+        return commit_hash
+    return None
 
 
 def _json_default(value: Any) -> str:
