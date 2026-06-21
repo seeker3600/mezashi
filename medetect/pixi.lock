@@ -1219,7 +1219,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/ba/5a/18ad964b0086c6e62e2e7500f7edc89e3faa45033c71c1893d34eed2b2de/dnspython-2.8.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/8a/0e/97c33bf5009bdbac74fd2beace167cab3f978feb69cc36f1ef79360d6c4e/exceptiongroup-1.3.1-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/e2/39/e7cdd14e395333440b8000b3e7a6d7a28b4c9c46f5d6184140b8f821b284/fiftyone-1.15.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/97/24/9740e25590331ebe8d8d47fbb5df912a2f21d0fcceee726ae446cefa53a5/fiftyone-1.13.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/39/1d/2b6993dad575561666921e6dd0d07916d24561dfa7d01377877f16f3d1b1/fiftyone_brain-0.21.6-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/de/61/19b7b61f1fe84f37fa07dc38c4948653f2a4436adaec0ae8446850908b2f/fiftyone_db-1.4.1.tar.gz
       - pypi: https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl
@@ -1274,7 +1274,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/2d/f2/6d84388c6e0f0637321149bc84bbbfa54a12f65f29bc6a007dd1403bf6f7/simsimd-6.5.16-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/46/2c/1462b1d0a634697ae9e55b3cecdcb64788e8b7d63f54d923fcd0bb140aed/soupsieve-2.8.3-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/dc/67/805710444ea8cc75fbf70b920ed431a560c4bf9c57f7d5a3117213189399/sse_starlette-3.4.4-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a5/47/23a224a24fe60e9b2a3e265cf2f2e600b287abda83d59160a242976cb6b3/sse_starlette-0.10.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/4d/2e/59920f7d66b7f9932a3d83dd0ec53fab001be1e058bf582606fe414a5198/sseclient_py-1.9.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/81/0d/13d1d239a25cbfb19e740db83143e95c772a1fe10202dda4b76792b114dd/starlette-0.52.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/2e/5c/7841327bd5ab23cd71c74dbb42e72eb7d83f898c7be9e0908cbfcb965b00/strawberry_graphql-0.291.3-py3-none-any.whl
@@ -1607,7 +1607,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/ba/5a/18ad964b0086c6e62e2e7500f7edc89e3faa45033c71c1893d34eed2b2de/dnspython-2.8.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/8a/0e/97c33bf5009bdbac74fd2beace167cab3f978feb69cc36f1ef79360d6c4e/exceptiongroup-1.3.1-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/e2/39/e7cdd14e395333440b8000b3e7a6d7a28b4c9c46f5d6184140b8f821b284/fiftyone-1.15.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/97/24/9740e25590331ebe8d8d47fbb5df912a2f21d0fcceee726ae446cefa53a5/fiftyone-1.13.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/39/1d/2b6993dad575561666921e6dd0d07916d24561dfa7d01377877f16f3d1b1/fiftyone_brain-0.21.6-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6d/f2/6134ca84e51434b94ca9977e6a7a4024ee9f1a9bd0b27be13428a4814507/fiftyone_db-1.4.1-py3-none-win_amd64.whl
       - pypi: https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl
@@ -1662,7 +1662,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/5d/54/dbc23d585a57c9b0e71ab10705c4121ce91a807df374d433dd86fb438caa/simsimd-6.5.16-cp313-cp313-win_amd64.whl
       - pypi: https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/46/2c/1462b1d0a634697ae9e55b3cecdcb64788e8b7d63f54d923fcd0bb140aed/soupsieve-2.8.3-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/dc/67/805710444ea8cc75fbf70b920ed431a560c4bf9c57f7d5a3117213189399/sse_starlette-3.4.4-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a5/47/23a224a24fe60e9b2a3e265cf2f2e600b287abda83d59160a242976cb6b3/sse_starlette-0.10.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/4d/2e/59920f7d66b7f9932a3d83dd0ec53fab001be1e058bf582606fe414a5198/sseclient_py-1.9.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/81/0d/13d1d239a25cbfb19e740db83143e95c772a1fe10202dda4b76792b114dd/starlette-0.52.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/2e/5c/7841327bd5ab23cd71c74dbb42e72eb7d83f898c7be9e0908cbfcb965b00/strawberry_graphql-0.291.3-py3-none-any.whl
@@ -3595,61 +3595,6 @@ packages:
   - fiftyone-db>=0.4,<2.0
   - voxel51-eta>=0.15.3,<0.16
   - opencv-python-headless
-  requires_python: '>=3.9'
-- pypi: https://files.pythonhosted.org/packages/e2/39/e7cdd14e395333440b8000b3e7a6d7a28b4c9c46f5d6184140b8f821b284/fiftyone-1.15.0-py3-none-any.whl
-  name: fiftyone
-  version: 1.15.0
-  sha256: 9f6a7b66b66dc1f3efb697dc3436711d06968dcd50808221b36f30ac25f06372
-  requires_dist:
-  - deprecated
-  - packaging
-  - setuptools
-  - aiofiles>=20,<26
-  - argcomplete>=2,<4
-  - async-lru>=2,<3
-  - beautifulsoup4>=2,<5
-  - boto3>=1,<2
-  - cachetools>=5,<7
-  - dacite>=1.6.0,<2
-  - dill>=0.1,<0.5
-  - exceptiongroup>=1,<2
-  - ftfy>=4,<7
-  - humanize>=2,<5
-  - hypercorn>=0.13.2,<0.19
-  - jinja2>=3,<4
-  - jsonpatch>=1,<2
-  - mongoengine~=0.29.1
-  - motor~=3.6.0
-  - pillow>=6.2,!=11.2.*
-  - plotly>=6.1.1,<7
-  - pprintpp>=0.1,<0.5
-  - protobuf==6.33.5
-  - psutil>=5,<8
-  - pydash>=6,<9
-  - pymongo~=4.9.2
-  - pytz
-  - pyyaml>=4,<7
-  - regex
-  - retrying>=1,<2
-  - sseclient-py>=1.7.2,<2
-  - sse-starlette>=0.10.3,<4
-  - starlette>=0.24.0,<0.53
-  - strawberry-graphql>=0.262.4,<0.292.0
-  - tabulate>=0.7,<0.10
-  - tqdm>=2,<5
-  - xmltodict>=1,<2
-  - universal-analytics-python3>=1.0.1,<2
-  - matplotlib<4
-  - numpy<3
-  - opencv-python-headless<5
-  - pandas<4
-  - rtree<2
-  - scikit-learn<2
-  - scikit-image<1
-  - scipy<2
-  - fiftyone-brain>=0.21.6,<0.22
-  - fiftyone-db>=0.4,<2.0
-  - voxel51-eta>=0.15.3,<0.16
   requires_python: '>=3.9'
 - pypi: https://files.pythonhosted.org/packages/b7/48/676794632b26c8a0379deed8c7be30f9b1e9b98887de236e5189a3f92912/fiftyone_brain-0.21.5-py3-none-any.whl
   name: fiftyone-brain
@@ -10177,13 +10122,13 @@ packages:
 - pypi: ./
   name: medetect
   version: 0.1.0
-  sha256: cea31c23515990701b5a5ba54bcdd38d16dc3dc3ea669a4da18c38fdec774cb9
+  sha256: 6e6f637b0721d271276a2fe1d1b1f30921ea2899b68b1b777bf44c060ecc927c
   requires_dist:
   - flatbuffers>=25.12.19,<26
   - ml-dtypes>=0.5.4,<0.6
   - onnx>=1.20.1,<2
   - onnxslim>=0.1.85,<0.2
-  - fiftyone>=1.13.3,<2
+  - fiftyone===1.13.3
 - conda: https://conda.anaconda.org/conda-forge/linux-64/minizip-4.0.10-h05a5f5f_0.conda
   sha256: 0c3700d15377156937ddc89a856527ad77e7cf3fd73cb0dffc75fce8030ddd16
   md5: da01bb40572e689bd1535a5cee6b1d68
@@ -14964,22 +14909,6 @@ packages:
   requires_dist:
   - starlette
   requires_python: '>=3.6'
-- pypi: https://files.pythonhosted.org/packages/dc/67/805710444ea8cc75fbf70b920ed431a560c4bf9c57f7d5a3117213189399/sse_starlette-3.4.4-py3-none-any.whl
-  name: sse-starlette
-  version: 3.4.4
-  sha256: 3f4dd50d8aed2771a091f3a83000323fc3844541c16b4fe585ae2420cc6df973
-  requires_dist:
-  - starlette>=0.49.1
-  - anyio>=4.7.0
-  - uvicorn>=0.34.0 ; extra == 'examples'
-  - fastapi>=0.115.12 ; extra == 'examples'
-  - pydantic>=2 ; extra == 'examples'
-  - sqlalchemy[asyncio]>=2.0.41 ; extra == 'examples-db'
-  - aiosqlite>=0.21.0 ; extra == 'examples-db'
-  - uvicorn>=0.34.0 ; extra == 'uvicorn'
-  - granian>=2.3.1 ; extra == 'granian'
-  - daphne>=4.2.0 ; extra == 'daphne'
-  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/4d/2e/59920f7d66b7f9932a3d83dd0ec53fab001be1e058bf582606fe414a5198/sseclient_py-1.9.0-py3-none-any.whl
   name: sseclient-py
   version: 1.9.0

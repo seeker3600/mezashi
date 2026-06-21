@@ -10,7 +10,7 @@ dependencies = [
     "ml-dtypes>=0.5.4,<0.6",
     "onnx>=1.20.1,<2",
     "onnxslim>=0.1.85,<0.2",
-    "fiftyone>=1.13.3,<2",
+    "fiftyone===1.13.3",
 ]
 
 [build-system]
