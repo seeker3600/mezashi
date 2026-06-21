@@ -314,6 +314,22 @@ class _ForcedLayoutRandom(random.Random):
         return super().uniform(a, b)
 
 
+class _ForcedOpenGapRandom(_ForcedLayoutRandom):
+    """旧 raft_open gap branch を最大化する向きの RNG。"""
+
+    def random(self):
+        if self._layout == "partial":
+            self._random_calls += 1
+            return 0.75
+        return super().random()
+
+    def uniform(self, a, b):
+        if a == 0.0 and b == 1.0:
+            self._uniform_calls += 1
+            return 1.0
+        return super().uniform(a, b)
+
+
 def _make_tapered_hull_rgba(beam_px: int, length_px: int) -> np.ndarray:
     """tight placement 用の簡単な船体マスクを作る。"""
     img = Image.new("RGBA", (beam_px, length_px), (0, 0, 0, 0))
@@ -941,6 +957,95 @@ class TestPlaceCluster:
 
         assert gap <= 1e-6 or overlap_area > 0.0, description
         assert penetration_px <= 1.0, description
+
+    def test_raft_open_does_not_reintroduce_gap_after_contact(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """raft_open は接触候補を見つけた後に gap を入れ直さない。"""
+        captured = _capture_vector_cluster(monkeypatch)
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: "mock-svg")
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(6, 24), (6, 24)]),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_local_hull_geometry",
+            lambda svg_text, bw, lh, angle_deg: box(0.0, 0.0, float(bw), float(lh)),
+        )
+        monkeypatch.setattr(placement_mod, "extract_hull_fill", lambda svg_text: (200, 200, 200, 255))
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedOpenGapRandom(7, "partial", base_angle=0.0, zero_centered_uniform_max=20.0),
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=1.0,
+        )
+
+        assert len(labels) == 2
+        assert len(captured) == 2
+        assert captured[0].hull_geom.distance(captured[1].hull_geom) <= 1e-6
+
+    def test_partial_open_cluster_failure_returns_no_labels(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """raft_open cluster が 1 隻しか成立しない場合は ship_c を返さない。"""
+        _capture_vector_cluster(monkeypatch)
+        monkeypatch.setattr(placement_mod, "_pick_svg", lambda *args, **kwargs: "mock-svg")
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(6, 24), (6, 24)]),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_local_hull_geometry",
+            lambda svg_text, bw, lh, angle_deg: box(0.0, 0.0, float(bw), float(lh)),
+        )
+        monkeypatch.setattr(placement_mod, "extract_hull_fill", lambda svg_text: (200, 200, 200, 255))
+
+        call_count = {"count": 0}
+        original_obb_on_water = placement_mod._obb_on_water
+
+        def _fail_second_ship_water_check(*args, **kwargs):
+            call_count["count"] += 1
+            if call_count["count"] >= 2:
+                return False
+            return original_obb_on_water(*args, **kwargs)
+
+        monkeypatch.setattr(placement_mod, "_obb_on_water", _fail_second_ship_water_check)
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(7, "partial", base_angle=0.0),
+            cluster_size_range=(2, 2),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            mixed_prob=0.0,
+        )
+
+        assert labels == []
 
     def test_tight_cluster_labels_keep_subpixel_offsets(self, scene, monkeypatch: pytest.MonkeyPatch) -> None:
         """tight クラスターのラベル座標がサブピクセル位置を保持する。"""
@@ -2175,6 +2280,64 @@ class TestClusterRenderHelpers:
         assert all(width < full_scene_size for _height, width in recorded_shapes)
 
 
+class TestVisibleClusterComponents:
+    """visible silhouette の connected component による cluster 判定を検証する。"""
+
+    def test_isolated_ship_in_event_gets_solo_flag(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """接触ペアと孤立船が混在すると、孤立船だけ solo 扱いになる。"""
+        monkeypatch.setattr(
+            placement_mod,
+            "rasterize_ship_svg",
+            lambda *args, **kwargs: np.zeros((30, 10, 4), dtype=np.uint8),
+        )
+
+        ships = [
+            placement_mod._RaftShipPlacement(
+                svg_text="mock-a",
+                cx=5.0,
+                cy=15.0,
+                bw=10,
+                lh=30,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=1,
+                hull_geom=box(0.0, 0.0, 10.0, 30.0),
+                hull_fill=(200, 200, 200, 255),
+            ),
+            placement_mod._RaftShipPlacement(
+                svg_text="mock-b",
+                cx=15.0,
+                cy=15.0,
+                bw=10,
+                lh=30,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=1,
+                hull_geom=box(10.0, 0.0, 20.0, 30.0),
+                hull_fill=(200, 200, 200, 255),
+            ),
+            placement_mod._RaftShipPlacement(
+                svg_text="mock-c",
+                cx=45.0,
+                cy=15.0,
+                bw=10,
+                lh=30,
+                angle_deg=0.0,
+                angle_rad=0.0,
+                class_id=1,
+                hull_geom=box(40.0, 0.0, 50.0, 30.0),
+                hull_fill=(200, 200, 200, 255),
+            ),
+        ]
+
+        flags = placement_mod._cluster_component_flags(ships, scene_scale=1)
+
+        assert flags == [True, True, False]
+
+
 class TestClusterClassId:
     """クラスター種別（raft_tight / raft_open）による class_id 分岐の検証。"""
 
@@ -2246,6 +2409,20 @@ class TestClusterClassId:
         )
         assert len(labels) > 0
         assert all(int(lbl.split()[0]) == 1 for lbl in labels)
+
+    def test_raft_open_isolated_ship_in_event_uses_solo_class_id(
+        self, scene, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同一 event 内で孤立した raft_open 船は solo class_id を使う。"""
+        self._setup_mocks(monkeypatch)
+        monkeypatch.setattr(placement_mod, "_cluster_component_flags", lambda ships, scene_scale: [True, False])
+
+        labels = _place_cluster(
+            rng=_ForcedLayoutRandom(7, "partial", base_angle=0.0),
+            **self._base_args(scene),
+        )
+
+        assert [int(lbl.split()[0]) for lbl in labels] == [1, 0]
 
     def test_partial_cluster_failure_returns_no_labels(
         self, scene, monkeypatch: pytest.MonkeyPatch

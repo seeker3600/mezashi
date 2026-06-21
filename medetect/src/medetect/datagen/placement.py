@@ -6,7 +6,6 @@ import math
 import random
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -304,6 +303,149 @@ def _shadow_source_rgba(
         out=shadow_source[:, :, 3],
     )
     return shadow_source
+
+
+def _dilate_binary_mask(mask: NDArray[np.bool_]) -> NDArray[np.bool_]:
+    """Return an 8-neighbour one-pixel dilation of a boolean mask."""
+    if mask.size == 0:
+        return mask.copy()
+
+    height, width = mask.shape
+    padded = np.pad(mask, 1, mode="constant", constant_values=False)
+    dilated = np.zeros((height, width), dtype=bool)
+    for dy in range(3):
+        for dx in range(3):
+            dilated |= padded[dy : dy + height, dx : dx + width]
+    return dilated
+
+
+def _ship_visible_silhouette_patch(
+    ship: _RaftShipPlacement,
+    scene_scale: int,
+) -> RgbaLayerPatch:
+    """Return an output-scale patch for the ship's visible silhouette."""
+    scaled_hull = affinity.scale(
+        ship.hull_geom,
+        xfact=scene_scale,
+        yfact=scene_scale,
+        origin=(0.0, 0.0),
+    )
+    try:
+        detail_rgba = rasterize_ship_svg(
+            ship.svg_text,
+            max(1, ship.bw * scene_scale),
+            max(1, ship.lh * scene_scale),
+            angle_deg=ship.angle_deg,
+            supersample=1,
+            exclude_hull=True,
+        )
+        x0_scene, y0_scene = _cluster_scene_origin(
+            ship.cx,
+            ship.cy,
+            detail_rgba,
+            scene_scale,
+        )
+    except Exception:
+        min_x, min_y, max_x, max_y = scaled_hull.bounds
+        x0_scene = math.floor(min_x)
+        y0_scene = math.floor(min_y)
+        width = max(1, math.ceil(max_x) - x0_scene)
+        height = max(1, math.ceil(max_y) - y0_scene)
+        detail_rgba = np.zeros((height, width, 4), dtype=np.uint8)
+
+    silhouette_rgba = _shadow_source_rgba(detail_rgba, scaled_hull, x0_scene, y0_scene)
+    aligned_x0 = (x0_scene // scene_scale) * scene_scale
+    aligned_y0 = (y0_scene // scene_scale) * scene_scale
+    pad_left = x0_scene - aligned_x0
+    pad_top = y0_scene - aligned_y0
+    padded_width = pad_left + silhouette_rgba.shape[1]
+    padded_height = pad_top + silhouette_rgba.shape[0]
+    pad_right = (-padded_width) % scene_scale
+    pad_bottom = (-padded_height) % scene_scale
+    if pad_left or pad_top or pad_right or pad_bottom:
+        silhouette_rgba = np.pad(
+            silhouette_rgba,
+            ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
+            mode="constant",
+            constant_values=0,
+        )
+
+    return _downsample_cluster_patch(silhouette_rgba, aligned_x0, aligned_y0, scene_scale)
+
+
+def _patches_touch(
+    patch_a: RgbaLayerPatch,
+    patch_b: RgbaLayerPatch,
+    *,
+    alpha_threshold: int = 32,
+) -> bool:
+    """Return True when two RGBA patches overlap or touch in output pixels."""
+    ax0, ay0 = patch_a.x0, patch_a.y0
+    bx0, by0 = patch_b.x0, patch_b.y0
+    ah, aw = patch_a.layer.shape[:2]
+    bh, bw = patch_b.layer.shape[:2]
+    ax1, ay1 = ax0 + aw, ay0 + ah
+    bx1, by1 = bx0 + bw, by0 + bh
+
+    x0 = min(ax0, bx0)
+    y0 = min(ay0, by0)
+    x1 = max(ax1, bx1)
+    y1 = max(ay1, by1)
+    width = x1 - x0
+    height = y1 - y0
+    if width <= 0 or height <= 0:
+        return False
+
+    mask_a = np.zeros((height, width), dtype=bool)
+    mask_b = np.zeros((height, width), dtype=bool)
+    alpha_a = patch_a.layer[:, :, 3] >= alpha_threshold
+    alpha_b = patch_b.layer[:, :, 3] >= alpha_threshold
+    mask_a[ay0 - y0 : ay1 - y0, ax0 - x0 : ax1 - x0] = alpha_a
+    mask_b[by0 - y0 : by1 - y0, bx0 - x0 : bx1 - x0] = alpha_b
+
+    if np.any(mask_a & mask_b):
+        return True
+    return bool(np.any(_dilate_binary_mask(mask_a) & mask_b))
+
+
+def _cluster_component_flags(
+    ships: list[_RaftShipPlacement],
+    scene_scale: int,
+) -> list[bool]:
+    """Return per-ship flags marking whether each ship belongs to a visible cluster."""
+    if not ships:
+        return []
+
+    patches = [_ship_visible_silhouette_patch(ship, scene_scale) for ship in ships]
+    adjacency: list[set[int]] = [set() for _ in ships]
+    for index, patch_a in enumerate(patches):
+        for other_index in range(index + 1, len(patches)):
+            if not _patches_touch(patch_a, patches[other_index]):
+                continue
+            adjacency[index].add(other_index)
+            adjacency[other_index].add(index)
+
+    cluster_flags = [False] * len(ships)
+    visited = [False] * len(ships)
+    for start in range(len(ships)):
+        if visited[start]:
+            continue
+        stack = [start]
+        component: list[int] = []
+        visited[start] = True
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            for neighbor in adjacency[current]:
+                if visited[neighbor]:
+                    continue
+                visited[neighbor] = True
+                stack.append(neighbor)
+        is_cluster = len(component) >= 2
+        for index in component:
+            cluster_flags[index] = is_cluster
+
+    return cluster_flags
 
 
 def _tight_cluster_bridge_geometry(
@@ -1494,7 +1636,8 @@ def _place_berthed_cluster(
                     water_tint,
                 )
 
-            for ship in placed:
+            cluster_flags = _cluster_component_flags(placed, scene_scale)
+            for ship, is_cluster in zip(placed, cluster_flags, strict=True):
                 corners = compute_obb_corners(
                     float(ship.cx),
                     float(ship.cy),
@@ -1502,7 +1645,20 @@ def _place_berthed_cluster(
                     float(ship.lh),
                     ship.angle_rad,
                 )
-                labels.append(format_obb_label(ship.class_id, corners, image_size, image_size))
+                labels.append(
+                    format_obb_label(
+                        _ship_class_id(
+                            ship.lh,
+                            resolution_m,
+                            class_id,
+                            size_thresholds,
+                            is_cluster=is_cluster,
+                        ),
+                        corners,
+                        image_size,
+                        image_size,
+                    )
+                )
             return labels
 
         target_ship_count = min(
@@ -1767,7 +1923,8 @@ def _place_berthed_cluster(
                         water_tint,
                     )
 
-                for ship in placed:
+                cluster_flags = _cluster_component_flags(placed, scene_scale)
+                for ship, is_cluster in zip(placed, cluster_flags, strict=True):
                     corners = compute_obb_corners(
                         float(ship.cx),
                         float(ship.cy),
@@ -1775,7 +1932,20 @@ def _place_berthed_cluster(
                         float(ship.lh),
                         ship.angle_rad,
                     )
-                    labels.append(format_obb_label(ship.class_id, corners, image_size, image_size))
+                    labels.append(
+                        format_obb_label(
+                            _ship_class_id(
+                                ship.lh,
+                                resolution_m,
+                                class_id,
+                                size_thresholds,
+                                is_cluster=is_cluster,
+                            ),
+                            corners,
+                            image_size,
+                            image_size,
+                        )
+                    )
                 return labels
 
             if failed_index is None or failed_index <= 0:
@@ -2365,17 +2535,6 @@ def _place_cluster(
                 break
 
             row_offset, stagger_px, cx, cy, hull_geom = contact_choice
-            gap_mode = rng.random()
-            if gap_mode < 0.5:
-                gap_px = 0.0
-            else:
-                gap_px = rng.uniform(0.0, 1.0)
-
-            if gap_px > 0.0:
-                row_offset += gap_px
-                cx, cy, hull_geom = _candidate_geometry(local_hull, row_offset, stagger_px)
-                if not _candidate_valid(cx, cy, hull_geom, bw, lh, angle_rad):
-                    break
 
         cid = _ship_class_id(lh, resolution_m, class_id, size_thresholds, is_cluster=True)
         placed.append(
@@ -2453,7 +2612,8 @@ def _place_cluster(
                 cluster_alpha,
                 water_tint,
             )
-        for ship in placed:
+        cluster_flags = _cluster_component_flags(placed, scene_scale)
+        for ship, is_cluster in zip(placed, cluster_flags, strict=True):
             corners = compute_obb_corners(
                 float(ship.cx),
                 float(ship.cy),
@@ -2461,6 +2621,19 @@ def _place_cluster(
                 float(ship.lh),
                 ship.angle_rad,
             )
-            labels.append(format_obb_label(ship.class_id, corners, image_size, image_size))
+            labels.append(
+                format_obb_label(
+                    _ship_class_id(
+                        ship.lh,
+                        resolution_m,
+                        class_id,
+                        size_thresholds,
+                        is_cluster=is_cluster,
+                    ),
+                    corners,
+                    image_size,
+                    image_size,
+                )
+            )
 
     return labels
