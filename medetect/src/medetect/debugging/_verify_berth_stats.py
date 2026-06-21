@@ -139,7 +139,7 @@ def _install_patches() -> dict[str, Any]:
     def _patched_pc(water_mask, occupancy, svg_metas, resolution_m, rng,
                     cluster_size_range, blur_sigma, alpha_range, class_id,
                     image_size, background, length_range=None, length_exponent=1.0,
-                    size_thresholds=None, mixed_prob=0.5, raft_open_contact_prob=0.5,
+                    size_thresholds=None, mixed_prob=0.5,
                     berth_prob=0.25, berth_stern_prob=0.5, berth_water_mask=None,
                     berth_segments=None, berth_runs=None, **kwargs):
         _counters["pc_calls"] += 1
@@ -152,7 +152,6 @@ def _install_patches() -> dict[str, Any]:
                           image_size, background,
                           length_range=length_range, length_exponent=length_exponent,
                           size_thresholds=size_thresholds, mixed_prob=mixed_prob,
-                          raft_open_contact_prob=raft_open_contact_prob,
                           berth_prob=berth_prob, berth_stern_prob=berth_stern_prob,
                           berth_water_mask=berth_water_mask,
                           berth_segments=berth_segments,

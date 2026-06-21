@@ -45,7 +45,7 @@ def _render_raft_tight_tile(
 
     def _patched_choices(population, weights=None, *, cum_weights=None, k=1):
         pop_list = list(population)
-        if set(pop_list) == {"raft_tight", "raft_open", "area_scattered"}:
+        if set(pop_list) == {"raft_tight", "raft_open"}:
             return ["raft_tight"]
         return original_choices(population, weights=weights, cum_weights=cum_weights, k=k)
 

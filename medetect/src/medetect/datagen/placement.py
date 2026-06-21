@@ -1276,6 +1276,7 @@ def _place_alongside_berthed_run(
                 resolution_m,
                 class_id,
                 size_thresholds,
+                is_cluster=n_ships > 1,
             ),
             hull_geom=lead_hull_geom,
             hull_fill=lead_hull_fill,
@@ -1349,6 +1350,7 @@ def _place_alongside_berthed_run(
                     resolution_m,
                     class_id,
                     size_thresholds,
+                    is_cluster=n_ships > 1,
                 ),
                 hull_geom=hull_geom,
                 hull_fill=extract_hull_fill(svg_text_i),
@@ -1434,6 +1436,9 @@ def _place_berthed_cluster(
                 continue
 
             placed, staged_occupancy = alongside_result
+            if n_ships > 1 and len(placed) < 2:
+                continue
+
             occupancy[:] = staged_occupancy
             water_tint = _sample_water_tint(background, round(mid_x), round(mid_y))
             rendered_cluster = _render_vector_raft_cluster(
@@ -1697,6 +1702,7 @@ def _place_berthed_cluster(
                             resolution_m,
                             class_id,
                             size_thresholds,
+                            is_cluster=n_ships > 1,
                         ),
                         hull_geom=hull_geom,
                         hull_fill=hull_fill,
@@ -1705,7 +1711,7 @@ def _place_berthed_cluster(
                 _stamp_geometry_occupancy(staged_occupancy, hull_geom)
                 cursor = center_s + max_t + ship_gap
 
-            if valid and placed:
+            if valid and placed and (n_ships <= 1 or len(placed) >= 2):
                 occupancy[:] = staged_occupancy
                 water_tint = _sample_water_tint(background, round(mid_x), round(mid_y))
                 rendered_cluster = _render_vector_raft_cluster(
@@ -2008,7 +2014,6 @@ def _place_cluster(
     length_exponent: float = 1.0,
     size_thresholds: tuple[float, ...] | None = None,
     mixed_prob: float = 0.5,
-    raft_open_contact_prob: float = 0.5,
     berth_prob: float = 0.25,
     berth_stern_prob: float = 0.5,
     berth_water_mask: NDArray[np.bool_] | None = None,
@@ -2024,6 +2029,9 @@ def _place_cluster(
 ) -> list[str]:
     """Place a cluster of ships and return label lines."""
     n_ships = rng.randint(*cluster_size_range)
+    if n_ships < 2:
+        return []
+
     labels: list[str] = []
     mixed = rng.random() < mixed_prob
 
@@ -2063,41 +2071,11 @@ def _place_cluster(
             return berthed_labels
 
     layout = rng.choices(
-        ["raft_tight", "raft_open", "area_scattered"],
-        weights=[0.35, 0.30, 0.35],
+        ["raft_tight", "raft_open"],
+        weights=[0.35, 0.30],
     )[0]
 
-    if layout == "area_scattered":
-        return _place_area_cluster(
-            water_mask,
-            occupancy,
-            svg_metas,
-            resolution_m,
-            rng,
-            n_ships,
-            blur_sigma,
-            alpha_range,
-            class_id,
-            image_size,
-            background,
-            length_range,
-            length_exponent,
-            size_thresholds,
-            mixed,
-            shadow_azimuth_rad=shadow_azimuth_rad,
-            shadow_length=shadow_length,
-            shadow_alpha=shadow_alpha,
-            shadow_alpha_scale=shadow_alpha_scale,
-            offnadir_deg=offnadir_deg,
-            sensor_az_world_deg=sensor_az_world_deg,
-            shipgen_kwargs=shipgen_kwargs,
-        )
-
     tight = layout == "raft_tight"
-    raft_open_contact_heavy = (
-        layout == "raft_open"
-        and rng.random() < max(0.0, min(1.0, raft_open_contact_prob))
-    )
     heading_jitter = 0.75 if tight else 20.0
     stagger_frac = 0.0 if tight else 0.15
     tight_stagger_mode = tight and rng.random() < 0.30
@@ -2354,75 +2332,52 @@ def _place_cluster(
             stagger_px = rng.uniform(-lh * stagger_frac, lh * stagger_frac)
             base_contact_row = cursor_edge - min_proj
 
-            if raft_open_contact_heavy:
-                contact_choice: tuple[float, float, float, float, BaseGeometry] | None = None
-                for candidate_stagger in _raft_open_contact_staggers(stagger_px):
-                    if prev_hull is None:
-                        break
-                    contact = _contact_candidate(
-                        local_hull,
-                        base_contact_row,
-                        candidate_stagger,
-                        bw,
-                        lh,
-                        angle_rad,
-                        min_proj,
-                        proj_half,
-                        strict=False,
-                    )
-                    if contact is None:
-                        continue
-                    candidate_row, candidate_cx, candidate_cy, candidate_hull = contact
-                    if not _candidate_valid(candidate_cx, candidate_cy, candidate_hull, bw, lh, angle_rad):
-                        continue
-                    contact_choice = (
-                        candidate_row,
-                        candidate_stagger,
-                        candidate_cx,
-                        candidate_cy,
-                        candidate_hull,
-                    )
+            contact_choice: tuple[float, float, float, float, BaseGeometry] | None = None
+            for candidate_stagger in _raft_open_contact_staggers(stagger_px):
+                if prev_hull is None:
                     break
+                contact = _contact_candidate(
+                    local_hull,
+                    base_contact_row,
+                    candidate_stagger,
+                    bw,
+                    lh,
+                    angle_rad,
+                    min_proj,
+                    proj_half,
+                    strict=False,
+                )
+                if contact is None:
+                    continue
+                candidate_row, candidate_cx, candidate_cy, candidate_hull = contact
+                if not _candidate_valid(candidate_cx, candidate_cy, candidate_hull, bw, lh, angle_rad):
+                    continue
+                contact_choice = (
+                    candidate_row,
+                    candidate_stagger,
+                    candidate_cx,
+                    candidate_cy,
+                    candidate_hull,
+                )
+                break
 
-                if contact_choice is not None:
-                    row_offset, stagger_px, cx, cy, hull_geom = contact_choice
-                else:
-                    row_offset = base_contact_row
-                    cx, cy, hull_geom = _candidate_geometry(local_hull, row_offset, stagger_px)
-                    if not _candidate_valid(cx, cy, hull_geom, bw, lh, angle_rad):
-                        cursor_edge = row_offset + max_proj
-                        continue
+            if contact_choice is None:
+                break
+
+            row_offset, stagger_px, cx, cy, hull_geom = contact_choice
+            gap_mode = rng.random()
+            if gap_mode < 0.5:
+                gap_px = 0.0
             else:
-                gap_mode = rng.random()
-                if gap_mode < 1 / 3:
-                    gap_px = 0.0
-                elif gap_mode < 2 / 3:
-                    gap_px = rng.uniform(0.0, 1.0)
-                else:
-                    gap_px = rng.uniform(bw * 0.2, bw * 0.8)
+                gap_px = rng.uniform(0.0, 1.0)
 
-                if prev_hull is not None and gap_px <= 1.0:
-                    contact = _contact_candidate(
-                        local_hull,
-                        base_contact_row,
-                        stagger_px,
-                        bw,
-                        lh,
-                        angle_rad,
-                        min_proj,
-                        proj_half,
-                        strict=False,
-                    )
-                    row_offset = (contact[0] if contact is not None else base_contact_row) + gap_px
-                else:
-                    row_offset = base_contact_row + gap_px
-
+            if gap_px > 0.0:
+                row_offset += gap_px
                 cx, cy, hull_geom = _candidate_geometry(local_hull, row_offset, stagger_px)
                 if not _candidate_valid(cx, cy, hull_geom, bw, lh, angle_rad):
-                    cursor_edge = row_offset + max_proj
-                    continue
+                    break
 
-        cid = _ship_class_id(lh, resolution_m, class_id, size_thresholds, is_cluster=tight)
+        cid = _ship_class_id(lh, resolution_m, class_id, size_thresholds, is_cluster=True)
         placed.append(
             _RaftShipPlacement(
                 svg_text=svg_text_i,
@@ -2445,7 +2400,7 @@ def _place_cluster(
         prev_proj_half = proj_half
         cursor_edge = row_offset + max_proj
 
-    if placed:
+    if len(placed) >= 2:
         rendered_cluster = _render_vector_raft_cluster(
             placed,
             image_size,
