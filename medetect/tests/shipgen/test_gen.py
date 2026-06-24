@@ -19,6 +19,7 @@ from medetect.shipgen.gen import (
 from medetect.shipgen.hull import build_hull_points, interpolate_hull
 from medetect.shipgen.ship_class import (
     SHIP_CLASSES,
+    ShipAppearanceVariant,
     ShipColors,
     sample_colors,
     sample_hull_trait_variant,
@@ -110,6 +111,14 @@ def _struct_area_ratio(svg: str) -> float:
 def _hull_traits_from_svg(svg: str) -> set[str]:
     root = ET.fromstring(svg)
     raw = root.attrib.get("data-hull-traits", "none")
+    if raw == "none":
+        return set()
+    return {token for token in raw.split(",") if token}
+
+
+def _appearance_variants_from_svg(svg: str) -> set[str]:
+    root = ET.fromstring(svg)
+    raw = root.attrib.get("data-appearance-variant", "none")
     if raw == "none":
         return set()
     return {token for token in raw.split(",") if token}
@@ -722,6 +731,54 @@ class TestSmallShipRareVariants:
         assert 4 <= bright <= 20
         assert oversized_only >= 1
         assert bright_only >= 1
+
+    @pytest.mark.parametrize("ship_class", ["destroyer", "fishing_longliner", "workboat"])
+    def test_strong_outline_variant_stays_sparse_across_ship_types(
+        self,
+        ship_class: str,
+    ) -> None:
+        """strong outline は船種を問わず低頻度で発生する。"""
+        variants = [
+            sample_ship_appearance_variant(SHIP_CLASSES[ship_class], random.Random(seed))
+            for seed in range(512)
+        ]
+
+        strong = sum(variant.strong_outline for variant in variants)
+
+        assert 1 <= strong <= 14
+
+    def test_strong_outline_sample_colors_forces_wide_perimeter_trim(self) -> None:
+        """strong outline では比率ベースの太い perimeter trim を選ぶ。"""
+        colors = sample_colors(
+            SHIP_CLASSES["destroyer"].color_family,
+            random.Random(42),
+            appearance_variant=ShipAppearanceVariant(strong_outline=True),
+        )
+
+        assert colors.trim.primary_mode == "perimeter"
+        assert colors.trim.primary_color is not None
+        assert 0.058 <= colors.trim.primary_width <= 0.094
+
+    def test_strong_outline_variant_tags_svg_and_adds_perimeter_trim(self) -> None:
+        """strong outline 個体は SVG metadata と perimeter trim を残す。"""
+        found_svg: str | None = None
+        for seed in range(4096):
+            svg = generate_ship_svg("destroyer", rng=random.Random(seed))
+            if "strong_outline" in _appearance_variants_from_svg(svg):
+                found_svg = svg
+                break
+
+        assert found_svg is not None
+
+        root = ET.fromstring(found_svg)
+        trim_polygons = [
+            polygon for polygon in root.findall(f"{{{SVG_NS}}}polygon")
+            if polygon.get("data-role") == "hull-trim"
+        ]
+
+        assert "strong_outline" in root.attrib["data-appearance-variant"]
+        assert root.attrib["data-trim-mode"] == "perimeter"
+        assert trim_polygons
 
     @pytest.mark.parametrize(
         ("ship_class", "min_long_foredeck", "max_long_foredeck"),

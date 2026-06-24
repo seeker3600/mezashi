@@ -355,6 +355,9 @@ _SIDE_TRIM_PALETTES: dict[str, list[tuple[int, int, int]]] = {
 }
 
 
+_RARE_STRONG_OUTLINE_PROB: float = 0.01
+
+
 def _fork_rng(rng: random.Random) -> random.Random:
     forked = random.Random()
     forked.setstate(rng.getstate())
@@ -413,6 +416,30 @@ def _sample_side_trim_color(
     return _jitter_rgb(capped, rng, 5)
 
 
+def _sample_strong_outline_trim_color(
+    family_key: str,
+    hull: tuple[int, int, int],
+    rng: random.Random,
+) -> tuple[int, int, int]:
+    if rng.random() < 0.65:
+        tone = rng.choice(
+            _PERIMETER_TRIM_PALETTES.get(family_key, _PERIMETER_TRIM_PALETTES["work_mixed"])
+        )
+        mixed = _mix_rgb(tone, _desaturate_toward_gray(hull, 0.48), rng.uniform(0.00, 0.08))
+        lifted = _lift_rgb(mixed, rng.randint(8, 18))
+        return _jitter_rgb(lifted, rng, 3)
+
+    accent_source = rng.choice(("bow", "side"))
+    if accent_source == "bow":
+        tone = rng.choice(_BOW_TRIM_PALETTES.get(family_key, _BOW_TRIM_PALETTES["work_mixed"]))
+        mixed = _mix_rgb(tone, hull, rng.uniform(0.00, 0.10))
+    else:
+        tone = rng.choice(_SIDE_TRIM_PALETTES.get(family_key, _SIDE_TRIM_PALETTES["work_mixed"]))
+        mixed = _mix_rgb(tone, hull, rng.uniform(0.02, 0.12))
+    lifted = _lift_rgb(mixed, rng.randint(2, 10))
+    return _jitter_rgb(lifted, rng, 4)
+
+
 @dataclass(frozen=True)
 class HullTrimStyle:
     """Appearance rules for hull trim paint and one visible side band."""
@@ -447,6 +474,7 @@ def _sample_hull_trim_style(
     *,
     trim_mode: str | None = None,
     side_component: float = 0.0,
+    strong_outline: bool = False,
 ) -> HullTrimStyle:
     """Sample hull trim style.
 
@@ -462,6 +490,8 @@ def _sample_hull_trim_style(
     trim_rng = _fork_rng(rng)
 
     primary_mode = _resolve_primary_trim_mode(family_key, trim_rng, trim_mode)
+    if strong_outline and trim_mode is None:
+        primary_mode = "perimeter"
 
     if side_component > _SIDE_COMPONENT_EPS:
         resolved_side = "starboard"
@@ -474,9 +504,14 @@ def _sample_hull_trim_style(
     primary_width = 0.0
     bow_extent = 0.0
     if primary_mode == "perimeter":
-        primary_color = _sample_perimeter_trim_color(family_key, hull, trim_rng)
-        primary_width = trim_rng.uniform(0.018, 0.038)
-        bow_extent = trim_rng.uniform(0.04, 0.08)
+        if strong_outline and trim_mode is None:
+            primary_color = _sample_strong_outline_trim_color(family_key, hull, trim_rng)
+            primary_width = trim_rng.uniform(0.058, 0.094)
+            bow_extent = trim_rng.uniform(0.06, 0.12)
+        else:
+            primary_color = _sample_perimeter_trim_color(family_key, hull, trim_rng)
+            primary_width = trim_rng.uniform(0.01, 0.125)
+            bow_extent = trim_rng.uniform(0.04, 0.08)
     elif primary_mode == "bow":
         primary_color = _sample_bow_trim_color(family_key, hull, trim_rng)
         primary_width = trim_rng.uniform(0.022, 0.046)
@@ -574,6 +609,17 @@ class ShipAppearanceVariant:
     small_ship: bool = False
     oversized_struct: bool = False
     bright_white_struct: bool = False
+    strong_outline: bool = False
+
+    def metadata_value(self) -> str:
+        variants: list[str] = []
+        if self.oversized_struct:
+            variants.append("oversized_struct")
+        if self.bright_white_struct:
+            variants.append("bright_white_struct")
+        if self.strong_outline:
+            variants.append("strong_outline")
+        return ",".join(variants) if variants else "none"
 
 
 @dataclass(frozen=True)
@@ -645,9 +691,6 @@ def sample_ship_appearance_variant(
         ship_class.rare_oversized_struct_prob > 0.0
         or ship_class.rare_bright_white_struct_prob > 0.0
     )
-    if not has_small_ship_variant:
-        return ShipAppearanceVariant()
-
     forked = _fork_rng(rng)
     return ShipAppearanceVariant(
         small_ship=has_small_ship_variant,
@@ -659,6 +702,7 @@ def sample_ship_appearance_variant(
             forked.random() < ship_class.rare_bright_white_struct_prob
             if has_small_ship_variant else False
         ),
+        strong_outline=forked.random() < _RARE_STRONG_OUTLINE_PROB,
     )
 
 
@@ -827,6 +871,7 @@ def sample_colors(
         rng,
         trim_mode=trim_mode,
         side_component=side_component,
+        strong_outline=(appearance_variant.strong_outline if appearance_variant is not None else False),
     )
     return ShipColors(
         hull=hull,
