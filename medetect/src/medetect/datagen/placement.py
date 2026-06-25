@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 
 import numpy as np
@@ -62,6 +63,46 @@ _BERTH_LAND_CLEARANCE_PX = 0.25
 # Maximum pixels to probe from a coastline segment toward water when
 # computing the water-side normal direction and shore offset.
 _BERTH_PROBE_MAX_PX: int = 50
+
+
+class _ClusterStrategy(str, Enum):
+    UNIFORM = "uniform"
+    MIXED = "mixed"
+    SAME_SHAPE_DIFF_SHIP = "same_shape_diff_ship"
+
+
+def _coerce_cluster_strategy(value: _ClusterStrategy | str | bool) -> _ClusterStrategy:
+    """Normalize legacy bool or string values into a cluster strategy."""
+    if isinstance(value, _ClusterStrategy):
+        return value
+    if isinstance(value, bool):
+        return _ClusterStrategy.MIXED if value else _ClusterStrategy.UNIFORM
+    return _ClusterStrategy(value)
+
+
+def _choose_cluster_strategy(
+    rng: random.Random,
+    *,
+    force_strategy: _ClusterStrategy | str | bool | None = None,
+    mixed_prob: float | None = None,
+) -> _ClusterStrategy:
+    """Choose cluster diversity strategy.
+
+    The default production path uses equal-probability three-way selection.
+    Legacy internal callers may still force the old uniform/mixed split for
+    deterministic tests by passing *mixed_prob* or *force_strategy*.
+    """
+    if force_strategy is not None:
+        return _coerce_cluster_strategy(force_strategy)
+    if mixed_prob is not None:
+        return _ClusterStrategy.MIXED if rng.random() < mixed_prob else _ClusterStrategy.UNIFORM
+    return rng.choice(
+        [
+            _ClusterStrategy.UNIFORM,
+            _ClusterStrategy.MIXED,
+            _ClusterStrategy.SAME_SHAPE_DIFF_SHIP,
+        ]
+    )
 
 
 def _rgba_scene_rect(
@@ -1279,12 +1320,13 @@ def _place_alongside_berthed_run(
     length_range: tuple[float, float] | None,
     length_exponent: float,
     size_thresholds: tuple[float, ...] | None,
-    mixed: bool,
+    mixed: _ClusterStrategy | str | bool,
     offnadir_deg: float,
     sensor_az_world_deg: float,
     shipgen_kwargs: dict[str, Any] | None = None,
 ) -> tuple[list[_RaftShipPlacement], NDArray[np.bool_]] | None:
     """Place a shoreline lead ship plus raft-tight offshore followers."""
+    strategy = _coerce_cluster_strategy(mixed)
     if n_ships <= 0 or run.length <= 1e-6:
         return None
 
@@ -1299,7 +1341,7 @@ def _place_alongside_berthed_run(
     lead_angle_deg = _angle_deg_from_stern_direction(mid_tan_x, mid_tan_y)
     lead_sensor_az = (sensor_az_world_deg - lead_angle_deg) % 360.0
 
-    if not mixed:
+    if strategy is not _ClusterStrategy.MIXED:
         svg_text_ref = _pick_svg(
             svg_metas,
             rng,
@@ -1316,7 +1358,7 @@ def _place_alongside_berthed_run(
             length_exponent,
         )
 
-    if mixed:
+    if strategy is _ClusterStrategy.MIXED:
         lead_svg_text = _pick_svg(
             svg_metas,
             rng,
@@ -1435,7 +1477,7 @@ def _place_alongside_berthed_run(
         angle_deg = base_angle_deg + rng.uniform(-0.75, 0.75)
         angle_rad = math.radians(angle_deg)
 
-        if mixed:
+        if strategy is _ClusterStrategy.MIXED:
             ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
             svg_text_i = _pick_svg(
                 svg_metas,
@@ -1452,6 +1494,17 @@ def _place_alongside_berthed_run(
                 length_range,
                 length_exponent,
             )
+        elif strategy is _ClusterStrategy.SAME_SHAPE_DIFF_SHIP:
+            ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
+            svg_text_i = _pick_svg(
+                svg_metas,
+                rng,
+                length_range,
+                offnadir_deg,
+                ship_sensor_az,
+                shipgen_kwargs=shipgen_kwargs,
+            )
+            bw, lh = bw0, lh0
         else:
             svg_text_i = svg_text_ref
             scale = rng.uniform(0.9, 1.1)
@@ -1523,7 +1576,7 @@ def _place_berthed_cluster(
     length_range: tuple[float, float] | None,
     length_exponent: float,
     size_thresholds: tuple[float, ...] | None,
-    mixed: bool,
+    mixed: _ClusterStrategy | str | bool,
     berth_stern: bool,
     blur_sigma: float,
     shadow_azimuth_rad: float | None = None,
@@ -1535,6 +1588,7 @@ def _place_berthed_cluster(
     shipgen_kwargs: dict[str, Any] | None = None,
     berth_runs: list[_BerthRun] | None = None,
 ) -> list[str]:
+    strategy = _coerce_cluster_strategy(mixed)
     labels: list[str] = []
     runs = list(berth_runs) if berth_runs is not None else _build_berth_runs(berth_segments, berth_water_mask)
     if not runs:
@@ -1569,7 +1623,7 @@ def _place_berthed_cluster(
                 length_range,
                 length_exponent,
                 size_thresholds,
-                mixed,
+                strategy,
                 offnadir_deg,
                 sensor_az_world_deg,
                 shipgen_kwargs,
@@ -1679,7 +1733,7 @@ def _place_berthed_cluster(
         ship_sensor_az = (sensor_az_world_deg - mid_angle_deg) % 360.0
         canonical_angle_deg = _angle_deg_from_stern_direction(-1.0, 0.0) if berth_stern else 0.0
 
-        if not mixed:
+        if strategy is not _ClusterStrategy.MIXED:
             svg_text_ref = _pick_svg(
                 svg_metas,
                 rng,
@@ -1709,7 +1763,7 @@ def _place_berthed_cluster(
             ]
         ] = []
         for index in range(target_ship_count):
-            if mixed:
+            if strategy is _ClusterStrategy.MIXED:
                 svg_text_i = _pick_svg(
                     svg_metas,
                     rng,
@@ -1726,10 +1780,21 @@ def _place_berthed_cluster(
                     length_exponent,
                 )
             else:
-                svg_text_i = svg_text_ref
                 if index == 0:
+                    svg_text_i = svg_text_ref
+                    bw, lh = bw0, lh0
+                elif strategy is _ClusterStrategy.SAME_SHAPE_DIFF_SHIP:
+                    svg_text_i = _pick_svg(
+                        svg_metas,
+                        rng,
+                        length_range,
+                        offnadir_deg,
+                        ship_sensor_az,
+                        shipgen_kwargs=shipgen_kwargs,
+                    )
                     bw, lh = bw0, lh0
                 else:
+                    svg_text_i = svg_text_ref
                     scale = rng.uniform(0.9, 1.1)
                     bw, lh = _scale_ship_pixel_size(bw0, lh0, scale)
 
@@ -2183,7 +2248,7 @@ def _place_cluster(
     length_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     size_thresholds: tuple[float, ...] | None = None,
-    mixed_prob: float = 0.5,
+    mixed_prob: float | None = None,
     berth_prob: float = 0.25,
     berth_stern_prob: float = 0.5,
     berth_water_mask: NDArray[np.bool_] | None = None,
@@ -2196,6 +2261,7 @@ def _place_cluster(
     offnadir_deg: float = 0.0,
     sensor_az_world_deg: float = 0.0,
     shipgen_kwargs: dict[str, Any] | None = None,
+    force_strategy: _ClusterStrategy | str | bool | None = None,
 ) -> list[str]:
     """Place a cluster of ships and return label lines."""
     n_ships = rng.randint(*cluster_size_range)
@@ -2203,7 +2269,11 @@ def _place_cluster(
         return []
 
     labels: list[str] = []
-    mixed = rng.random() < mixed_prob
+    strategy = _choose_cluster_strategy(
+        rng,
+        force_strategy=force_strategy,
+        mixed_prob=mixed_prob,
+    )
 
     if (
         berth_water_mask is not None
@@ -2225,7 +2295,7 @@ def _place_cluster(
             length_range,
             length_exponent,
             size_thresholds,
-            mixed,
+            strategy,
             berth_stern=rng.random() < max(0.0, min(1.0, berth_stern_prob)),
             blur_sigma=blur_sigma,
             shadow_azimuth_rad=shadow_azimuth_rad,
@@ -2451,7 +2521,7 @@ def _place_cluster(
                 length_range,
                 length_exponent,
             )
-        elif mixed:
+        elif strategy is _ClusterStrategy.MIXED:
             ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
             svg_text_i = _pick_svg(
                 svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
@@ -2464,6 +2534,13 @@ def _place_cluster(
                 length_range,
                 length_exponent,
             )
+        elif strategy is _ClusterStrategy.SAME_SHAPE_DIFF_SHIP:
+            ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
+            svg_text_i = _pick_svg(
+                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                shipgen_kwargs=shipgen_kwargs,
+            )
+            bw, lh = bw0, lh0
         else:
             svg_text_i = svg_text
             scale = rng.uniform(0.9, 1.1)
