@@ -89,6 +89,36 @@ class TestComputeShipPixelSize:
         assert beam_px == 30
         assert length_px == 120
 
+    def test_lb_ratio_range_caps_slender_ship(self) -> None:
+        """lb_ratio_range 上限で細すぎる船を指定範囲内へ戻す。"""
+        rng = random.Random(0)
+        beam_px, length_px = compute_ship_pixel_size(
+            "fishing_trawler",
+            lb_ratio=12.0,
+            resolution_m=0.5,
+            rng=rng,
+            length_range=(15.0, 15.0),
+            lb_ratio_range=(4.0, 6.0),
+        )
+        assert length_px == 30
+        assert beam_px == 5
+        assert 4.0 <= (length_px / beam_px) <= 6.0
+
+    def test_lb_ratio_range_widens_stubby_ship(self) -> None:
+        """lb_ratio_range 下限で太すぎる船を指定範囲内へ戻す。"""
+        rng = random.Random(0)
+        beam_px, length_px = compute_ship_pixel_size(
+            "patrol",
+            lb_ratio=2.5,
+            resolution_m=0.5,
+            rng=rng,
+            length_range=(60.0, 60.0),
+            lb_ratio_range=(4.0, 6.0),
+        )
+        assert length_px == 120
+        assert beam_px == 30
+        assert 4.0 <= (length_px / beam_px) <= 6.0
+
 
 class TestScaleShipPixelSize:
     def test_beam_floor_applies_after_scaling(self) -> None:
@@ -407,6 +437,55 @@ class TestLoadSvgMetas:
 
         metas = _load_svg_metas(paths)
         assert [meta.lb_ratio for meta in metas] == lb_values
+
+
+class TestPickSvgLbRatioRange:
+    """_pick_svg の L/B 比ハード制約を検証する。"""
+
+    def test_filters_svg_metas_by_lb_ratio_range(self, tmp_path: pathlib.Path) -> None:
+        """範囲外の SVG は候補から除外される。"""
+        wide_path = tmp_path / "wide.svg"
+        wide_path.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 3.0" '
+            'data-ship-class="patrol" data-lb-ratio="3.0"></svg>',
+            encoding="utf-8",
+        )
+        slender_path = tmp_path / "slender.svg"
+        slender_path.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 8.0" '
+            'data-ship-class="patrol" data-lb-ratio="8.0"></svg>',
+            encoding="utf-8",
+        )
+
+        metas = _load_svg_metas([wide_path, slender_path])
+        svg_text = _pick_svg(
+            metas,
+            random.Random(0),
+            length_range=(30.0, 80.0),
+            lb_ratio_range=(7.0, 9.0),
+        )
+
+        root = ET.fromstring(svg_text)
+        assert root.get("data-lb-ratio") == "8.0"
+
+    def test_raises_when_no_svg_matches_lb_ratio_range(self, tmp_path: pathlib.Path) -> None:
+        """候補が 1 件もなければ明示的に失敗する。"""
+        svg_path = tmp_path / "ship.svg"
+        svg_path.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 3.0" '
+            'data-ship-class="patrol" data-lb-ratio="3.0"></svg>',
+            encoding="utf-8",
+        )
+
+        metas = _load_svg_metas([svg_path])
+
+        with pytest.raises(ValueError, match="ship_lb_ratio"):
+            _pick_svg(
+                metas,
+                random.Random(0),
+                length_range=(30.0, 80.0),
+                lb_ratio_range=(7.0, 9.0),
+            )
 
 
 class TestShipClassId:

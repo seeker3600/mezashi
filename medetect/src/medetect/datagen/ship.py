@@ -52,6 +52,36 @@ _ShipgenKwargsKey = tuple[tuple[str, bytes], ...]
 _ShipgenVariantKey = tuple[str, tuple[int, int], _ShipgenKwargsKey]
 
 
+def _normalize_lb_ratio_range(
+    lb_ratio_range: tuple[float, float] | None,
+) -> tuple[float, float] | None:
+    if lb_ratio_range is None:
+        return None
+    lo, hi = lb_ratio_range
+    return (min(lo, hi), max(lo, hi))
+
+
+def _lb_ratio_in_range(
+    lb_ratio: float,
+    lb_ratio_range: tuple[float, float] | None,
+) -> bool:
+    if lb_ratio_range is None:
+        return True
+    lo, hi = _normalize_lb_ratio_range(lb_ratio_range)
+    return lo <= lb_ratio <= hi
+
+
+def _constrained_lb_ratio(
+    lb_ratio: float,
+    length_m: float,
+    lb_ratio_range: tuple[float, float] | None,
+) -> float:
+    if lb_ratio_range is not None:
+        lo, hi = _normalize_lb_ratio_range(lb_ratio_range)
+        return min(max(lb_ratio, lo), hi)
+    return _effective_lb_ratio(lb_ratio, length_m)
+
+
 def _variant_calls_for_rng(rng: random.Random) -> dict[_ShipgenVariantKey, int]:
     """Return per-RNG variant call counters used for deterministic pooling.
 
@@ -71,6 +101,7 @@ def compute_ship_pixel_size(
     resolution_m: float,
     rng: random.Random,
     length_range: tuple[float, float] | None = None,
+    lb_ratio_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
 ) -> tuple[int, int]:
     """Compute ship raster size ``(beam_px, length_px)`` for the tile resolution.
@@ -83,6 +114,9 @@ def compute_ship_pixel_size(
     length_range
         Global ``(min_m, max_m)`` clamp applied on top of the per-class range.
         When *None*, only the per-class range is used.
+    lb_ratio_range
+        Optional global ``(min_lb, max_lb)`` hard constraint for the final
+        length-to-beam ratio.
     length_exponent
         Controls the size-frequency distribution.  ``1.0`` = log-uniform
         (default, equal probability per multiplicative factor).  ``> 1.0``
@@ -99,7 +133,8 @@ def compute_ship_pixel_size(
     u = rng.random()
     t = u ** length_exponent
     length_m = lo * (hi / lo) ** t
-    beam_m = length_m / _effective_lb_ratio(lb_ratio, length_m)
+    effective_lb_ratio = _constrained_lb_ratio(lb_ratio, length_m, lb_ratio_range)
+    beam_m = length_m / effective_lb_ratio
 
     length_px = max(MIN_SHIP_LENGTH_PX, round(length_m / resolution_m))
     beam_px = max(MIN_SHIP_BEAM_PX, round(beam_m / resolution_m))
@@ -266,17 +301,34 @@ def _stable_variant_seed(
 @lru_cache(maxsize=64)
 def _shipgen_class_weights(
     target_m: float | None,
+    lb_ratio_range: tuple[float, float] | None = None,
 ) -> tuple[tuple[str, ...], tuple[float, ...] | None]:
     from medetect.shipgen.gen import get_ship_classes
     from medetect.shipgen.ship_class import SHIP_CLASSES
 
     classes = tuple(get_ship_classes())
     if target_m is None:
-        return classes, None
+        if lb_ratio_range is None:
+            return classes, None
+        weights = tuple(
+            1.0 if _lb_ratio_in_range(
+                (SHIP_CLASSES[ship_class].lb[0] + SHIP_CLASSES[ship_class].lb[1]) / 2.0,
+                lb_ratio_range,
+            ) else 0.0
+            for ship_class in classes
+        )
+        return classes, weights
     weights = tuple(
-        _svg_lb_weight(
-            (SHIP_CLASSES[ship_class].lb[0] + SHIP_CLASSES[ship_class].lb[1]) / 2.0,
-            target_m,
+        (
+            _svg_lb_weight(
+                (SHIP_CLASSES[ship_class].lb[0] + SHIP_CLASSES[ship_class].lb[1]) / 2.0,
+                target_m,
+            )
+            if _lb_ratio_in_range(
+                (SHIP_CLASSES[ship_class].lb[0] + SHIP_CLASSES[ship_class].lb[1]) / 2.0,
+                lb_ratio_range,
+            )
+            else 0.0
         )
         for ship_class in classes
     )
@@ -314,6 +366,7 @@ def _pick_svg(
     svg_metas: list[_SvgMeta] | None,
     rng: random.Random,
     length_range: tuple[float, float] | None = None,
+    lb_ratio_range: tuple[float, float] | None = None,
     offnadir_deg: float = 0.0,
     sensor_az_ship_deg: float = 0.0,
     shipgen_kwargs: dict[str, Any] | None = None,
@@ -324,43 +377,64 @@ def _pick_svg(
     )
 
     if svg_metas:
+        candidate_metas = [
+            meta for meta in svg_metas
+            if _lb_ratio_in_range(meta.lb_ratio, lb_ratio_range)
+        ]
+        if not candidate_metas:
+            msg = "No SVG ship variants satisfy the requested ship_lb_ratio range"
+            raise ValueError(msg)
         if target_m is not None:
-            weights = [_svg_lb_weight(m.lb_ratio, target_m) for m in svg_metas]
-            (meta,) = rng.choices(svg_metas, weights=weights, k=1)
+            weights = [_svg_lb_weight(m.lb_ratio, target_m) for m in candidate_metas]
+            if not any(weight > 0.0 for weight in weights):
+                msg = "No SVG ship variants satisfy both ship_length and ship_lb_ratio constraints"
+                raise ValueError(msg)
+            (meta,) = rng.choices(candidate_metas, weights=weights, k=1)
         else:
-            meta = rng.choice(svg_metas)
+            meta = rng.choice(candidate_metas)
         return _load_svg(meta.path)
 
-    classes, weights = _shipgen_class_weights(target_m)
-    if weights is not None:
-        (cls,) = rng.choices(classes, weights=weights, k=1)
-    else:
-        cls = rng.choice(classes)
-    variant_key = _shipgen_variant_key(
-        cls,
-        offnadir_deg,
-        sensor_az_ship_deg,
-        shipgen_kwargs,
-    )
-    variant_calls = _variant_calls_for_rng(rng)
-    call_count = variant_calls.get(variant_key, 0) + 1
-    variant_calls[variant_key] = call_count
+    classes, weights = _shipgen_class_weights(target_m, lb_ratio_range)
+    if weights is not None and not any(weight > 0.0 for weight in weights):
+        msg = "No ship classes satisfy the requested ship_lb_ratio range"
+        raise ValueError(msg)
 
-    pool_size = _shipgen_variant_pool_size(call_count)
-    previous_pool_size = _shipgen_variant_pool_size(call_count - 1)
-    if call_count <= _SHIPGEN_VARIANT_WARMUP:
-        variant_index = call_count - 1
-    elif pool_size > previous_pool_size:
-        variant_index = pool_size - 1
-    else:
-        variant_index = rng.randrange(pool_size)
+    for _ in range(64):
+        if weights is not None:
+            (cls,) = rng.choices(classes, weights=weights, k=1)
+        else:
+            cls = rng.choice(classes)
+        variant_key = _shipgen_variant_key(
+            cls,
+            offnadir_deg,
+            sensor_az_ship_deg,
+            shipgen_kwargs,
+        )
+        variant_calls = _variant_calls_for_rng(rng)
+        call_count = variant_calls.get(variant_key, 0) + 1
+        variant_calls[variant_key] = call_count
 
-    return _generate_ship_svg_variant(
-        cls,
-        variant_key[1],
-        variant_key[2],
-        variant_index,
-    )
+        pool_size = _shipgen_variant_pool_size(call_count)
+        previous_pool_size = _shipgen_variant_pool_size(call_count - 1)
+        if call_count <= _SHIPGEN_VARIANT_WARMUP:
+            variant_index = call_count - 1
+        elif pool_size > previous_pool_size:
+            variant_index = pool_size - 1
+        else:
+            variant_index = rng.randrange(pool_size)
+
+        svg_text = _generate_ship_svg_variant(
+            cls,
+            variant_key[1],
+            variant_key[2],
+            variant_index,
+        )
+        _ship_class, generated_lb_ratio = parse_svg_metadata(svg_text)
+        if _lb_ratio_in_range(generated_lb_ratio, lb_ratio_range):
+            return svg_text
+
+    msg = "Unable to generate a ship variant satisfying the requested ship_lb_ratio range"
+    raise ValueError(msg)
 
 
 def _resolve_ship_dimensions(
@@ -368,6 +442,7 @@ def _resolve_ship_dimensions(
     resolution_m: float,
     rng: random.Random,
     length_range: tuple[float, float] | None = None,
+    lb_ratio_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
 ) -> tuple[str, int, int, float]:
     """Return ``(class_name, beam_px, length_px, lb_ratio)`` without rasterizing."""
@@ -378,6 +453,7 @@ def _resolve_ship_dimensions(
         resolution_m,
         rng,
         length_range,
+        lb_ratio_range,
         length_exponent,
     )
     return ship_class, beam_px, length_px, lb_ratio

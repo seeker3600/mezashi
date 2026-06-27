@@ -1283,6 +1283,7 @@ def _place_alongside_berthed_run(
     offnadir_deg: float,
     sensor_az_world_deg: float,
     shipgen_kwargs: dict[str, Any] | None = None,
+    lb_ratio_range: tuple[float, float] | None = None,
 ) -> tuple[list[_RaftShipPlacement], NDArray[np.bool_]] | None:
     """Place a shoreline lead ship plus raft-tight offshore followers."""
     if n_ships <= 0 or run.length <= 1e-6:
@@ -1304,6 +1305,7 @@ def _place_alongside_berthed_run(
             svg_metas,
             rng,
             length_range,
+            lb_ratio_range,
             offnadir_deg,
             lead_sensor_az,
             shipgen_kwargs=shipgen_kwargs,
@@ -1313,6 +1315,7 @@ def _place_alongside_berthed_run(
             resolution_m,
             rng,
             length_range,
+            lb_ratio_range,
             length_exponent,
         )
 
@@ -1321,6 +1324,7 @@ def _place_alongside_berthed_run(
             svg_metas,
             rng,
             length_range,
+            lb_ratio_range,
             offnadir_deg,
             lead_sensor_az,
             shipgen_kwargs=shipgen_kwargs,
@@ -1330,6 +1334,7 @@ def _place_alongside_berthed_run(
             resolution_m,
             rng,
             length_range,
+            lb_ratio_range,
             length_exponent,
         )
     else:
@@ -1441,6 +1446,7 @@ def _place_alongside_berthed_run(
                 svg_metas,
                 rng,
                 length_range,
+                lb_ratio_range,
                 offnadir_deg,
                 ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
@@ -1450,6 +1456,7 @@ def _place_alongside_berthed_run(
                 resolution_m,
                 rng,
                 length_range,
+                lb_ratio_range,
                 length_exponent,
             )
         else:
@@ -1534,6 +1541,7 @@ def _place_berthed_cluster(
     sensor_az_world_deg: float = 0.0,
     shipgen_kwargs: dict[str, Any] | None = None,
     berth_runs: list[_BerthRun] | None = None,
+    lb_ratio_range: tuple[float, float] | None = None,
 ) -> list[str]:
     labels: list[str] = []
     runs = list(berth_runs) if berth_runs is not None else _build_berth_runs(berth_segments, berth_water_mask)
@@ -1573,6 +1581,7 @@ def _place_berthed_cluster(
                 offnadir_deg,
                 sensor_az_world_deg,
                 shipgen_kwargs,
+                lb_ratio_range=lb_ratio_range,
             )
             if alongside_result is None:
                 continue
@@ -1684,6 +1693,7 @@ def _place_berthed_cluster(
                 svg_metas,
                 rng,
                 length_range,
+                lb_ratio_range,
                 offnadir_deg,
                 ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
@@ -1693,6 +1703,7 @@ def _place_berthed_cluster(
                 resolution_m,
                 rng,
                 length_range,
+                lb_ratio_range,
                 length_exponent,
             )
 
@@ -1714,6 +1725,7 @@ def _place_berthed_cluster(
                     svg_metas,
                     rng,
                     length_range,
+                    lb_ratio_range,
                     offnadir_deg,
                     ship_sensor_az,
                     shipgen_kwargs=shipgen_kwargs,
@@ -1723,6 +1735,7 @@ def _place_berthed_cluster(
                     resolution_m,
                     rng,
                     length_range,
+                    lb_ratio_range,
                     length_exponent,
                 )
             else:
@@ -1979,6 +1992,7 @@ def _place_area_cluster(
     offnadir_deg: float = 0.0,
     sensor_az_world_deg: float = 0.0,
     shipgen_kwargs: dict[str, Any] | None = None,
+    lb_ratio_range: tuple[float, float] | None = None,
 ) -> list[str]:
     """Place ships in a loose 2D area with fully random headings."""
     labels: list[str] = []
@@ -1987,7 +2001,7 @@ def _place_area_cluster(
     ref_angle_deg = rng.uniform(0, 360)
     ref_sensor_az_ship_deg = (sensor_az_world_deg - ref_angle_deg) % 360.0
     svg_text_ref = _pick_svg(
-        svg_metas, rng, length_range, offnadir_deg, ref_sensor_az_ship_deg,
+        svg_metas, rng, length_range, lb_ratio_range, offnadir_deg, ref_sensor_az_ship_deg,
         shipgen_kwargs=shipgen_kwargs,
     )
     cls0, bw0, lh0, _ = _resolve_ship_dimensions(
@@ -1995,6 +2009,7 @@ def _place_area_cluster(
         resolution_m,
         rng,
         length_range,
+        lb_ratio_range,
         length_exponent,
     )
 
@@ -2029,6 +2044,7 @@ def _place_area_cluster(
                 resolution_m,
                 rng,
                 length_range,
+                lb_ratio_range,
                 length_exponent,
             )
             rotated = _rasterize_ship_scene(
@@ -2042,7 +2058,7 @@ def _place_area_cluster(
         elif mixed:
             ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
             svg_text_i = _pick_svg(
-                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                svg_metas, rng, length_range, lb_ratio_range, offnadir_deg, ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
             )
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
@@ -2050,6 +2066,7 @@ def _place_area_cluster(
                 resolution_m,
                 rng,
                 length_range,
+                lb_ratio_range,
                 length_exponent,
             )
             rotated = _rasterize_ship_scene(
@@ -2181,6 +2198,7 @@ def _place_cluster(
     image_size: int,
     background: NDArray[np.uint8],
     length_range: tuple[float, float] | None = None,
+    lb_ratio_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     size_thresholds: tuple[float, ...] | None = None,
     mixed_prob: float = 0.5,
@@ -2236,6 +2254,7 @@ def _place_cluster(
             sensor_az_world_deg=sensor_az_world_deg,
             shipgen_kwargs=shipgen_kwargs,
             berth_runs=berth_runs,
+            lb_ratio_range=lb_ratio_range,
         )
         if berthed_labels:
             return berthed_labels
@@ -2258,7 +2277,7 @@ def _place_cluster(
 
     initial_sensor_az = (sensor_az_world_deg - base_angle) % 360.0
     svg_text = _pick_svg(
-        svg_metas, rng, length_range, offnadir_deg, initial_sensor_az,
+        svg_metas, rng, length_range, lb_ratio_range, offnadir_deg, initial_sensor_az,
         shipgen_kwargs=shipgen_kwargs,
     )
     _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
@@ -2266,6 +2285,7 @@ def _place_cluster(
         resolution_m,
         rng,
         length_range,
+        lb_ratio_range,
         length_exponent,
     )
 
@@ -2449,12 +2469,13 @@ def _place_cluster(
                 resolution_m,
                 rng,
                 length_range,
+                lb_ratio_range,
                 length_exponent,
             )
         elif mixed:
             ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
             svg_text_i = _pick_svg(
-                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                svg_metas, rng, length_range, lb_ratio_range, offnadir_deg, ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
             )
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
@@ -2462,6 +2483,7 @@ def _place_cluster(
                 resolution_m,
                 rng,
                 length_range,
+                lb_ratio_range,
                 length_exponent,
             )
         else:

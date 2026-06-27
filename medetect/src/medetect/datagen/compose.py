@@ -350,6 +350,7 @@ def _compose_one_with_surface_category(
     edge_hardness: float = DEFAULT_EDGE_HARDNESS,
     ship_alpha: tuple[float, float] = (0.7, 0.95),
     ship_length_range: tuple[float, float] | None = None,
+    ship_lb_ratio_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     berth_prob: float = 0.25,
     berth_stern_prob: float = 0.5,
@@ -384,6 +385,7 @@ def _compose_one_with_surface_category(
         edge_hardness=edge_hardness,
         ship_alpha=ship_alpha,
         ship_length_range=ship_length_range,
+        ship_lb_ratio_range=ship_lb_ratio_range,
         length_exponent=length_exponent,
         berth_prob=berth_prob,
         berth_stern_prob=berth_stern_prob,
@@ -422,6 +424,7 @@ def _compose_one(
     edge_hardness: float = DEFAULT_EDGE_HARDNESS,
     ship_alpha: tuple[float, float] = (0.7, 0.95),
     ship_length_range: tuple[float, float] | None = None,
+    ship_lb_ratio_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     berth_prob: float = 0.25,
     berth_stern_prob: float = 0.5,
@@ -628,6 +631,7 @@ def _compose_one(
                 image_size,
                 tile,
                 length_range=ship_length_range,
+                lb_ratio_range=ship_lb_ratio_range,
                 length_exponent=length_exponent,
                 size_thresholds=size_thresholds,
                 mixed_prob=cluster_mixed_prob,
@@ -675,6 +679,7 @@ def _compose_one(
                     offnadir_deg=tile_offnadir_deg,
                     sensor_az_world_deg=tile_sensor_az_world_deg,
                     shipgen_kwargs=shipgen_kwargs,
+                    lb_ratio_range=ship_lb_ratio_range,
                     berth_runs=berth_runs,
                 )
                 if berthed_labels:
@@ -685,7 +690,7 @@ def _compose_one(
                 angle_deg = rng.uniform(0, 360)
                 sensor_az_ship_deg = (tile_sensor_az_world_deg - angle_deg) % 360.0
                 svg_text = _pick_svg(
-                    svg_metas, rng, ship_length_range,
+                    svg_metas, rng, ship_length_range, ship_lb_ratio_range,
                     tile_offnadir_deg,
                     sensor_az_ship_deg,
                     shipgen_kwargs=shipgen_kwargs,
@@ -696,6 +701,7 @@ def _compose_one(
                     ship_resolution,
                     rng,
                     ship_length_range,
+                    ship_lb_ratio_range,
                     length_exponent=length_exponent,
                 )
 

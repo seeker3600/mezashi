@@ -408,6 +408,7 @@ def _render_ship(
     rng: random.Random,
     blur_sigma: float,
     length_range: tuple[float, float] | None = None,
+    lb_ratio_range: tuple[float, float] | None = None,
     angle_deg: float = 0.0,
     length_exponent: float = 1.0,
     supersample: int = 4,
@@ -418,6 +419,7 @@ def _render_ship(
         resolution_m,
         rng,
         length_range,
+        lb_ratio_range,
         length_exponent,
     )
 

@@ -181,6 +181,16 @@ def main() -> None:
         help="Global ship length range in metres (e.g. 5:150). Default: per-class range.",
     )
     parser.add_argument(
+        "--ship_lb_ratio",
+        type=_parse_float_range,
+        default=None,
+        metavar="MIN:MAX",
+        help=(
+            "Global ship length-to-beam (L/B) ratio range "
+            "(e.g. 4.0:8.0). Default: unconstrained."
+        ),
+    )
+    parser.add_argument(
         "--length_exponent",
         type=float,
         default=1.0,
@@ -408,6 +418,12 @@ def main() -> None:
             parser.error("--bg_surface_mix_ratio values must be >= 0")
         if sea_ratio + mixed_ratio <= 0.0:
             parser.error("--bg_surface_mix_ratio sum must be > 0")
+    if args.ship_lb_ratio is not None:
+        min_lb, max_lb = args.ship_lb_ratio
+        if min_lb <= 0.0 or max_lb <= 0.0:
+            parser.error("--ship_lb_ratio values must be > 0")
+        if min_lb > max_lb:
+            parser.error("--ship_lb_ratio min must be <= max")
 
     stats = generate_dataset(
         bg_dir=args.bg_dir,
@@ -427,6 +443,7 @@ def main() -> None:
         edge_hardness=args.edge_hardness,
         ship_alpha=args.ship_alpha,
         ship_length_range=args.ship_length,
+        ship_lb_ratio_range=args.ship_lb_ratio,
         length_exponent=args.length_exponent,
         berth_prob=args.berth_prob,
         berth_stern_prob=args.berth_stern_prob,

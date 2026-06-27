@@ -917,6 +917,70 @@ class TestDatagenCli:
         assert captured["berth_prob"] == pytest.approx(0.8)
         assert captured["berth_stern_prob"] == pytest.approx(0.2)
 
+    def test_ship_lb_ratio_is_forwarded(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ship_lb_ratio は CLI から generate_dataset へ渡る。"""
+        import sys
+
+        import medetect.datagen.__main__ as datagen_main
+
+        captured: dict[str, object] = {}
+
+        def _capture_generate_dataset(**kwargs):
+            captured.update(kwargs)
+            return {"images": 0, "ships": 0, "clusters": 0, "skipped": 0}
+
+        monkeypatch.setattr(datagen_main, "generate_dataset", _capture_generate_dataset)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "medetect.datagen",
+                "--bg_dir",
+                "bg",
+                "--output_dir",
+                "out",
+                "--count",
+                "1",
+                "--ship_lb_ratio",
+                "4.0:8.0",
+            ],
+        )
+
+        datagen_main.main()
+
+        assert captured["ship_lb_ratio_range"] == (4.0, 8.0)
+
+    def test_ship_lb_ratio_rejects_invalid_range(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ship_lb_ratio の min > max は CLI で拒否される。"""
+        import sys
+
+        import medetect.datagen.__main__ as datagen_main
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "medetect.datagen",
+                "--bg_dir",
+                "bg",
+                "--output_dir",
+                "out",
+                "--count",
+                "1",
+                "--ship_lb_ratio",
+                "8.0:4.0",
+            ],
+        )
+
+        with pytest.raises(SystemExit):
+            datagen_main.main()
+
     def test_bg_surface_mix_ratio_is_forwarded(
         self,
         monkeypatch: pytest.MonkeyPatch,

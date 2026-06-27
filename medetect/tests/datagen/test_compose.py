@@ -1039,6 +1039,47 @@ class TestComposeBerth:
         assert captured["berth_segments"]
         assert captured["berth_runs"] == ["precomputed-run"]
 
+    def test_cluster_forwards_ship_lb_ratio_range_to_place_cluster(
+        self,
+        water_tif: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """cluster 分岐では ship_lb_ratio_range が _place_cluster に渡る。"""
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", lambda tile: np.ones(tile.shape[:2], dtype=bool))
+
+        def _capture_place_cluster(*args, **kwargs):
+            del args
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(compose_mod, "_place_cluster", _capture_place_cluster)
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(1, 1),
+            cluster_prob=1.0,
+            cluster_size=(3, 3),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=1.0,
+            ship_alpha=(1.0, 1.0),
+            ship_length_range=(40.0, 60.0),
+            ship_lb_ratio_range=(4.0, 6.0),
+            length_exponent=1.0,
+            rng=random.Random(2),
+        )
+
+        assert result is not None
+        assert captured["lb_ratio_range"] == (4.0, 6.0)
+
     def test_cluster_forwards_connected_polyline_segments_to_place_cluster(
         self,
         water_tif: pathlib.Path,

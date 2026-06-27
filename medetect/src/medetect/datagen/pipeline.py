@@ -58,6 +58,7 @@ class _ComposeTaskConfig:
     shadow_length_range: tuple[float, float]
     offnadir_range: tuple[float, float]
     shipgen_kwargs: dict[str, Any]
+    ship_lb_ratio_range: tuple[float, float] | None = None
 
 
 def _worker_init(
@@ -295,6 +296,7 @@ def generate_dataset(
     edge_hardness: float = DEFAULT_EDGE_HARDNESS,
     ship_alpha: tuple[float, float] = (0.7, 0.95),
     ship_length_range: tuple[float, float] | None = None,
+    ship_lb_ratio_range: tuple[float, float] | None = None,
     length_exponent: float = 1.0,
     berth_prob: float = 0.25,
     berth_stern_prob: float = 0.5,
@@ -401,6 +403,7 @@ def generate_dataset(
         edge_hardness=edge_hardness,
         ship_alpha=ship_alpha,
         ship_length_range=ship_length_range,
+        ship_lb_ratio_range=ship_lb_ratio_range,
         length_exponent=length_exponent,
         berth_prob=berth_prob,
         berth_stern_prob=berth_stern_prob,
@@ -568,6 +571,11 @@ def generate_dataset(
             if ship_length_range is not None
             else None
         ),
+        "ship_lb_ratio_range": (
+            f"{ship_lb_ratio_range[0]}:{ship_lb_ratio_range[1]}"
+            if ship_lb_ratio_range is not None
+            else None
+        ),
         "length_exponent": length_exponent,
         "berth_prob": berth_prob,
         "berth_stern_prob": berth_stern_prob,
@@ -652,6 +660,7 @@ def _run_compose_task(
             edge_hardness=config.edge_hardness,
             ship_alpha=config.ship_alpha,
             ship_length_range=config.ship_length_range,
+            ship_lb_ratio_range=config.ship_lb_ratio_range,
             length_exponent=config.length_exponent,
             berth_prob=config.berth_prob,
             berth_stern_prob=config.berth_stern_prob,
@@ -723,6 +732,7 @@ def _run_compose_task(
                 edge_hardness=config.edge_hardness,
                 ship_alpha=config.ship_alpha,
                 ship_length_range=config.ship_length_range,
+                ship_lb_ratio_range=config.ship_lb_ratio_range,
                 length_exponent=config.length_exponent,
                 berth_prob=config.berth_prob,
                 berth_stern_prob=config.berth_stern_prob,

@@ -357,8 +357,10 @@ def _resolve_ship_dimensions_sequence_factory(sizes: list[tuple[int, int]]):
         resolution_m: float,
         rng: random.Random,
         length_range: tuple[float, float] | None = None,
+        lb_ratio_range: tuple[float, float] | None = None,
         length_exponent: float = 1.0,
     ) -> tuple[str, int, int, float]:
+        del svg_text, resolution_m, rng, length_range, lb_ratio_range, length_exponent
         index = min(calls["count"], len(sizes) - 1)
         beam_px, length_px = sizes[index]
         calls["count"] += 1
