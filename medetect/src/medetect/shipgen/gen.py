@@ -33,6 +33,7 @@ from medetect.shipgen.hull import (
     interpolate_hull,
 )
 from medetect.shipgen.ship_class import (
+    FullWidthStructLayout,
     HullTraitVariant,
     SHIP_CLASSES,
     Detail,
@@ -402,6 +403,26 @@ class _ResolvedStructRect:
     brightness_off: int
 
 
+@dataclass(frozen=True)
+class _StructBandSpec:
+    t0: float
+    t1: float
+    brightness_off: int
+
+
+@dataclass(frozen=True)
+class _ResolvedStructBand:
+    right_pts: list[tuple[float, float]]
+    left_pts: list[tuple[float, float]]
+    brightness_off: int
+    t0: float
+    t1: float
+
+    @property
+    def points(self) -> list[tuple[float, float]]:
+        return self.right_pts + list(reversed(self.left_pts))
+
+
 def _apply_oversized_struct_geometry(
     x0: float,
     x1: float,
@@ -537,6 +558,156 @@ def _estimate_struct_zone(
     y0 = min(lb_ratio, max(0.0, x0 * lb_ratio + length_shift))
     y1 = min(lb_ratio, max(y0, x1 * lb_ratio + length_shift))
     return y0 / lb_ratio, y1 / lb_ratio
+
+
+def _sample_full_width_struct_band_specs(
+    layout: FullWidthStructLayout,
+    rng: random.Random,
+) -> list[_StructBandSpec]:
+    if layout.prob <= 0.0 or layout.count[1] <= 0:
+        return []
+    if rng.random() >= layout.prob:
+        return []
+
+    target_count = rng.randint(layout.count[0], layout.count[1])
+    fore_margin = rng.uniform(*layout.fore_margin)
+    aft_margin = rng.uniform(*layout.aft_margin)
+    available_end = max(fore_margin, 1.0 - aft_margin)
+    cursor = fore_margin
+    specs: list[_StructBandSpec] = []
+
+    for band_index in range(target_count):
+        remaining = target_count - band_index - 1
+        min_future = remaining * layout.span[0] + max(0, remaining) * layout.gap[0]
+        max_start = available_end - min_future - layout.span[0]
+        if cursor > max_start:
+            break
+
+        max_span = min(layout.span[1], available_end - cursor - min_future)
+        if max_span < layout.span[0]:
+            break
+        span = rng.uniform(layout.span[0], max_span)
+        t0 = cursor
+        t1 = min(available_end, t0 + span)
+        if t1 - t0 < layout.span[0]:
+            break
+        specs.append(
+            _StructBandSpec(
+                t0=t0,
+                t1=t1,
+                brightness_off=rng.randint(layout.brightness_off[0], layout.brightness_off[1]),
+            )
+        )
+
+        if remaining <= 0:
+            break
+
+        min_next = t1 + layout.gap[0]
+        min_remaining_after_gap = remaining * layout.span[0] + max(0, remaining - 1) * layout.gap[0]
+        max_next = available_end - min_remaining_after_gap
+        gap_max = min(layout.gap[1], max_next - t1)
+        cursor = min_next if gap_max < layout.gap[0] else t1 + rng.uniform(layout.gap[0], gap_max)
+
+    return specs
+
+
+def _resolve_full_width_struct_band(
+    spec: _StructBandSpec,
+    lb_ratio: float,
+    half_widths: NDArray,
+    *,
+    beam_shift: float = 0.0,
+    length_shift: float = 0.0,
+) -> _ResolvedStructBand | None:
+    base_y0 = spec.t0 * lb_ratio + length_shift
+    base_y1 = spec.t1 * lb_ratio + length_shift
+    visible_y0 = min(lb_ratio, max(0.0, base_y0))
+    visible_y1 = min(lb_ratio, max(visible_y0, base_y1))
+    if visible_y1 - visible_y0 <= 1e-6:
+        return None
+
+    n = len(half_widths)
+    t0 = visible_y0 / max(lb_ratio, 1e-6)
+    t1 = visible_y1 / max(lb_ratio, 1e-6)
+    i0, i1 = _segment_index_bounds(n, t0, t1)
+    if i1 - i0 < 1:
+        return None
+
+    right_pts: list[tuple[float, float]] = []
+    left_pts: list[tuple[float, float]] = []
+    for i in range(i0, i1 + 1):
+        t = i / max(n - 1, 1)
+        y = t * lb_ratio + length_shift
+        hw = float(half_widths[i])
+        right_pts.append((0.5 + hw + beam_shift, y))
+        left_pts.append((0.5 - hw + beam_shift, y))
+
+    if len(right_pts) < 2 or len(left_pts) < 2:
+        return None
+
+    return _ResolvedStructBand(
+        right_pts=right_pts,
+        left_pts=left_pts,
+        brightness_off=spec.brightness_off,
+        t0=t0,
+        t1=t1,
+    )
+
+
+def _write_struct_band_shadow_svg(
+    out: StringIO,
+    band: _ResolvedStructBand,
+    sun_dx: float,
+    sun_dy: float,
+    colors: ShipColors,
+    rng: random.Random,
+) -> None:
+    shadow_fill = colors.shadow_css(rng)
+    pts = [(x + sun_dx, y + sun_dy) for x, y in band.points]
+    out.write(
+        f'  <polygon points="{_polygon_attr(pts)}" '
+        f'fill="{shadow_fill}" data-role="struct-shadow"/>'
+        '\n'
+    )
+
+
+def _write_struct_band_svg(
+    out: StringIO,
+    band: _ResolvedStructBand,
+    colors: ShipColors,
+    rng: random.Random,
+    sun_dx: float = 0.0,
+) -> None:
+    fill = colors.struct_css(band.brightness_off, rng)
+    stroke = colors.struct_css(band.brightness_off - 22, rng)
+    out.write(
+        f'  <polygon points="{_polygon_attr(band.points)}" '
+        f'fill="{fill}" stroke="{stroke}" stroke-width="{_f(0.01)}" '
+        f'data-role="struct-band" data-full-width="true" '
+        f'data-band-start="{_f(band.t0)}" data-band-end="{_f(band.t1)}"/>'
+        '\n'
+    )
+
+    shadow_frac = rng.uniform(0.28, 0.44)
+    shadow_fill = colors.struct_shadow_css(band.brightness_off, rng)
+    if sun_dx > 0.0:
+        outer = band.left_pts
+        inner = [
+            (lx + (rx - lx) * shadow_frac, y)
+            for (lx, y), (rx, _ry) in zip(band.left_pts, band.right_pts, strict=True)
+        ]
+    else:
+        outer = band.right_pts
+        inner = [
+            (rx - (rx - lx) * shadow_frac, y)
+            for (rx, y), (lx, _ly) in zip(band.right_pts, band.left_pts, strict=True)
+        ]
+    overlay_pts = outer + list(reversed(inner))
+    out.write(
+        f'  <polygon points="{_polygon_attr(overlay_pts)}" '
+        f'fill="{shadow_fill}" data-role="struct-band-shadow"/>'
+        '\n'
+    )
 
 
 def _write_struct_svg(
@@ -1652,6 +1823,8 @@ def generate_ship_svg(
             f'data-visible-side="none" '
             f'data-visible-end="none" '
             f'data-hull-traits="none" '
+            f'data-struct-layout="default" '
+            f'data-full-width-band-count="0" '
             f'data-lb-ratio="{_f(lb_ratio)}">\n'
         )
         out.write(
@@ -1698,6 +1871,20 @@ def generate_ship_svg(
     )
     hull_attr = _polygon_attr(hull_pts)
     deck_attr = _polygon_attr(deck_pts)
+    band_specs = _sample_full_width_struct_band_specs(cls.full_width_struct, rng)
+    resolved_bands = [
+        band
+        for spec in band_specs
+        if (band := _resolve_full_width_struct_band(
+            spec,
+            lb_ratio,
+            half_widths,
+            beam_shift=beam_shift,
+            length_shift=length_shift,
+        )) is not None
+    ]
+    use_full_width_bands = bool(resolved_bands)
+    struct_layout = "full-width-bands" if use_full_width_bands else "default"
 
     # Build SVG
     out = StringIO()
@@ -1709,6 +1896,8 @@ def generate_ship_svg(
         f'data-visible-side="{colors.trim.visible_side}" '
         f'data-visible-end="{projection.visible_end}" '
         f'data-hull-traits="{_format_hull_trait_metadata(hull_trait_variant)}" '
+        f'data-struct-layout="{struct_layout}" '
+        f'data-full-width-band-count="{len(resolved_bands)}" '
         f'data-lb-ratio="{_f(lb_ratio)}">\n'
     )
 
@@ -1877,16 +2066,19 @@ def generate_ship_svg(
 
     # Compute approximate superstructure exclusion zones early (used by
     # panel divisions, deck wear, and scatter).
-    struct_zones = [
-        _estimate_struct_zone(
-            spec,
-            lb_ratio=lb_ratio,
-            oversized_variant=appearance_variant.oversized_struct and index == 0,
-            long_foredeck_variant=getattr(hull_trait_variant, "long_foredeck", False) and index == 0,
-            length_shift=length_shift,
-        )
-        for index, spec in enumerate(cls.structs)
-    ]
+    if use_full_width_bands:
+        struct_zones = [(band.t0, band.t1) for band in resolved_bands]
+    else:
+        struct_zones = [
+            _estimate_struct_zone(
+                spec,
+                lb_ratio=lb_ratio,
+                oversized_variant=appearance_variant.oversized_struct and index == 0,
+                long_foredeck_variant=getattr(hull_trait_variant, "long_foredeck", False) and index == 0,
+                length_shift=length_shift,
+            )
+            for index, spec in enumerate(cls.structs)
+        ]
 
     # 1g) Deck panel divisions — centreline, seam lines, zone fills
     out.write('  <g clip-path="url(#deck)">\n')
@@ -1898,24 +2090,29 @@ def generate_ship_svg(
     _write_deck_wear(out, lb_ratio, half_widths, rng, struct_zones)
     out.write('  </g>\n')
 
-    for index, s in enumerate(cls.structs):
-        if rng.random() < s.prob:
-            rect = _resolve_struct_rect(
-                s,
-                lb_ratio,
-                half_widths,
-                rng,
-                oversized_variant=appearance_variant.oversized_struct and index == 0,
-                long_foredeck_variant=getattr(hull_trait_variant, "long_foredeck", False) and index == 0,
-                beam_shift=beam_shift,
-                length_shift=length_shift,
-            )
-            if rect is None:
+    if use_full_width_bands:
+        for band in resolved_bands:
+            _write_struct_band_shadow_svg(out, band, sun_dx, sun_dy, colors, rng)
+            _write_struct_band_svg(out, band, colors, rng, sun_dx)
+    else:
+        for index, s in enumerate(cls.structs):
+            if rng.random() < s.prob:
+                rect = _resolve_struct_rect(
+                    s,
+                    lb_ratio,
+                    half_widths,
+                    rng,
+                    oversized_variant=appearance_variant.oversized_struct and index == 0,
+                    long_foredeck_variant=getattr(hull_trait_variant, "long_foredeck", False) and index == 0,
+                    beam_shift=beam_shift,
+                    length_shift=length_shift,
+                )
+                if rect is None:
+                    _consume_struct_geometry_draws(s, rng)
+                    continue
+                _write_struct_shadow_svg(out, rect, sun_dx, sun_dy, colors, rng)
                 _consume_struct_geometry_draws(s, rng)
-                continue
-            _write_struct_shadow_svg(out, rect, sun_dx, sun_dy, colors, rng)
-            _consume_struct_geometry_draws(s, rng)
-            _write_struct_svg(out, rect, colors, rng, sun_dx)
+                _write_struct_svg(out, rect, colors, rng, sun_dx)
 
     # 3) Deck scatter — random small shapes clipped to hull for visual texture
     out.write('  <g clip-path="url(#deck)" id="scatter">\n')
