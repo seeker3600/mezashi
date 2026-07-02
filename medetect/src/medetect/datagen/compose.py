@@ -495,6 +495,14 @@ def _compose_one(
                 continue
 
             nodata_mask = make_nodata_mask(tile)
+            if nodata_mask.any():
+                logger.debug(
+                    "Tile in %s at col=%d row=%d contains blacked-out pixels — retrying",
+                    tif_path.name,
+                    col,
+                    row,
+                )
+                continue
             scl_file = _scl_path_for(tif_path)
             scl = _read_scl_tile(scl_file, col, row, src_tile, image_size)
             if scl is not None:

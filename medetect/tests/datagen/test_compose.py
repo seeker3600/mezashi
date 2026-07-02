@@ -459,6 +459,65 @@ class TestMakeNodataMask:
         assert water_clean[4:, :].any()
 
 
+class TestComposeNodataRejection:
+    """_compose_one の no-data crop reject を検証する。"""
+
+    def test_blackout_crop_retries_until_clean_tile(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        water_tif: pathlib.Path,
+    ) -> None:
+        """黒塗りを含む crop は捨てて次の clean crop を採用する。"""
+        dirty = np.full((64, 64, 3), 80, dtype=np.uint8)
+        dirty[:16, :, :] = 0
+        clean = np.full((64, 64, 3), 80, dtype=np.uint8)
+        tiles = [dirty, clean]
+        call_count = {"value": 0}
+
+        def _sequence_read_tile(*args, **kwargs) -> np.ndarray:
+            del args, kwargs
+            index = min(call_count["value"], len(tiles) - 1)
+            call_count["value"] += 1
+            return tiles[index].copy()
+
+        monkeypatch.setattr(compose_mod, "_read_tile", _sequence_read_tile)
+        monkeypatch.setattr(compose_mod, "_read_scl_tile", lambda *args, **kwargs: None)
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+        monkeypatch.setattr(
+            compose_mod,
+            "make_water_mask_from_rgb",
+            lambda tile: np.ones(tile.shape[:2], dtype=bool),
+        )
+
+        result = _compose_one(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=0.75,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=random.Random(0),
+            max_crop_attempts=2,
+        )
+
+        assert result is not None
+        tile, labels, n_clusters = result
+        assert call_count["value"] == 2
+        assert np.array_equal(tile, clean)
+        assert not make_nodata_mask(tile).any()
+        assert labels == []
+        assert n_clusters == 0
+
+
 class TestAugmentTile:
     """augment_tile によるタイルの色オーグメンテーション検証。"""
 

@@ -529,6 +529,52 @@ class TestGenerateFalseNegatives:
         assert (out_dir / "images" / "train" / "000006.png").exists()
         assert any("repeated" in record.message.lower() for record in caplog.records)
 
+    def test_skips_blackout_tiles_and_uses_clean_alternative(self, tmp_path: pathlib.Path) -> None:
+        """黒塗りタイルは捨て、同一ソース内の clean tile を代わりに出力する。"""
+        tile = np.full((640, 1280, 3), 90, dtype=np.uint8)
+        tile[:, :640, :] = 0
+
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        Image.fromarray(tile, mode="RGB").save(false_dir / "a.png")
+
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(0)
+        n_written = generate_false_negatives(false_dir, out_dir, count=1, image_size=640, rng=rng)
+
+        assert n_written == 1
+        out_path = out_dir / "images" / "train" / "000000.png"
+        assert out_path.exists()
+        written = np.asarray(Image.open(out_path).convert("RGB"), dtype=np.uint8)
+        assert not np.all(written == 0)
+
+    def test_warns_when_all_false_negative_tiles_are_blacked_out(
+        self,
+        tmp_path: pathlib.Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """全候補が黒塗りなら書き出しを諦めて warning を残す。"""
+        import logging
+
+        false_dir = tmp_path / "false"
+        false_dir.mkdir()
+        self._make_source(false_dir / "a.png", 640, 640, (0, 0, 0))
+
+        out_dir = tmp_path / "out"
+        (out_dir / "images" / "train").mkdir(parents=True)
+        (out_dir / "labels" / "train").mkdir(parents=True)
+
+        rng = random.Random(0)
+        with caplog.at_level(logging.WARNING, logger="medetect.datagen.pipeline"):
+            n_written = generate_false_negatives(false_dir, out_dir, count=1, image_size=640, rng=rng)
+
+        assert n_written == 0
+        assert not (out_dir / "images" / "train" / "000000.png").exists()
+        assert any("blacked-out" in record.message.lower() for record in caplog.records)
+
 
 class TestFalseRatioSplit:
     """false_ratio による合成/偽陰性の枚数分割テスト。"""

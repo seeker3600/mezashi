@@ -129,6 +129,17 @@ def _false_source_grid(
     return src_tile, n_cols, n_rows
 
 
+def _has_black_nodata_pixels(tile: np.ndarray) -> bool:
+    """Return True when a tile contains pure-black redaction pixels."""
+    return bool(
+        np.any(
+            (tile[:, :, 0] == 0)
+            & (tile[:, :, 1] == 0)
+            & (tile[:, :, 2] == 0),
+        )
+    )
+
+
 def generate_false_negatives(
     false_dir: Path,
     output_dir: Path,
@@ -211,6 +222,16 @@ def generate_false_negatives(
     total_written = 0
     idx = start_index
     tiff_suffixes = {".tif", ".tiff"}
+    skipped_black_tiles = 0
+
+    def _emit_tile(tile_img: Image.Image) -> None:
+        nonlocal idx, total_written
+        name = f"{idx:06d}"
+        tile_img.save(img_out / f"{name}.png")
+        (lbl_out / f"{name}.txt").write_text("", encoding="utf-8")
+        idx += 1
+        total_written += 1
+        pbar.update(1)
 
     with tqdm(
         total=total_to_write,
@@ -224,20 +245,12 @@ def generate_false_negatives(
 
             grid = [(col, row) for row in range(rows) for col in range(cols)]
             rng.shuffle(grid)
-            cap = len(grid)
-            if alloc <= cap:
-                positions = grid[:alloc]
-            else:
-                positions = []
-                cycle = list(grid)
-                for offset in range(alloc):
-                    if offset > 0 and offset % cap == 0:
-                        rng.shuffle(cycle)
-                    positions.append(cycle[offset % cap])
+            valid_positions: list[tuple[int, int]] = []
+            written_for_source = 0
 
             if path.suffix.lower() in tiff_suffixes:
                 with rasterio.open(path) as src:
-                    for col, row in positions:
+                    for col, row in grid:
                         x0, y0 = col * src_tile, row * src_tile
                         data = src.read(
                             list(range(1, min(src.count, 3) + 1)),
@@ -250,28 +263,82 @@ def generate_false_negatives(
                             tile_img = tile_img.resize(
                                 (image_size, image_size), Image.BILINEAR,
                             )
-                        name = f"{idx:06d}"
-                        tile_img.save(img_out / f"{name}.png")
-                        (lbl_out / f"{name}.txt").write_text("", encoding="utf-8")
-                        idx += 1
-                        total_written += 1
-                        pbar.update(1)
+                        tile_arr = np.asarray(tile_img, dtype=np.uint8)
+                        if _has_black_nodata_pixels(tile_arr):
+                            skipped_black_tiles += 1
+                            continue
+                        valid_positions.append((col, row))
+                        _emit_tile(tile_img)
+                        written_for_source += 1
+                        if written_for_source >= alloc:
+                            break
+
+                    if written_for_source < alloc and valid_positions:
+                        repeat_positions = list(valid_positions)
+                        repeat_index = 0
+                        while written_for_source < alloc:
+                            if repeat_index > 0 and repeat_index % len(repeat_positions) == 0:
+                                rng.shuffle(repeat_positions)
+                            col, row = repeat_positions[repeat_index % len(repeat_positions)]
+                            repeat_index += 1
+                            x0, y0 = col * src_tile, row * src_tile
+                            data = src.read(
+                                list(range(1, min(src.count, 3) + 1)),
+                                window=Window(x0, y0, src_tile, src_tile),
+                            )
+                            tile_img = Image.fromarray(
+                                np.moveaxis(data, 0, -1).astype(np.uint8)
+                            ).convert("RGB")
+                            if src_tile != image_size:
+                                tile_img = tile_img.resize(
+                                    (image_size, image_size), Image.BILINEAR,
+                                )
+                            _emit_tile(tile_img)
+                            written_for_source += 1
             else:
                 with Image.open(path) as src_img:
                     src_rgb = src_img.convert("RGB")
-                    for col, row in positions:
+                    for col, row in grid:
                         x0, y0 = col * src_tile, row * src_tile
                         tile_img = src_rgb.crop((x0, y0, x0 + src_tile, y0 + src_tile))
                         if src_tile != image_size:
                             tile_img = tile_img.resize(
                                 (image_size, image_size), Image.BILINEAR,
                             )
-                        name = f"{idx:06d}"
-                        tile_img.save(img_out / f"{name}.png")
-                        (lbl_out / f"{name}.txt").write_text("", encoding="utf-8")
-                        idx += 1
-                        total_written += 1
-                        pbar.update(1)
+                        tile_arr = np.asarray(tile_img, dtype=np.uint8)
+                        if _has_black_nodata_pixels(tile_arr):
+                            skipped_black_tiles += 1
+                            continue
+                        valid_positions.append((col, row))
+                        _emit_tile(tile_img)
+                        written_for_source += 1
+                        if written_for_source >= alloc:
+                            break
+
+                    if written_for_source < alloc and valid_positions:
+                        repeat_positions = list(valid_positions)
+                        repeat_index = 0
+                        while written_for_source < alloc:
+                            if repeat_index > 0 and repeat_index % len(repeat_positions) == 0:
+                                rng.shuffle(repeat_positions)
+                            col, row = repeat_positions[repeat_index % len(repeat_positions)]
+                            repeat_index += 1
+                            x0, y0 = col * src_tile, row * src_tile
+                            tile_img = src_rgb.crop((x0, y0, x0 + src_tile, y0 + src_tile))
+                            if src_tile != image_size:
+                                tile_img = tile_img.resize(
+                                    (image_size, image_size), Image.BILINEAR,
+                                )
+                            _emit_tile(tile_img)
+                            written_for_source += 1
+
+    if skipped_black_tiles:
+        logger.warning(
+            "Skipped %d false-negative crop(s) containing blacked-out pixels; wrote %d / %d requested.",
+            skipped_black_tiles,
+            total_written,
+            count,
+        )
 
     logger.info("False negatives written: %d / %d requested", total_written, count)
     return total_written
