@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import math
 import random
@@ -81,6 +82,7 @@ _COASTLINE_CRS = CRS.from_epsg(4326)
 _PLACEMENT_FAILURE_CHECK_INTERVAL = 8
 OPEN_WATER_MIN_RATIO: float = 0.75
 MIXED_MIN_RATIO: float = 0.35
+_ROTATION_SOURCE_SCALE: float = math.sqrt(2.0)
 
 __all__ = [
     "SingleShipPlacement",
@@ -244,6 +246,310 @@ def _wake_occlusion_mask(
         ship.angle_rad,
     )
     return occupancy & ~source_mask
+
+
+@dataclass
+class _BackgroundContext:
+    tile: NDArray[np.uint8]
+    nodata_mask: NDArray[np.bool_]
+    water_mask: NDArray[np.bool_]
+    surface_water_mask: NDArray[np.bool_]
+    surface_valid_mask: NDArray[np.bool_]
+    berth_water_mask: NDArray[np.bool_] | None
+    berth_segments: list[tuple[tuple[float, float], tuple[float, float]]]
+    berth_runs: object | None
+
+
+def _rotation_source_size(size: int) -> int:
+    """Return a square size that can support arbitrary-angle center cropping."""
+    return max(size, math.ceil(size * _ROTATION_SOURCE_SCALE))
+
+
+def _center_crop_array(array: NDArray, output_size: int) -> NDArray:
+    """Return the centered square crop with the requested output size."""
+    height, width = array.shape[:2]
+    top = max(0, (height - output_size) // 2)
+    left = max(0, (width - output_size) // 2)
+    return array[top : top + output_size, left : left + output_size].copy()
+
+
+def _rotate_background_and_crop(
+    tile: NDArray[np.uint8],
+    angle_deg: float,
+    output_size: int,
+    *,
+    resample: int,
+) -> NDArray[np.uint8]:
+    """Rotate a square background tile and return its centered crop."""
+    rotated = Image.fromarray(tile).rotate(
+        angle_deg,
+        resample=resample,
+        expand=False,
+        fillcolor=0,
+    )
+    return _center_crop_array(np.asarray(rotated, dtype=tile.dtype), output_size)
+
+
+def _rotate_mask_and_crop(
+    mask: NDArray[np.bool_],
+    angle_deg: float,
+    output_size: int,
+) -> NDArray[np.bool_]:
+    """Rotate a boolean mask with nearest-neighbour resampling and center crop it."""
+    mask_img = Image.fromarray((mask.astype(np.uint8) * 255), mode="L")
+    rotated = mask_img.rotate(
+        angle_deg,
+        resample=Image.NEAREST,
+        expand=False,
+        fillcolor=0,
+    )
+    cropped = _center_crop_array(np.asarray(rotated, dtype=np.uint8), output_size)
+    return cropped > 0
+
+
+def _ensure_mask_shape(
+    mask: NDArray[np.bool_] | NDArray[np.uint8],
+    output_size: int,
+) -> NDArray[np.bool_]:
+    """Resize arbitrary mask-like arrays to the requested square tile size."""
+    if mask.shape == (output_size, output_size):
+        return mask.astype(bool, copy=False)
+    mask_img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+    resized = mask_img.resize((output_size, output_size), Image.NEAREST)
+    return np.asarray(resized, dtype=np.uint8) > 0
+
+
+def _rotate_point_about_center(
+    x: float,
+    y: float,
+    angle_rad: float,
+    center: float,
+) -> tuple[float, float]:
+    """Rotate an image-space point around the square center."""
+    dx = x - center
+    dy = y - center
+    cos_theta = math.cos(angle_rad)
+    sin_theta = math.sin(angle_rad)
+    return (
+        (cos_theta * dx) + (sin_theta * dy) + center,
+        (-sin_theta * dx) + (cos_theta * dy) + center,
+    )
+
+
+def _rotate_segments_and_crop(
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    angle_deg: float,
+    source_size: int,
+    output_size: int,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Rotate image-space line segments and translate them into the centered crop."""
+    if not segments:
+        return []
+
+    angle_rad = math.radians(angle_deg)
+    center = (source_size - 1) / 2.0
+    crop_offset = (source_size - output_size) / 2.0
+    rotated: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for (x0, y0), (x1, y1) in segments:
+        rx0, ry0 = _rotate_point_about_center(x0, y0, angle_rad, center)
+        rx1, ry1 = _rotate_point_about_center(x1, y1, angle_rad, center)
+        rotated.append(
+            (
+                (rx0 - crop_offset, ry0 - crop_offset),
+                (rx1 - crop_offset, ry1 - crop_offset),
+            )
+        )
+    return rotated
+
+
+def _extract_background_context(
+    *,
+    src: rasterio.DatasetReader,
+    tif_path: Path,
+    col: int,
+    row: int,
+    src_tile: int,
+    image_size: int,
+    coastline_index: CoastlineIndex | None,
+) -> _BackgroundContext:
+    """Read one background crop and derive all placement masks from it."""
+    tile = _read_tile(src, col, row, src_tile)
+    if src_tile != image_size:
+        img = Image.fromarray(tile)
+        img = img.resize((image_size, image_size), Image.BILINEAR)
+        tile = np.asarray(img, dtype=np.uint8)
+
+    nodata_mask = make_nodata_mask(tile)
+    scl_file = _scl_path_for(tif_path)
+    scl = _read_scl_tile(scl_file, col, row, src_tile, image_size)
+    if scl is not None:
+        water_mask = make_water_mask_from_scl(scl)
+    else:
+        water_mask = make_water_mask_from_rgb(tile)
+    water_mask = _ensure_mask_shape(water_mask, image_size)
+
+    water_mask &= ~nodata_mask
+    surface_water_mask = water_mask.copy()
+    surface_valid_mask = ~nodata_mask
+
+    berth_water_mask: NDArray[np.bool_] | None = None
+    berth_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    berth_runs = None
+
+    if coastline_index is not None:
+        window = Window(col, row, src_tile, src_tile)
+        tile_transform = src.window_transform(window)
+        if src_tile != image_size:
+            bounds = rasterio.transform.array_bounds(
+                src_tile,
+                src_tile,
+                tile_transform,
+            )
+            tile_transform = rasterio.transform.from_bounds(
+                *bounds,
+                image_size,
+                image_size,
+            )
+        tile_bounds = rasterio.transform.array_bounds(
+            image_size,
+            image_size,
+            tile_transform,
+        )
+        query_bounds = tile_bounds
+        if src.crs is not None and src.crs != _COASTLINE_CRS:
+            query_bounds = transform_bounds(
+                src.crs,
+                _COASTLINE_CRS,
+                *tile_bounds,
+                densify_pts=21,
+            )
+        coastline_geoms = coastline_index.query(query_bounds)
+        if coastline_geoms and src.crs is not None:
+            coastline_geoms = _reproject_coastline_geometries(
+                coastline_geoms,
+                _COASTLINE_CRS,
+                src.crs,
+            )
+        coastline_mask = make_water_mask_from_coastline(
+            coastline_geoms,
+            tile,
+            tile_transform,
+            image_size,
+            image_size,
+        )
+        surface_water_mask = coastline_mask
+        water_mask &= coastline_mask
+        berth_water_mask = water_mask.copy()
+        berth_segments = _coastline_to_pixel_segments(
+            coastline_geoms,
+            tile_transform,
+            image_size,
+            image_size,
+        )
+        if berth_segments:
+            berth_runs = _build_berth_runs(berth_segments, berth_water_mask)
+
+    return _BackgroundContext(
+        tile=tile,
+        nodata_mask=nodata_mask,
+        water_mask=water_mask,
+        surface_water_mask=surface_water_mask,
+        surface_valid_mask=surface_valid_mask,
+        berth_water_mask=berth_water_mask,
+        berth_segments=berth_segments,
+        berth_runs=berth_runs,
+    )
+
+
+def _rotate_background_context(
+    context: _BackgroundContext,
+    angle_deg: float,
+    output_size: int,
+) -> _BackgroundContext:
+    """Rotate a prepared background context and crop it back to the final tile size."""
+    rotated_tile = _rotate_background_and_crop(
+        context.tile,
+        angle_deg,
+        output_size,
+        resample=Image.BILINEAR,
+    )
+    rotated_nodata_mask = _rotate_mask_and_crop(
+        context.nodata_mask,
+        angle_deg,
+        output_size,
+    )
+    rotated_surface_water_mask = _rotate_mask_and_crop(
+        context.surface_water_mask,
+        angle_deg,
+        output_size,
+    )
+    rotated_water_mask = _rotate_mask_and_crop(
+        context.water_mask,
+        angle_deg,
+        output_size,
+    )
+    rotated_surface_valid_mask = _rotate_mask_and_crop(
+        context.surface_valid_mask,
+        angle_deg,
+        output_size,
+    )
+    rotated_berth_water_mask = None
+    rotated_berth_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    rotated_berth_runs = None
+
+    if context.berth_water_mask is not None:
+        rotated_berth_water_mask = _rotate_mask_and_crop(
+            context.berth_water_mask,
+            angle_deg,
+            output_size,
+        )
+    if context.berth_segments:
+        rotated_berth_segments = _rotate_segments_and_crop(
+            context.berth_segments,
+            angle_deg,
+            context.tile.shape[0],
+            output_size,
+        )
+    if rotated_berth_water_mask is not None and rotated_berth_segments:
+        rotated_berth_runs = _build_berth_runs(
+            rotated_berth_segments,
+            rotated_berth_water_mask,
+        )
+
+    return _BackgroundContext(
+        tile=rotated_tile,
+        nodata_mask=rotated_nodata_mask,
+        water_mask=rotated_water_mask,
+        surface_water_mask=rotated_surface_water_mask,
+        surface_valid_mask=rotated_surface_valid_mask,
+        berth_water_mask=rotated_berth_water_mask,
+        berth_segments=rotated_berth_segments,
+        berth_runs=rotated_berth_runs,
+    )
+
+
+def _expanded_window_for_rotation(
+    *,
+    col: int,
+    row: int,
+    base_size: int,
+    expanded_size: int,
+    max_width: int,
+    max_height: int,
+) -> tuple[int, int] | None:
+    """Return a centered larger source window or None when it does not fit."""
+    if expanded_size <= base_size:
+        return col, row
+    if expanded_size > max_width or expanded_size > max_height:
+        return None
+
+    center_col = col + (base_size / 2.0)
+    center_row = row + (base_size / 2.0)
+    expanded_col = round(center_col - (expanded_size / 2.0))
+    expanded_row = round(center_row - (expanded_size / 2.0))
+    expanded_col = min(max(0, expanded_col), max_width - expanded_size)
+    expanded_row = min(max(0, expanded_row), max_height - expanded_size)
+    return expanded_col, expanded_row
 
 
 def augment_tile(
@@ -462,6 +768,9 @@ def _compose_one(
                 resolution = native_res
             ship_resolution = resolution  # type: ignore[assignment]
 
+        rotation_src_tile = _rotation_source_size(src_tile)
+        rotation_image_size = _rotation_source_size(image_size)
+
         for _ in range(max_crop_attempts):
             if src.width <= src_tile or src.height <= src_tile:
                 return None
@@ -469,7 +778,15 @@ def _compose_one(
             row = rng.randint(0, src.height - src_tile)
 
             try:
-                tile = _read_tile(src, col, row, src_tile)
+                context = _extract_background_context(
+                    src=src,
+                    tif_path=tif_path,
+                    col=col,
+                    row=row,
+                    src_tile=src_tile,
+                    image_size=image_size,
+                    coastline_index=coastline_index,
+                )
             except rasterio.errors.RasterioIOError:
                 logger.debug(
                     "Tile read error in %s at col=%d row=%d — retrying",
@@ -479,10 +796,59 @@ def _compose_one(
                 )
                 continue
 
-            if src_tile != image_size:
-                img = Image.fromarray(tile)
-                img = img.resize((image_size, image_size), Image.BILINEAR)
-                tile = np.array(img)
+            has_land = bool(
+                np.any(context.surface_valid_mask & ~context.surface_water_mask)
+            )
+            if has_land:
+                expanded_window = _expanded_window_for_rotation(
+                    col=col,
+                    row=row,
+                    base_size=src_tile,
+                    expanded_size=rotation_src_tile,
+                    max_width=src.width,
+                    max_height=src.height,
+                )
+                if expanded_window is None:
+                    logger.debug(
+                        "Land-containing tile in %s at col=%d row=%d cannot fit rotation source window — retrying",
+                        tif_path.name,
+                        col,
+                        row,
+                    )
+                    continue
+                expanded_col, expanded_row = expanded_window
+                try:
+                    expanded_context = _extract_background_context(
+                        src=src,
+                        tif_path=tif_path,
+                        col=expanded_col,
+                        row=expanded_row,
+                        src_tile=rotation_src_tile,
+                        image_size=rotation_image_size,
+                        coastline_index=coastline_index,
+                    )
+                except rasterio.errors.RasterioIOError:
+                    logger.debug(
+                        "Expanded tile read error in %s at col=%d row=%d — retrying",
+                        tif_path.name,
+                        expanded_col,
+                        expanded_row,
+                    )
+                    continue
+                context = _rotate_background_context(
+                    expanded_context,
+                    rng.uniform(0.0, 360.0),
+                    image_size,
+                )
+
+            tile = context.tile
+            nodata_mask = context.nodata_mask
+            water_mask = context.water_mask
+            surface_water_mask = context.surface_water_mask
+            surface_valid_mask = context.surface_valid_mask
+            berth_water_mask = context.berth_water_mask
+            berth_segments = context.berth_segments
+            berth_runs = context.berth_runs
 
             if is_dark_tile(tile):
                 logger.debug(
@@ -493,8 +859,6 @@ def _compose_one(
                     float(tile.mean()),
                 )
                 continue
-
-            nodata_mask = make_nodata_mask(tile)
             if nodata_mask.any():
                 logger.debug(
                     "Tile in %s at col=%d row=%d contains blacked-out pixels — retrying",
@@ -503,73 +867,6 @@ def _compose_one(
                     row,
                 )
                 continue
-            scl_file = _scl_path_for(tif_path)
-            scl = _read_scl_tile(scl_file, col, row, src_tile, image_size)
-            if scl is not None:
-                water_mask = make_water_mask_from_scl(scl)
-            else:
-                water_mask = make_water_mask_from_rgb(tile)
-
-            water_mask &= ~nodata_mask
-            surface_water_mask = water_mask.copy()
-            surface_valid_mask = ~nodata_mask
-
-            berth_water_mask: NDArray[np.bool_] | None = None
-            berth_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-            berth_runs = None
-
-            if coastline_index is not None:
-                window = Window(col, row, src_tile, src_tile)
-                tile_transform = src.window_transform(window)
-                if src_tile != image_size:
-                    bounds = rasterio.transform.array_bounds(
-                        src_tile,
-                        src_tile,
-                        tile_transform,
-                    )
-                    tile_transform = rasterio.transform.from_bounds(
-                        *bounds,
-                        image_size,
-                        image_size,
-                    )
-                tile_bounds = rasterio.transform.array_bounds(
-                    image_size,
-                    image_size,
-                    tile_transform,
-                )
-                query_bounds = tile_bounds
-                if src.crs is not None and src.crs != _COASTLINE_CRS:
-                    query_bounds = transform_bounds(
-                        src.crs,
-                        _COASTLINE_CRS,
-                        *tile_bounds,
-                        densify_pts=21,
-                    )
-                coastline_geoms = coastline_index.query(query_bounds)
-                if coastline_geoms and src.crs is not None:
-                    coastline_geoms = _reproject_coastline_geometries(
-                        coastline_geoms,
-                        _COASTLINE_CRS,
-                        src.crs,
-                    )
-                coastline_mask = make_water_mask_from_coastline(
-                    coastline_geoms,
-                    tile,
-                    tile_transform,
-                    image_size,
-                    image_size,
-                )
-                surface_water_mask = coastline_mask
-                water_mask &= coastline_mask
-                berth_water_mask = water_mask.copy()
-                berth_segments = _coastline_to_pixel_segments(
-                    coastline_geoms,
-                    tile_transform,
-                    image_size,
-                    image_size,
-                )
-                if berth_water_mask is not None and berth_segments:
-                    berth_runs = _build_berth_runs(berth_segments, berth_water_mask)
 
             water_mask = erode_mask(water_mask, erode_coast)
 

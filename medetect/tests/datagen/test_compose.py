@@ -395,6 +395,97 @@ class TestBackgroundSurfaceCategory:
         assert call_count["value"] >= 2
 
 
+class TestBackgroundRotationGate:
+    """背景回転の適用条件を検証する。"""
+
+    def test_sea_only_background_skips_rotation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        water_tif: pathlib.Path,
+    ) -> None:
+        """外洋背景では回転 helper を呼ばない。"""
+        rotate_calls = {"value": 0}
+
+        def _fail_rotate(*args, **kwargs):
+            del args, kwargs
+            rotate_calls["value"] += 1
+            msg = "rotation helper should not run for sea-only backgrounds"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(compose_mod, "_rotate_background_and_crop", _fail_rotate)
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+
+        result = _compose_one_with_surface_category(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=0.75,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=random.Random(0),
+        )
+
+        assert result is not None
+        assert rotate_calls["value"] == 0
+        _tile, _labels, _clusters, surface = result
+        assert surface == "sea_only"
+
+    def test_mixed_background_uses_rotation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        water_tif: pathlib.Path,
+    ) -> None:
+        """陸地を含む背景では回転 helper を通す。"""
+        rotate_calls = {"value": 0}
+
+        def _mixed_rgb_water(tile: np.ndarray) -> np.ndarray:
+            mask = np.zeros(tile.shape[:2], dtype=bool)
+            mask[:, : tile.shape[1] // 2] = True
+            return mask
+
+        def _capture_rotate(tile, angle_deg, output_size, *, resample):
+            del angle_deg, output_size, resample
+            rotate_calls["value"] += 1
+            return tile
+
+        monkeypatch.setattr(compose_mod, "make_water_mask_from_rgb", _mixed_rgb_water)
+        monkeypatch.setattr(compose_mod, "_rotate_background_and_crop", _capture_rotate)
+        monkeypatch.setattr(compose_mod, "augment_tile", lambda tile, rng: tile)
+
+        result = _compose_one_with_surface_category(
+            tif_path=water_tif,
+            svg_metas=None,
+            image_size=64,
+            resolution=10.0,
+            geo_scale=1.0,
+            ships_per_image=(0, 0),
+            cluster_prob=0.0,
+            cluster_size=(2, 2),
+            class_id=0,
+            erode_coast=0,
+            min_water_ratio=0.0,
+            edge_hardness=0.75,
+            ship_alpha=(0.7, 1.0),
+            ship_length_range=None,
+            length_exponent=1.0,
+            rng=random.Random(0),
+        )
+
+        assert result is not None
+        assert rotate_calls["value"] >= 1
+        _tile, _labels, _clusters, surface = result
+        assert surface == "mixed"
+
+
 class TestOpenBoxSearch:
     def test_detects_existing_open_box(self) -> None:
         """指定サイズの空き矩形がある場合は True を返す。"""
