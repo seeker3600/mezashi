@@ -40,7 +40,6 @@ class _ComposeTaskConfig:
     ships_per_image: tuple[int, int]
     cluster_prob: float
     cluster_size: tuple[int, int]
-    cluster_mixed_prob: float
     class_id: int
     erode_coast: int
     min_water_ratio: float
@@ -356,7 +355,6 @@ def generate_dataset(
     ships_per_image: tuple[int, int] = (0, 10),
     cluster_prob: float = 0.15,
     cluster_size: tuple[int, int] = (2, 5),
-    cluster_mixed_prob: float = 0.5,
     class_id: int = 0,
     erode_coast: int = 3,
     min_water_ratio: float = 0.3,
@@ -463,7 +461,6 @@ def generate_dataset(
         ships_per_image=ships_per_image,
         cluster_prob=cluster_prob,
         cluster_size=cluster_size,
-        cluster_mixed_prob=cluster_mixed_prob,
         class_id=class_id,
         erode_coast=erode_coast,
         min_water_ratio=min_water_ratio,
@@ -630,7 +627,6 @@ def generate_dataset(
         "class_id": class_id,
         "erode_coast": erode_coast,
         "min_water_ratio": min_water_ratio,
-        "cluster_mixed_prob": cluster_mixed_prob,
         "edge_hardness": edge_hardness,
         "ship_alpha": f"{ship_alpha[0]}:{ship_alpha[1]}",
         "ship_length_range": (
@@ -720,7 +716,6 @@ def _run_compose_task(
             ships_per_image=config.ships_per_image,
             cluster_prob=config.cluster_prob,
             cluster_size=config.cluster_size,
-            cluster_mixed_prob=config.cluster_mixed_prob,
             class_id=config.class_id,
             erode_coast=config.erode_coast,
             min_water_ratio=config.min_water_ratio,
@@ -792,7 +787,6 @@ def _run_compose_task(
                 ships_per_image=config.ships_per_image,
                 cluster_prob=config.cluster_prob,
                 cluster_size=config.cluster_size,
-                cluster_mixed_prob=config.cluster_mixed_prob,
                 class_id=config.class_id,
                 erode_coast=config.erode_coast,
                 min_water_ratio=config.min_water_ratio,

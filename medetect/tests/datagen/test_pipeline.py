@@ -773,7 +773,6 @@ class TestRunComposeTaskSurfaceTarget:
             ships_per_image=(0, 0),
             cluster_prob=0.0,
             cluster_size=(2, 2),
-            cluster_mixed_prob=0.5,
             class_id=0,
             erode_coast=0,
             min_water_ratio=0.0,
@@ -844,8 +843,8 @@ class TestDatagenCli:
         assert "--bg_surface_mix_ratio" in help_text
         assert "placement events per image" in help_text
         assert "single ships only" in help_text
-        assert "reusing the same ship" in help_text
-        assert "ship uniform" in help_text
+        assert "same-ship uniform" in help_text
+        assert "different-ship variants" in help_text
 
     def test_debug_bg_color_is_forwarded(
         self,

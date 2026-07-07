@@ -829,6 +829,56 @@ class TestPlaceCluster:
         assert len(captured) == 3
         assert [ship.svg_text for ship in captured] == ["svg-ref", "svg-ref", "svg-ref"]
 
+    def test_same_shape_open_cluster_keeps_dimensions_but_changes_svg(
+        self,
+        scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """same_shape_diff_ship raft_open は寸法固定で SVG だけ変える。"""
+        captured = _capture_vector_cluster(monkeypatch)
+        svg_ref = "svg-ref"
+        svg_second = "svg-second"
+        svg_third = "svg-third"
+
+        monkeypatch.setattr(
+            placement_mod,
+            "_pick_svg",
+            _svg_sequence_factory([svg_ref, svg_second, svg_third]),
+        )
+        monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            lambda *args, **kwargs: ("mock_hull", 6, 24, 4.0),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_local_hull_geometry",
+            lambda svg_text, bw, lh, angle_deg: box(0.0, 0.0, float(bw), float(lh)),
+        )
+        monkeypatch.setattr(placement_mod, "extract_hull_fill", lambda svg_text: (200, 200, 200, 255))
+
+        labels = _place_cluster(
+            scene["water_mask"],
+            np.zeros((self._IMAGE_SIZE, self._IMAGE_SIZE), dtype=bool),
+            None,
+            resolution_m=5.0,
+            rng=_ForcedLayoutRandom(11, "partial", base_angle=0.0),
+            cluster_size_range=(3, 3),
+            blur_sigma=0.0,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            force_strategy=placement_mod._ClusterStrategy.SAME_SHAPE_DIFF_SHIP,
+        )
+
+        assert len(labels) == 3
+        assert len(captured) == 3
+        assert [ship.svg_text for ship in captured] == [svg_ref, svg_second, svg_third]
+        assert {(ship.bw, ship.lh) for ship in captured} == {(6, 24)}
+
     @pytest.mark.parametrize(
         ("sizes", "description"),
         [
@@ -1738,6 +1788,55 @@ class TestBerthPlacement:
         assert len(captured) == 2
         xs = [ship.cx for ship in captured]
         assert xs == sorted(xs)
+
+    def test_berth_same_shape_cluster_keeps_dimensions_but_changes_svg(
+        self,
+        vertical_shore_scene,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """same_shape_diff_ship berth でも寸法固定で SVG だけ変える。"""
+        captured = _capture_vector_cluster(monkeypatch)
+        svg_ref = "svg-ref"
+        svg_second = "svg-second"
+        svg_third = "svg-third"
+
+        monkeypatch.setattr(
+            placement_mod,
+            "_pick_svg",
+            _svg_sequence_factory([svg_ref, svg_second, svg_third]),
+        )
+        monkeypatch.setattr(
+            placement_mod,
+            "_resolve_ship_dimensions",
+            _resolve_ship_dimensions_sequence_factory([(8, 32), (12, 40), (14, 48)]),
+        )
+        monkeypatch.setattr(placement_mod, "_local_hull_geometry", _rect_local_hull_geometry)
+        monkeypatch.setattr(placement_mod, "extract_hull_fill", lambda svg_text: (200, 200, 200, 255))
+
+        labels = placement_mod._place_berthed_cluster(
+            vertical_shore_scene["water_mask"],
+            vertical_shore_scene["occupancy"],
+            [((40.0, 20.0), (40.0, 180.0))],
+            None,
+            resolution_m=5.0,
+            rng=random.Random(7),
+            n_ships=3,
+            alpha_range=(0.8, 0.9),
+            class_id=0,
+            image_size=self._IMAGE_SIZE,
+            background=vertical_shore_scene["background"].copy(),
+            length_range=(20.0, 80.0),
+            length_exponent=1.0,
+            size_thresholds=None,
+            mixed=placement_mod._ClusterStrategy.SAME_SHAPE_DIFF_SHIP,
+            berth_stern=False,
+            blur_sigma=0.0,
+        )
+
+        assert len(labels) == 3
+        assert len(captured) == 3
+        assert [ship.svg_text for ship in captured] == [svg_ref, svg_second, svg_third]
+        assert {(ship.bw, ship.lh) for ship in captured} == {(8, 32)}
 
     def test_berth_stern_to_cluster_trims_invalid_tail_ship(
         self,
