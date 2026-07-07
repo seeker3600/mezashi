@@ -439,6 +439,37 @@ def _svg_sequence_factory(svg_texts: list[str]):
     return _mock_pick_svg
 
 
+def _capturing_svg_sequence_factory(
+    svg_texts: list[str],
+    captured_calls: list[dict[str, object]],
+):
+    """_pick_svg の kwargs を記録しつつ順番に SVG を返す。"""
+
+    calls = {"count": 0}
+
+    def _mock_pick_svg(*args, **kwargs) -> str:
+        captured_calls.append({"args": args, "kwargs": dict(kwargs)})
+        index = min(calls["count"], len(svg_texts) - 1)
+        calls["count"] += 1
+        return svg_texts[index]
+
+    return _mock_pick_svg
+
+
+def _captured_pick_arg(call: dict[str, object], index: int, key: str) -> object | None:
+    """_pick_svg 呼び出しから位置/キーワード両対応で引数を取り出す。"""
+
+    kwargs = call["kwargs"]
+    assert isinstance(kwargs, dict)
+    if key in kwargs:
+        return kwargs[key]
+    args = call["args"]
+    assert isinstance(args, tuple)
+    if len(args) > index:
+        return args[index]
+    return None
+
+
 class TestTightClusterBridgeGeometry:
     def test_bridge_geometry_only_fills_internal_gap(self) -> None:
         """tight cluster bridge は外周リングではなく内部ギャップだけを埋める。"""
@@ -836,6 +867,7 @@ class TestPlaceCluster:
     ) -> None:
         """same_shape_diff_ship raft_open は寸法固定で SVG だけ変える。"""
         captured = _capture_vector_cluster(monkeypatch)
+        pick_calls: list[dict[str, object]] = []
         svg_ref = "svg-ref"
         svg_second = "svg-second"
         svg_third = "svg-third"
@@ -843,7 +875,10 @@ class TestPlaceCluster:
         monkeypatch.setattr(
             placement_mod,
             "_pick_svg",
-            _svg_sequence_factory([svg_ref, svg_second, svg_third]),
+            _capturing_svg_sequence_factory(
+                [svg_ref, svg_second, svg_third],
+                pick_calls,
+            ),
         )
         monkeypatch.setattr(placement_mod, "find_water_position", lambda *args, **kwargs: (60, 100))
         monkeypatch.setattr(
@@ -871,6 +906,9 @@ class TestPlaceCluster:
             image_size=self._IMAGE_SIZE,
             background=scene["background"].copy(),
             length_range=(20.0, 80.0),
+            lb_ratio_range=(7.0, 10.0),
+            offnadir_deg=15.0,
+            sensor_az_world_deg=120.0,
             force_strategy=placement_mod._ClusterStrategy.SAME_SHAPE_DIFF_SHIP,
         )
 
@@ -878,6 +916,12 @@ class TestPlaceCluster:
         assert len(captured) == 3
         assert [ship.svg_text for ship in captured] == [svg_ref, svg_second, svg_third]
         assert {(ship.bw, ship.lh) for ship in captured} == {(6, 24)}
+        assert [_captured_pick_arg(call, 3, "lb_ratio_range") for call in pick_calls] == [
+            (7.0, 10.0),
+            (7.0, 10.0),
+            (7.0, 10.0),
+        ]
+        assert [_captured_pick_arg(call, 4, "offnadir_deg") for call in pick_calls] == [15.0, 15.0, 15.0]
 
     @pytest.mark.parametrize(
         ("sizes", "description"),
@@ -1796,6 +1840,7 @@ class TestBerthPlacement:
     ) -> None:
         """same_shape_diff_ship berth でも寸法固定で SVG だけ変える。"""
         captured = _capture_vector_cluster(monkeypatch)
+        pick_calls: list[dict[str, object]] = []
         svg_ref = "svg-ref"
         svg_second = "svg-second"
         svg_third = "svg-third"
@@ -1803,7 +1848,10 @@ class TestBerthPlacement:
         monkeypatch.setattr(
             placement_mod,
             "_pick_svg",
-            _svg_sequence_factory([svg_ref, svg_second, svg_third]),
+            _capturing_svg_sequence_factory(
+                [svg_ref, svg_second, svg_third],
+                pick_calls,
+            ),
         )
         monkeypatch.setattr(
             placement_mod,
@@ -1827,16 +1875,25 @@ class TestBerthPlacement:
             background=vertical_shore_scene["background"].copy(),
             length_range=(20.0, 80.0),
             length_exponent=1.0,
+            lb_ratio_range=(7.0, 10.0),
             size_thresholds=None,
             mixed=placement_mod._ClusterStrategy.SAME_SHAPE_DIFF_SHIP,
             berth_stern=False,
             blur_sigma=0.0,
+            offnadir_deg=20.0,
+            sensor_az_world_deg=210.0,
         )
 
         assert len(labels) == 3
         assert len(captured) == 3
         assert [ship.svg_text for ship in captured] == [svg_ref, svg_second, svg_third]
         assert {(ship.bw, ship.lh) for ship in captured} == {(8, 32)}
+        assert [_captured_pick_arg(call, 3, "lb_ratio_range") for call in pick_calls] == [
+            (7.0, 10.0),
+            (7.0, 10.0),
+            (7.0, 10.0),
+        ]
+        assert [_captured_pick_arg(call, 4, "offnadir_deg") for call in pick_calls] == [20.0, 20.0, 20.0]
 
     def test_berth_stern_to_cluster_trims_invalid_tail_ship(
         self,

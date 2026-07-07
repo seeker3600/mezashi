@@ -1346,10 +1346,10 @@ def _place_alongside_berthed_run(
         svg_text_ref = _pick_svg(
             svg_metas,
             rng,
-            length_range,
-            lb_ratio_range,
-            offnadir_deg,
-            lead_sensor_az,
+                length_range=length_range,
+                lb_ratio_range=lb_ratio_range,
+                offnadir_deg=offnadir_deg,
+                sensor_az_ship_deg=lead_sensor_az,
             shipgen_kwargs=shipgen_kwargs,
         )
         _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
@@ -1365,10 +1365,10 @@ def _place_alongside_berthed_run(
         lead_svg_text = _pick_svg(
             svg_metas,
             rng,
-            length_range,
-            lb_ratio_range,
-            offnadir_deg,
-            lead_sensor_az,
+            length_range=length_range,
+            lb_ratio_range=lb_ratio_range,
+            offnadir_deg=offnadir_deg,
+            sensor_az_ship_deg=lead_sensor_az,
             shipgen_kwargs=shipgen_kwargs,
         )
         _lead_cls_name, lead_bw, lead_lh, _lead_lb = _resolve_ship_dimensions(
@@ -1487,10 +1487,10 @@ def _place_alongside_berthed_run(
             svg_text_i = _pick_svg(
                 svg_metas,
                 rng,
-                length_range,
-                lb_ratio_range,
-                offnadir_deg,
-                ship_sensor_az,
+                length_range=length_range,
+                lb_ratio_range=lb_ratio_range,
+                offnadir_deg=offnadir_deg,
+                sensor_az_ship_deg=ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
             )
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
@@ -1506,9 +1506,10 @@ def _place_alongside_berthed_run(
             svg_text_i = _pick_svg(
                 svg_metas,
                 rng,
-                length_range,
-                offnadir_deg,
-                ship_sensor_az,
+                    length_range=length_range,
+                    lb_ratio_range=lb_ratio_range,
+                    offnadir_deg=offnadir_deg,
+                    sensor_az_ship_deg=ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
             )
             bw, lh = bw0, lh0
@@ -1801,8 +1802,9 @@ def _place_berthed_cluster(
                         svg_metas,
                         rng,
                         length_range,
-                        offnadir_deg,
-                        ship_sensor_az,
+                            lb_ratio_range=lb_ratio_range,
+                            offnadir_deg=offnadir_deg,
+                            sensor_az_ship_deg=ship_sensor_az,
                         shipgen_kwargs=shipgen_kwargs,
                     )
                     bw, lh = bw0, lh0
@@ -2066,7 +2068,12 @@ def _place_area_cluster(
     ref_angle_deg = rng.uniform(0, 360)
     ref_sensor_az_ship_deg = (sensor_az_world_deg - ref_angle_deg) % 360.0
     svg_text_ref = _pick_svg(
-        svg_metas, rng, length_range, lb_ratio_range, offnadir_deg, ref_sensor_az_ship_deg,
+        svg_metas,
+        rng,
+        length_range=length_range,
+        lb_ratio_range=lb_ratio_range,
+        offnadir_deg=offnadir_deg,
+        sensor_az_ship_deg=ref_sensor_az_ship_deg,
         shipgen_kwargs=shipgen_kwargs,
     )
     cls0, bw0, lh0, _ = _resolve_ship_dimensions(
@@ -2123,7 +2130,12 @@ def _place_area_cluster(
         elif mixed:
             ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
             svg_text_i = _pick_svg(
-                svg_metas, rng, length_range, lb_ratio_range, offnadir_deg, ship_sensor_az,
+                svg_metas,
+                rng,
+                length_range=length_range,
+                lb_ratio_range=lb_ratio_range,
+                offnadir_deg=offnadir_deg,
+                sensor_az_ship_deg=ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
             )
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
@@ -2347,7 +2359,12 @@ def _place_cluster(
 
     initial_sensor_az = (sensor_az_world_deg - base_angle) % 360.0
     svg_text = _pick_svg(
-        svg_metas, rng, length_range, lb_ratio_range, offnadir_deg, initial_sensor_az,
+           svg_metas,
+           rng,
+           length_range=length_range,
+           lb_ratio_range=lb_ratio_range,
+           offnadir_deg=offnadir_deg,
+           sensor_az_ship_deg=initial_sensor_az,
         shipgen_kwargs=shipgen_kwargs,
     )
     _cls0, bw0, lh0, _lb0 = _resolve_ship_dimensions(
@@ -2545,7 +2562,12 @@ def _place_cluster(
         elif strategy is _ClusterStrategy.MIXED:
             ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
             svg_text_i = _pick_svg(
-                svg_metas, rng, length_range, lb_ratio_range, offnadir_deg, ship_sensor_az,
+                    svg_metas,
+                    rng,
+                    length_range=length_range,
+                    lb_ratio_range=lb_ratio_range,
+                    offnadir_deg=offnadir_deg,
+                    sensor_az_ship_deg=ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
             )
             _cls_name, bw, lh, _lb = _resolve_ship_dimensions(
@@ -2559,7 +2581,12 @@ def _place_cluster(
         elif strategy is _ClusterStrategy.SAME_SHAPE_DIFF_SHIP:
             ship_sensor_az = (sensor_az_world_deg - angle_deg) % 360.0
             svg_text_i = _pick_svg(
-                svg_metas, rng, length_range, offnadir_deg, ship_sensor_az,
+                    svg_metas,
+                    rng,
+                    length_range,
+                    lb_ratio_range=lb_ratio_range,
+                    offnadir_deg=offnadir_deg,
+                    sensor_az_ship_deg=ship_sensor_az,
                 shipgen_kwargs=shipgen_kwargs,
             )
             bw, lh = bw0, lh0
