@@ -870,6 +870,22 @@ class Detail:
 
 
 @dataclass(frozen=True)
+class FullWidthStructLayout:
+    """Alternating full-width superstructure bands for top-view appearance."""
+
+    prob: float = 0.0
+    count: tuple[int, int] = (0, 0)
+    span: tuple[float, float] = (0.0, 0.0)
+    gap: tuple[float, float] = (0.0, 0.0)
+    fore_margin: tuple[float, float] = (0.0, 0.0)
+    aft_margin: tuple[float, float] = (0.0, 0.0)
+    brightness_off: tuple[int, int] = (18, 30)
+
+
+_NARROW_FULL_WIDTH_STRUCT_PROB: float = 0.25
+
+
+@dataclass(frozen=True)
 class ShipClass:
     """Complete ship class template."""
 
@@ -889,6 +905,7 @@ class ShipClass:
     hull_trait_square_stern_prob: float = 0.0
     hull_trait_round_stern_prob: float = 0.0
     hull_trait_combined_prob: float = 0.0
+    full_width_struct: FullWidthStructLayout = field(default_factory=FullWidthStructLayout)
 
 
 # ── Ship class registry ──────────────────────────────────────────────────
@@ -1258,6 +1275,15 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         ),
         hull_trait_straight_sides_prob=0.15,
         hull_trait_round_stern_prob=0.15,
+        full_width_struct=FullWidthStructLayout(
+            prob=_NARROW_FULL_WIDTH_STRUCT_PROB,
+            count=(2, 3),
+            span=(0.08, 0.16),
+            gap=(0.05, 0.12),
+            fore_margin=(0.08, 0.18),
+            aft_margin=(0.10, 0.20),
+            brightness_off=(14, 26),
+        ),
     ),
     "fishing_trawler": ShipClass(
         hull="fishing_wide",
@@ -1298,6 +1324,15 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         rare_bright_white_struct_prob=0.02,
         hull_trait_straight_sides_prob=0.25,
         hull_trait_round_stern_prob=0.30,
+        full_width_struct=FullWidthStructLayout(
+            prob=_NARROW_FULL_WIDTH_STRUCT_PROB,
+            count=(2, 4),
+            span=(0.09, 0.18),
+            gap=(0.04, 0.11),
+            fore_margin=(0.06, 0.14),
+            aft_margin=(0.08, 0.18),
+            brightness_off=(14, 28),
+        ),
     ),
     "fishing_purse_seiner": ShipClass(
         hull="fishing_wide",
@@ -1343,6 +1378,15 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         hull_trait_square_stern_prob=0.10,
         hull_trait_round_stern_prob=0.25,
         hull_trait_combined_prob=0.18,
+        full_width_struct=FullWidthStructLayout(
+            prob=_NARROW_FULL_WIDTH_STRUCT_PROB,
+            count=(2, 4),
+            span=(0.08, 0.17),
+            gap=(0.04, 0.10),
+            fore_margin=(0.06, 0.14),
+            aft_margin=(0.08, 0.18),
+            brightness_off=(14, 28),
+        ),
     ),
     "fishing_longliner": ShipClass(
         hull="fishing",
@@ -1380,6 +1424,15 @@ SHIP_CLASSES: dict[str, ShipClass] = {
         hull_trait_square_stern_prob=0.10,
         hull_trait_round_stern_prob=0.20,
         hull_trait_combined_prob=0.18,
+        full_width_struct=FullWidthStructLayout(
+            prob=_NARROW_FULL_WIDTH_STRUCT_PROB,
+            count=(2, 3),
+            span=(0.08, 0.15),
+            gap=(0.05, 0.11),
+            fore_margin=(0.08, 0.18),
+            aft_margin=(0.10, 0.20),
+            brightness_off=(16, 28),
+        ),
     ),
     # ─── Wide / stubby vessels (5–50 m, low L/B) ───
     "tug_harbor": ShipClass(

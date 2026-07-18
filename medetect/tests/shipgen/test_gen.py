@@ -18,6 +18,7 @@ from medetect.shipgen.gen import (
 )
 from medetect.shipgen.hull import build_hull_points, interpolate_hull
 from medetect.shipgen.ship_class import (
+    FullWidthStructLayout,
     SHIP_CLASSES,
     ShipColors,
     sample_colors,
@@ -91,9 +92,10 @@ def _hull_half_widths_from_svg(svg: str) -> np.ndarray:
 def _struct_rect_colors(svg: str) -> list[tuple[int, int, int]]:
     root = ET.fromstring(svg)
     return [
-        _parse_rgb(rect.attrib["fill"])
-        for rect in root.iter(f"{{{SVG_NS}}}rect")
-        if rect.attrib.get("data-role") == "struct"
+        _parse_rgb(element.attrib["fill"])
+        for element in root.iter()
+        if element.tag in {f"{{{SVG_NS}}}rect", f"{{{SVG_NS}}}polygon"}
+        and element.attrib.get("data-role") in {"struct", "struct-band"}
     ]
 
 
@@ -103,6 +105,11 @@ def _struct_area_ratio(svg: str) -> float:
         float(rect.attrib["width"]) * float(rect.attrib["height"])
         for rect in root.iter(f"{{{SVG_NS}}}rect")
         if rect.attrib.get("data-role") == "struct"
+    )
+    struct_area += sum(
+        _polygon_area(_parse_points(polygon.attrib["points"]))
+        for polygon in root.iter(f"{{{SVG_NS}}}polygon")
+        if polygon.attrib.get("data-role") == "struct-band"
     )
     return struct_area / _ship_area_from_svg(svg)
 
@@ -122,6 +129,15 @@ def _struct_start_positions(svg: str) -> list[float]:
         float(rect.attrib["y"]) / lb_ratio
         for rect in root.iter(f"{{{SVG_NS}}}rect")
         if rect.attrib.get("data-role") == "struct"
+    ]
+
+
+def _struct_band_polygons(svg: str) -> list[ET.Element]:
+    root = ET.fromstring(svg)
+    return [
+        polygon
+        for polygon in root.iter(f"{{{SVG_NS}}}polygon")
+        if polygon.attrib.get("data-role") == "struct-band"
     ]
 
 
@@ -535,6 +551,82 @@ class TestShipColors:
 
 
 class TestGenerateShipSvg:
+    def test_full_width_struct_band_sampler_returns_a_random_few(self) -> None:
+        """full-width 構造物帯は数個の範囲でランダムに変動する。"""
+        layout = FullWidthStructLayout(
+            prob=1.0,
+            count=(2, 4),
+            span=(0.09, 0.18),
+            gap=(0.04, 0.10),
+            fore_margin=(0.06, 0.12),
+            aft_margin=(0.08, 0.14),
+            brightness_off=(12, 24),
+        )
+
+        counts = [
+            len(shipgen_gen._sample_full_width_struct_band_specs(layout, random.Random(seed)))
+            for seed in range(32)
+        ]
+
+        assert min(counts) >= 2
+        assert max(counts) <= 4
+        assert len(set(counts)) >= 2
+
+    def test_full_width_struct_bands_follow_hull_width_exactly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """full-width 構造物帯は各 longitudinal slice で hull 幅に一致する。"""
+        monkeypatch.setattr(
+            shipgen_gen,
+            "_sample_full_width_struct_band_specs",
+            lambda _layout, _rng: [
+                shipgen_gen._StructBandSpec(0.18, 0.32, 18),
+                shipgen_gen._StructBandSpec(0.48, 0.62, 24),
+            ],
+            raising=True,
+        )
+
+        svg = generate_ship_svg("fishing_longliner", rng=random.Random(42), hull_noise=0.0)
+        root = ET.fromstring(svg)
+        half_widths = _hull_half_widths_from_svg(svg)
+        lb_ratio = float(root.attrib["data-lb-ratio"])
+        bands = _struct_band_polygons(svg)
+
+        assert root.attrib["data-struct-layout"] == "full-width-bands"
+        assert root.attrib["data-full-width-band-count"] == "2"
+        assert len(bands) == 2
+
+        for polygon in bands:
+            points = _parse_points(polygon.attrib["points"])
+            for x, y in points:
+                idx = min(int(round((y / lb_ratio) * (len(half_widths) - 1))), len(half_widths) - 1)
+                expected_hw = float(half_widths[idx])
+                assert abs(abs(x - 0.5) - expected_hw) <= 1e-6
+
+    def test_non_target_class_keeps_default_struct_layout(self) -> None:
+        """非対象 class は full-width 帯レイアウトへ切り替わらない。"""
+        for ship_class in ("destroyer", "tug_harbor", "barge_deck"):
+            svg = generate_ship_svg(ship_class, rng=random.Random(42), hull_noise=0.0)
+            root = ET.fromstring(svg)
+
+            assert root.attrib["data-struct-layout"] == "default"
+            assert root.attrib["data-full-width-band-count"] == "0"
+            assert not _struct_band_polygons(svg)
+
+    def test_reexpanded_fishing_target_can_emit_full_width_layout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """再拡張した fishing target は full-width 帯レイアウトを使える。"""
+        monkeypatch.setattr(
+            shipgen_gen,
+            "_sample_full_width_struct_band_specs",
+            lambda _layout, _rng: [shipgen_gen._StructBandSpec(0.18, 0.32, 18)],
+            raising=True,
+        )
+
+        svg = generate_ship_svg("fishing_trawler", rng=random.Random(42), hull_noise=0.0)
+        root = ET.fromstring(svg)
+
+        assert root.attrib["data-struct-layout"] == "full-width-bands"
+        assert root.attrib["data-full-width-band-count"] == "1"
+        assert _struct_band_polygons(svg)
+
     def test_returns_valid_xml(self) -> None:
         """生成 SVG が有効な XML である。"""
         svg = generate_ship_svg("patrol", rng=random.Random(42))
@@ -864,17 +956,25 @@ class TestSmallShipRareVariants:
         """艦橋の明部と影部を SVG 上で識別できる。"""
         svg = generate_ship_svg("tug_harbor", rng=random.Random(42))
         root = ET.fromstring(svg)
-        struct_rects = [
+        struct_elements = [
             rect for rect in root.findall(f"{{{SVG_NS}}}rect")
             if rect.get("data-role") == "struct"
         ]
-        shadow_rects = [
+        struct_elements.extend(
+            polygon for polygon in root.findall(f"{{{SVG_NS}}}polygon")
+            if polygon.get("data-role") == "struct-band"
+        )
+        shadow_elements = [
             rect for rect in root.findall(f"{{{SVG_NS}}}rect")
             if rect.get("data-role") == "struct-shadow"
         ]
+        shadow_elements.extend(
+            polygon for polygon in root.findall(f"{{{SVG_NS}}}polygon")
+            if polygon.get("data-role") in {"struct-shadow", "struct-band-shadow"}
+        )
 
-        assert struct_rects
-        assert shadow_rects
+        assert struct_elements
+        assert shadow_elements
 
     def test_forced_perimeter_trim_adds_trim_polygons(self) -> None:
         """全周 trim を強制すると hull trim ポリゴンが出力される。"""
