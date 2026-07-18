@@ -160,58 +160,143 @@ class TestScaleShipPixelSize:
         assert length_px >= 3
 
 
-class TestPickSvgCaching:
-    def test_onthefly_pool_keeps_multiple_variants(self, monkeypatch) -> None:
-        """同一キーのオンザフライ生成でも複数の見た目を維持する。"""
-        ship_mod._generate_ship_svg_variant.cache_clear()
+class TestPickSvgShipgen:
+    def test_onthefly_shipgen_forwards_exact_projection_and_kwargs(self, monkeypatch) -> None:
+        """オンザフライ shipgen は量子化せずに引数をそのまま渡す。"""
+        calls: list[tuple[str, float, float, dict[str, float]]] = []
+
+        def _fake_generate_ship_svg(
+            ship_class: str,
+            *,
+            rng: random.Random,
+            offnadir_deg: float,
+            sensor_az_ship_deg: float,
+            deck_scatter_density: float,
+        ) -> str:
+            calls.append(
+                (
+                    ship_class,
+                    offnadir_deg,
+                    sensor_az_ship_deg,
+                    {"deck_scatter_density": deck_scatter_density},
+                )
+            )
+            _ = rng.random()
+            seq = len(calls)
+            return (
+                f'<svg xmlns="http://www.w3.org/2000/svg" '
+                f'data-ship-class="{ship_class}" data-lb-ratio="6.0" data-seq="{seq}"/>'
+            )
+
         ship_mod._shipgen_class_weights.cache_clear()
         monkeypatch.setattr(shipgen_gen, "get_ship_classes", lambda *args, **kwargs: ["patrol"])
+        monkeypatch.setattr(
+            ship_mod,
+            "_shipgen_class_weights",
+            lambda target_m, lb_ratio_range=None: (("patrol",), None),
+        )
+        monkeypatch.setattr(shipgen_gen, "generate_ship_svg", _fake_generate_ship_svg)
 
         rng = random.Random(123)
-        results = {
-            _pick_svg(
-                None,
-                rng,
-                length_range=(35.0, 80.0),
-                offnadir_deg=7.0,
-                sensor_az_ship_deg=123.0,
-                shipgen_kwargs={"deck_scatter_density": 2.5},
+        first = _pick_svg(
+            None,
+            rng,
+            length_range=(35.0, 80.0),
+            offnadir_deg=7.0123,
+            sensor_az_ship_deg=123.4567,
+            shipgen_kwargs={"deck_scatter_density": 2.5},
+        )
+        second = _pick_svg(
+            None,
+            rng,
+            length_range=(35.0, 80.0),
+            offnadir_deg=7.0123,
+            sensor_az_ship_deg=123.4567,
+            shipgen_kwargs={"deck_scatter_density": 2.5},
+        )
+
+        assert len(calls) == 2
+        assert calls == [
+            ("patrol", 7.0123, 123.4567, {"deck_scatter_density": 2.5}),
+            ("patrol", 7.0123, 123.4567, {"deck_scatter_density": 2.5}),
+        ]
+        assert first != second
+
+    def test_onthefly_shipgen_retries_until_lb_ratio_matches(self, monkeypatch) -> None:
+        """生成された L/B 比が外れた場合は許容範囲まで再試行する。"""
+        attempted_ratios = iter([7.5, 6.5, 5.0])
+        call_count = 0
+
+        def _fake_generate_ship_svg(
+            ship_class: str,
+            *,
+            rng: random.Random,
+            offnadir_deg: float,
+            sensor_az_ship_deg: float,
+        ) -> str:
+            nonlocal call_count
+            call_count += 1
+            _ = rng.random()
+            ratio = next(attempted_ratios)
+            return (
+                f'<svg xmlns="http://www.w3.org/2000/svg" '
+                f'data-ship-class="{ship_class}" data-lb-ratio="{ratio}"/>'
             )
-            for _ in range(12)
-        }
 
-        assert len(results) >= 4
-        for svg_text in results:
-            root = ET.fromstring(svg_text)
-            assert root.get("data-ship-class") == "patrol"
-
-    def test_seeded_sequence_is_history_independent(self, monkeypatch) -> None:
-        """同一 seed の選択列は過去実行履歴に依存しない。"""
-        ship_mod._generate_ship_svg_variant.cache_clear()
         ship_mod._shipgen_class_weights.cache_clear()
         monkeypatch.setattr(shipgen_gen, "get_ship_classes", lambda *args, **kwargs: ["patrol"])
+        monkeypatch.setattr(
+            ship_mod,
+            "_shipgen_class_weights",
+            lambda target_m, lb_ratio_range=None: (("patrol",), None),
+        )
+        monkeypatch.setattr(shipgen_gen, "generate_ship_svg", _fake_generate_ship_svg)
 
-        def _sequence(seed: int) -> list[str]:
-            rng = random.Random(seed)
-            return [
-                _pick_svg(
-                    None,
-                    rng,
-                    length_range=(35.0, 80.0),
-                    offnadir_deg=7.0,
-                    sensor_az_ship_deg=123.0,
-                    shipgen_kwargs={"deck_scatter_density": 2.5},
-                )
-                for _ in range(12)
-            ]
+        svg_text = _pick_svg(
+            None,
+            random.Random(0),
+            lb_ratio_range=(4.0, 6.0),
+        )
 
-        baseline = _sequence(777)
+        assert 'data-lb-ratio="5.0"' in svg_text
+        assert call_count == 3
 
-        _sequence(1)
-        _sequence(2026)
+    def test_onthefly_shipgen_raises_after_exhausting_lb_ratio_retries(self, monkeypatch) -> None:
+        """生成結果が常に外れる場合は 64 回で失敗する。"""
+        call_count = 0
 
-        repeated = _sequence(777)
-        assert repeated == baseline
+        def _fake_generate_ship_svg(
+            ship_class: str,
+            *,
+            rng: random.Random,
+            offnadir_deg: float,
+            sensor_az_ship_deg: float,
+        ) -> str:
+            nonlocal call_count
+            call_count += 1
+            _ = rng.random()
+            return (
+                f'<svg xmlns="http://www.w3.org/2000/svg" '
+                f'data-ship-class="{ship_class}" data-lb-ratio="8.5"/>'
+            )
+
+        ship_mod._shipgen_class_weights.cache_clear()
+        monkeypatch.setattr(shipgen_gen, "get_ship_classes", lambda *args, **kwargs: ["patrol"])
+        monkeypatch.setattr(
+            ship_mod,
+            "_shipgen_class_weights",
+            lambda target_m, lb_ratio_range=None: (("patrol",), None),
+        )
+        monkeypatch.setattr(shipgen_gen, "generate_ship_svg", _fake_generate_ship_svg)
+
+        with pytest.raises(ValueError, match="Unable to generate a ship variant"):
+            _pick_svg(
+                None,
+                random.Random(0),
+                lb_ratio_range=(4.0, 6.0),
+            )
+
+        assert call_count == 64
 
 
 class TestShipSizeDistribution:
