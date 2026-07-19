@@ -3,7 +3,9 @@ import { pixelScaleMeters } from "./geotiff";
 import {
 	computeGeoTIFFShrinkScale,
 	createShrunkCanvas,
+	getTileAugmentations,
 	prepareTile,
+	type TileAugmentation,
 } from "./imageUtils";
 import { TILE_OVERLAP } from "./labels";
 import { applyLabelMerge, buildMergeMap } from "./mergeLabels";
@@ -88,6 +90,43 @@ function mapDetectionsToOriginal(
 	}));
 }
 
+function normalizeAngle(angle: number): number {
+	let normalized = angle;
+	while (normalized <= -Math.PI) normalized += 2 * Math.PI;
+	while (normalized > Math.PI) normalized -= 2 * Math.PI;
+	return normalized;
+}
+
+export function mapDetectionFromAugmentedTile(
+	detection: Detection,
+	augmentation: TileAugmentation,
+	modelSize: number,
+): Detection {
+	switch (augmentation) {
+		case "flipHorizontal":
+			return {
+				...detection,
+				cx: modelSize - detection.cx,
+				angle: normalizeAngle(Math.PI - detection.angle),
+			};
+		case "flipVertical":
+			return {
+				...detection,
+				cy: modelSize - detection.cy,
+				angle: normalizeAngle(-detection.angle),
+			};
+		case "flipBoth":
+			return {
+				...detection,
+				cx: modelSize - detection.cx,
+				cy: modelSize - detection.cy,
+				angle: normalizeAngle(detection.angle - Math.PI),
+			};
+		default:
+			return detection;
+	}
+}
+
 /**
  * Run full inference on an image element, using slice inference for large images.
  * Returns detections in original image pixel coordinates.
@@ -103,6 +142,7 @@ export async function runInference(
 	onProgress?: (done: number, total: number) => void,
 	geoMeta?: GeoTIFFMeta,
 	pixelSizeMeters?: number,
+	useInputAugmentation = false,
 ): Promise<Detection[]> {
 	const { onnxUrl, inputSize, labels, task } = metadata;
 	const session = await loadModel(onnxUrl);
@@ -145,22 +185,40 @@ export async function runInference(
 	}
 
 	let detections: Detection[];
+	const augmentations = getTileAugmentations(useInputAugmentation);
 
 	// Decide whether to use slice inference
 	if (w <= inputSize && h <= inputSize) {
 		// Single pass
-		const { input, scale, padX, padY } = prepareTile(
-			src,
-			0,
-			0,
-			w,
-			h,
-			inputSize,
-		);
-		onProgress?.(0, 1);
-		const dets = await runTile(session, input, inputSize, labels, handler);
-		onProgress?.(1, 1);
-		detections = mapDetectionsToOriginal(dets, scale, padX, padY, 0, 0);
+		onProgress?.(0, augmentations.length);
+		const mappedDetections: Detection[] = [];
+		let done = 0;
+		for (const augmentation of augmentations) {
+			const prepared = prepareTile(src, 0, 0, w, h, inputSize, augmentation);
+			const tileDetections = await runTile(
+				session,
+				prepared.input,
+				inputSize,
+				labels,
+				handler,
+			);
+			const restored = tileDetections.map((d) =>
+				mapDetectionFromAugmentedTile(d, augmentation, inputSize),
+			);
+			mappedDetections.push(
+				...mapDetectionsToOriginal(
+					restored,
+					prepared.scale,
+					prepared.padX,
+					prepared.padY,
+					0,
+					0,
+				),
+			);
+			done++;
+			onProgress?.(done, augmentations.length);
+		}
+		detections = mappedDetections;
 	} else {
 		// Slice inference for large images
 		const tileSize = inputSize;
@@ -169,6 +227,7 @@ export async function runInference(
 		const tilesX = Math.max(1, Math.ceil((w - tileSize) / stride) + 1);
 		const tilesY = Math.max(1, Math.ceil((h - tileSize) / stride) + 1);
 		const totalTiles = tilesX * tilesY;
+		const totalSteps = totalTiles * augmentations.length;
 
 		const allDetections: Detection[] = [];
 		let done = 0;
@@ -180,34 +239,39 @@ export async function runInference(
 				const sw = Math.min(tileSize, w - sx);
 				const sh = Math.min(tileSize, h - sy);
 
-				const { input, scale, padX, padY } = prepareTile(
-					src,
-					sx,
-					sy,
-					sw,
-					sh,
-					inputSize,
-				);
+				for (const augmentation of augmentations) {
+					const prepared = prepareTile(
+						src,
+						sx,
+						sy,
+						sw,
+						sh,
+						inputSize,
+						augmentation,
+					);
+					const tileDetections = await runTile(
+						session,
+						prepared.input,
+						inputSize,
+						labels,
+						handler,
+					);
+					const restored = tileDetections.map((d) =>
+						mapDetectionFromAugmentedTile(d, augmentation, inputSize),
+					);
+					const mapped = mapDetectionsToOriginal(
+						restored,
+						prepared.scale,
+						prepared.padX,
+						prepared.padY,
+						sx,
+						sy,
+					);
+					allDetections.push(...mapped);
 
-				const tileDets = await runTile(
-					session,
-					input,
-					inputSize,
-					labels,
-					handler,
-				);
-				const mapped = mapDetectionsToOriginal(
-					tileDets,
-					scale,
-					padX,
-					padY,
-					sx,
-					sy,
-				);
-				allDetections.push(...mapped);
-
-				done++;
-				onProgress?.(done, totalTiles);
+					done++;
+					onProgress?.(done, totalSteps);
+				}
 			}
 		}
 

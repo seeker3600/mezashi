@@ -22,6 +22,7 @@ function App() {
 		metadataUrl,
 		modelMetadata,
 		userGSD,
+		inputAugmentationEnabled,
 	} = state;
 
 	// Load model metadata whenever the URL changes
@@ -69,21 +70,21 @@ function App() {
 			if (hasNonGeoTIFF) {
 				setPendingFiles(files);
 			} else {
-				runDetection(files);
+				runDetection(files, undefined, inputAugmentationEnabled);
 			}
 		},
-		[runDetection],
+		[inputAugmentationEnabled, runDetection],
 	);
 
 	const handleGSDConfirm = useCallback(
 		(gsd: number | null) => {
 			dispatch({ type: "SET_USER_GSD", value: gsd });
 			if (pendingFiles) {
-				runDetection(pendingFiles, gsd ?? undefined);
+				runDetection(pendingFiles, gsd ?? undefined, inputAugmentationEnabled);
 			}
 			setPendingFiles(null);
 		},
-		[pendingFiles, runDetection],
+		[inputAugmentationEnabled, pendingFiles, runDetection],
 	);
 
 	const handleGSDCancel = useCallback(() => {
@@ -121,6 +122,30 @@ function App() {
 				name={modelMetadata?.name}
 				license={modelMetadata?.license}
 			/>
+			<div className="mb-4">
+				<label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+					<input
+						type="checkbox"
+						checked={inputAugmentationEnabled}
+						aria-describedby="input-augmentation-note"
+						onChange={(e) =>
+							dispatch({
+								type: "SET_INPUT_AUGMENTATION",
+								enabled: e.target.checked,
+							})
+						}
+						disabled={isProcessing}
+						className="h-4 w-4 accent-blue-600"
+					/>
+					入力画像拡張を有効化:
+					<span
+						id="input-augmentation-note"
+						className="text-xs text-gray-500 dark:text-gray-400"
+					>
+						(GaussianBlur / CLAHE / Brightness・Contrast / 上下左右反転)
+					</span>
+				</label>
+			</div>
 
 			{pendingFiles && (
 				<GSDDialog

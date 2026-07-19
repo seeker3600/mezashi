@@ -41,6 +41,8 @@ export interface AppState {
 	 * Used for non-GeoTIFF images. null means "use model default".
 	 */
 	userGSD: number | null;
+	/** Whether input augmentation is enabled for inference. */
+	inputAugmentationEnabled: boolean;
 }
 
 export const initialState: AppState = {
@@ -51,6 +53,7 @@ export const initialState: AppState = {
 	metadataUrl: DEFAULT_METADATA_URL,
 	modelMetadata: null,
 	userGSD: null,
+	inputAugmentationEnabled: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -71,7 +74,8 @@ export type AppAction =
 	| { type: "SET_CONFIDENCE"; value: number }
 	| { type: "SET_METADATA_URL"; url: string }
 	| { type: "SET_MODEL_METADATA"; metadata: ModelMetadata | null }
-	| { type: "SET_USER_GSD"; value: number | null };
+	| { type: "SET_USER_GSD"; value: number | null }
+	| { type: "SET_INPUT_AUGMENTATION"; enabled: boolean };
 
 // ---------------------------------------------------------------------------
 // Reducer
@@ -101,6 +105,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 				metadataUrl: state.metadataUrl,
 				modelMetadata: state.modelMetadata,
 				userGSD: state.userGSD,
+				inputAugmentationEnabled: state.inputAugmentationEnabled,
 			};
 
 		case "SET_STATUS":
@@ -117,6 +122,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
 		case "SET_USER_GSD":
 			return { ...state, userGSD: action.value };
+
+		case "SET_INPUT_AUGMENTATION":
+			return { ...state, inputAugmentationEnabled: action.enabled };
 
 		default:
 			return state;

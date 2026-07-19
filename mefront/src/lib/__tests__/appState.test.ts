@@ -86,6 +86,7 @@ describe("appReducer", () => {
 				metadataUrl: "https://example.com/model.json",
 				modelMetadata: null,
 				userGSD: null,
+				inputAugmentationEnabled: true,
 			};
 			const next = appReducer(modified, { type: "CLEAR_ALL" });
 			expect(next.currentImage).toBeNull();
@@ -93,6 +94,7 @@ describe("appReducer", () => {
 			expect(next.status.type).toBe("idle");
 			expect(next.confidenceThreshold).toBe(0.5);
 			expect(next.metadataUrl).toBe("https://example.com/model.json");
+			expect(next.inputAugmentationEnabled).toBe(true);
 		});
 	});
 
@@ -113,6 +115,16 @@ describe("appReducer", () => {
 				value: 0.75,
 			});
 			expect(next.confidenceThreshold).toBe(0.75);
+		});
+	});
+
+	describe("SET_INPUT_AUGMENTATION", () => {
+		it("should update inputAugmentationEnabled", () => {
+			const next = appReducer(initialState, {
+				type: "SET_INPUT_AUGMENTATION",
+				enabled: true,
+			});
+			expect(next.inputAugmentationEnabled).toBe(true);
 		});
 	});
 });

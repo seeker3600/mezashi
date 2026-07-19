@@ -14,7 +14,11 @@ export function useImageDetection(
 	modelMetadata: ModelMetadata | null,
 ) {
 	return useCallback(
-		async (files: File[], pixelSizeMeters?: number) => {
+		async (
+			files: File[],
+			pixelSizeMeters?: number,
+			useInputAugmentation?: boolean,
+		) => {
 			if (!modelMetadata) {
 				dispatch({
 					type: "SET_STATUS",
@@ -81,7 +85,7 @@ export function useImageDetection(
 								type: "SET_STATUS",
 								status: {
 									type: "processing",
-									message: `推論中… (${done}/${total} タイル)`,
+									message: `推論中… (${done}/${total} 処理ステップ)`,
 									done,
 									total,
 								},
@@ -89,6 +93,7 @@ export function useImageDetection(
 						},
 						geoMeta,
 						isGeoTIFF ? undefined : pixelSizeMeters,
+						useInputAugmentation,
 					);
 
 					dispatch({
