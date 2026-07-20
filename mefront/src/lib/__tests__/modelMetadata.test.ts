@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { validateModelMetadata } from "../modelMetadata";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchModelMetadata, validateModelMetadata } from "../modelMetadata";
 
 function validMetadata(overrides: Record<string, unknown> = {}) {
 	return {
@@ -122,5 +122,25 @@ describe("validateModelMetadata", () => {
 		expect(() =>
 			validateModelMetadata(validMetadata({ expectedResolution: "0.5" })),
 		).toThrow('"expectedResolution"');
+	});
+});
+
+describe("fetchModelMetadata", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("resolves a filename-only onnxUrl relative to the metadata URL", async () => {
+		const response = new Response(
+			JSON.stringify(validMetadata({ onnxUrl: "yolo.onnx" })),
+			{ status: 200 },
+		);
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+		const metadata = await fetchModelMetadata(
+			"https://example.com/models/test/yolo.json",
+		);
+
+		expect(metadata.onnxUrl).toBe("https://example.com/models/test/yolo.onnx");
 	});
 });

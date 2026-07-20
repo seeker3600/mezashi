@@ -30,7 +30,10 @@ export async function fetchModelMetadata(url: string): Promise<ModelMetadata> {
 	}
 
 	validateModelMetadata(json);
-	return json;
+	return {
+		...json,
+		onnxUrl: new URL(json.onnxUrl, new URL(url, window.location.href)).href,
+	};
 }
 
 export function validateModelMetadata(
