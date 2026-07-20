@@ -71,6 +71,7 @@ describe("buildGeoJSONForClass", () => {
 		tiePoint: { x: 0, y: 100 },
 		pixelScale: { x: 1, y: 1 },
 		epsg: 32654,
+		isGeographic: false,
 	};
 
 	it("should create a valid GeoJSON FeatureCollection", () => {
@@ -143,12 +144,14 @@ describe("mergeGeoTIFFDetections", () => {
 		tiePoint: { x: 0, y: 100 },
 		pixelScale: { x: 1, y: 1 },
 		epsg: 32654,
+		isGeographic: false,
 	};
 
 	const meta2: GeoTIFFMeta = {
 		tiePoint: { x: 50, y: 100 },
 		pixelScale: { x: 1, y: 1 },
 		epsg: 32654,
+		isGeographic: false,
 	};
 
 	it("should merge detections without duplicates when no overlap", () => {
@@ -239,18 +242,21 @@ describe("mergeDetectionSets", () => {
 		tiePoint: { x: 0, y: 100 },
 		pixelScale: { x: 1, y: 1 },
 		epsg: 32654,
+		isGeographic: false,
 	};
 
 	const meta2: GeoTIFFMeta = {
 		tiePoint: { x: 50, y: 100 },
 		pixelScale: { x: 1, y: 1 },
 		epsg: 32654,
+		isGeographic: false,
 	};
 
 	const meta3: GeoTIFFMeta = {
 		tiePoint: { x: 100, y: 100 },
 		pixelScale: { x: 1, y: 1 },
 		epsg: 32654,
+		isGeographic: false,
 	};
 
 	it("should return null when there are no GeoTIFF sets", () => {

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchModelMetadata, validateModelMetadata } from "../modelMetadata";
 
-function validMetadata(overrides: Record<string, unknown> = {}) {
+function validMetadata(
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
 	return {
 		name: "TestModel",
 		task: "obb",

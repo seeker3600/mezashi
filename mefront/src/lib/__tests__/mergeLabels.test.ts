@@ -10,6 +10,7 @@ function makeMetadata(overrides: Partial<ModelMetadata> = {}): ModelMetadata {
 		inputSize: 640,
 		labels: ["large vehicle", "small vehicle", "plane"],
 		license: { name: "MIT" },
+		expectedResolution: 1,
 		...overrides,
 	};
 }

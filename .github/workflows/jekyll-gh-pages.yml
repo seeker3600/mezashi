@@ -22,20 +22,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: mefront/package-lock.json
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: mefront/pnpm-lock.yaml
 
       - name: Install dependencies
         working-directory: mefront
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         working-directory: mefront
-        run: npm run build -- --base=/mezashi/
+        run: pnpm build -- --base=/mezashi/
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

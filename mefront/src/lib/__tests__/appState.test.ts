@@ -55,6 +55,7 @@ describe("appReducer", () => {
 					tiePoint: { x: 0, y: 0 },
 					pixelScale: { x: 1, y: 1 },
 					epsg: null,
+					isGeographic: false,
 				},
 			});
 			state = appReducer(state, {
@@ -67,6 +68,7 @@ describe("appReducer", () => {
 					tiePoint: { x: 50, y: 0 },
 					pixelScale: { x: 1, y: 1 },
 					epsg: null,
+					isGeographic: false,
 				},
 			});
 			expect(state.currentImage).toBe(img2);
