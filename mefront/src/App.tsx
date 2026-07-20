@@ -78,10 +78,10 @@ function App() {
 	);
 
 	const handleGSDConfirm = useCallback(
-		(gsd: number | null) => {
+		(gsd: number) => {
 			dispatch({ type: "SET_USER_GSD", value: gsd });
 			if (pendingFiles) {
-				runDetection(pendingFiles, gsd ?? undefined, inputAugmentationEnabled);
+				runDetection(pendingFiles, gsd, inputAugmentationEnabled);
 			}
 			setPendingFiles(null);
 		},

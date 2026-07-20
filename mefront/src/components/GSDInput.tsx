@@ -1,15 +1,14 @@
 import { useState } from "react";
 
-/** Preset GSD values (m/px) shown in the dropdown */
-const GSD_PRESETS = [0.1, 0.3, 0.5, 1.0, 3.0, 5.0, 10.0, 15.0, 30.0];
+const SUGGESTED_GSDS = [0.1, 0.3, 1, 10, 30];
 
 interface GSDDialogProps {
 	/** Expected GSD from model metadata, used as the default value */
 	modelDefault?: number;
 	/** Previously used GSD value; takes precedence over modelDefault */
 	initialValue?: number | null;
-	/** Called with the confirmed GSD (null = skip, proceed without GSD) */
-	onConfirm: (gsd: number | null) => void;
+	/** Called with the confirmed GSD */
+	onConfirm: (gsd: number) => void;
 	/** Called when the user cancels the entire upload */
 	onCancel: () => void;
 }
@@ -30,16 +29,9 @@ export function GSDDialog({
 
 	const numVal = Number(inputStr);
 	const isValid = inputStr !== "" && !Number.isNaN(numVal) && numVal >= 0.1;
-
-	// Sync select to input when the value matches a preset exactly
-	const selectVal =
-		isValid && GSD_PRESETS.includes(numVal) ? String(numVal) : "";
-
-	const handlePresetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-		if (e.target.value !== "") {
-			setInputStr(e.target.value);
-		}
-	};
+	const suggestedGSDs = modelDefault
+		? [...new Set([...SUGGESTED_GSDS, modelDefault])].sort((a, b) => a - b)
+		: SUGGESTED_GSDS;
 
 	return (
 		<div
@@ -53,60 +45,69 @@ export function GSDDialog({
 					id="gsd-dialog-title"
 					className="mb-2 text-base font-semibold text-gray-900 dark:text-gray-100"
 				>
-					地上解像度を指定
+					画像の大きさを指定
 				</h3>
 				<p className="mb-4 text-sm text-gray-600 dark:text-gray-400">
-					PNG
-					画像には地上解像度情報が含まれていません。解像度を指定すると縮小・タイル推論が最適化されます。
+					この PNG には地図上の距離情報がありません。画像の 1 ピクセルが現地で何
+					m に相当するかを指定すると、モデルに適した大きさで検出します。
 				</p>
 
 				<div className="space-y-3">
 					<div>
 						<label
-							htmlFor="gsd-preset"
-							className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300"
-						>
-							プリセット
-						</label>
-						<select
-							id="gsd-preset"
-							value={selectVal}
-							onChange={handlePresetChange}
-							className="w-full rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
-						>
-							<option value="">カスタム値</option>
-							{GSD_PRESETS.map((v) => (
-								<option key={v} value={String(v)}>
-									{v} m/px
-								</option>
-							))}
-						</select>
-					</div>
-
-					<div>
-						<label
 							htmlFor="gsd-custom"
 							className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300"
 						>
-							値 (m/px)
+							1 ピクセルあたりの距離
 						</label>
-						<input
-							id="gsd-custom"
-							type="number"
-							min="0.1"
-							step="0.1"
-							value={inputStr}
-							onChange={(e) => setInputStr(e.target.value)}
-							placeholder={
-								modelDefault != null ? `例: ${modelDefault}` : "例: 0.5"
-							}
-							className="w-full rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder:text-gray-500"
-						/>
+						<div className="flex rounded-md border border-gray-300 bg-white focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 dark:border-gray-600 dark:bg-gray-700">
+							<input
+								id="gsd-custom"
+								type="number"
+								min="0.1"
+								step="0.1"
+								value={inputStr}
+								onChange={(e) => setInputStr(e.target.value)}
+								placeholder={
+									modelDefault != null ? `例: ${modelDefault}` : "例: 0.5"
+								}
+								className="min-w-0 flex-1 rounded-l-md bg-transparent px-3 py-1.5 text-sm text-gray-800 outline-none placeholder:text-gray-400 dark:text-gray-200 dark:placeholder:text-gray-500"
+							/>
+							<span className="flex items-center border-l border-gray-300 px-3 text-sm text-gray-600 dark:border-gray-600 dark:text-gray-300">
+								m
+							</span>
+						</div>
 						{modelDefault != null && (
 							<p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-								モデルデフォルト: {modelDefault} m/px
+								推奨: {modelDefault} m/px（このモデルの学習時の解像度）
 							</p>
 						)}
+					</div>
+					<div>
+						<p className="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+							よく使う解像度
+						</p>
+						<div className="flex flex-wrap gap-2">
+							{suggestedGSDs.map((gsd) => {
+								const isRecommended = gsd === modelDefault;
+								const label = gsd < 1 ? `${gsd * 100} cm` : `${gsd} m`;
+								return (
+									<button
+										key={gsd}
+										type="button"
+										onClick={() => setInputStr(String(gsd))}
+										className={`rounded-md border px-2.5 py-1 text-sm transition-colors ${
+											numVal === gsd
+												? "border-blue-600 bg-blue-600 text-white"
+												: "border-gray-300 text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+										}`}
+									>
+										{label}
+										{isRecommended && " (推奨)"}
+									</button>
+								);
+							})}
+						</div>
 					</div>
 				</div>
 
@@ -117,13 +118,6 @@ export function GSDDialog({
 						className="rounded-md px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
 					>
 						キャンセル
-					</button>
-					<button
-						type="button"
-						onClick={() => onConfirm(null)}
-						className="rounded-md px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
-					>
-						スキップ
 					</button>
 					<button
 						type="button"
