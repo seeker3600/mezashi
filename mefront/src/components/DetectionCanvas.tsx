@@ -106,7 +106,7 @@ export function DetectionCanvas({
 	);
 
 	const handleWheel = useCallback(
-		(e: React.WheelEvent<HTMLCanvasElement>) => {
+		(e: WheelEvent) => {
 			e.preventDefault();
 			const canvas = canvasRef.current;
 			if (!canvas) return;
@@ -140,6 +140,14 @@ export function DetectionCanvas({
 		},
 		[scale, offset, imageWidth, imageHeight],
 	);
+
+	useEffect(() => {
+		const canvas = canvasRef.current;
+		if (!canvas) return;
+
+		canvas.addEventListener("wheel", handleWheel, { passive: false });
+		return () => canvas.removeEventListener("wheel", handleWheel);
+	}, [handleWheel]);
 
 	const handleMouseDown = useCallback(
 		(e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -354,7 +362,6 @@ export function DetectionCanvas({
 					imageRendering: "auto",
 					cursor: isPanning ? "grabbing" : "grab",
 				}}
-				onWheel={handleWheel}
 				onMouseDown={handleMouseDown}
 				onMouseMove={handleMouseMove}
 				onMouseUp={handleMouseUp}
