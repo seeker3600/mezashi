@@ -15,6 +15,9 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -38,12 +41,13 @@ jobs:
         working-directory: mefront
         run: pnpm install --frozen-lockfile
 
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
       - name: Build
         working-directory: mefront
-        run: pnpm build -- --base=/mezashi/
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+        run: pnpm build -- --base=${{ steps.pages.outputs.base_path }}/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
