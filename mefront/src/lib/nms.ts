@@ -5,12 +5,13 @@ import type { Detection, DetectionTask } from "./types";
  * Build a flattened N×N IoU matrix for the given detections.
  * `matrix[i * n + j]` = IoU between `detections[i]` and `detections[j]`.
  *
- * Only same-class pairs are computed (cross-class IoU is always 0 in NMS).
+ * In class-aware mode, cross-class IoU is always 0.
  * The matrix is symmetric: `matrix[i * n + j] === matrix[j * n + i]`.
  */
 export function buildIouMatrix(
 	detections: Detection[],
 	task: DetectionTask,
+	classAgnostic = false,
 ): Float32Array {
 	const n = detections.length;
 	const iouFn = task === "obb" ? computeOBBIoU : computeAABBIoU;
@@ -18,7 +19,9 @@ export function buildIouMatrix(
 
 	for (let i = 0; i < n; i++) {
 		for (let j = i + 1; j < n; j++) {
-			if (detections[i].classId !== detections[j].classId) continue;
+			if (!classAgnostic && detections[i].classId !== detections[j].classId) {
+				continue;
+			}
 			const iou = iouFn(detections[i], detections[j]);
 			matrix[i * n + j] = iou;
 			matrix[j * n + i] = iou;
@@ -65,7 +68,6 @@ export function nmsFromRaw(
 		keep.push(candidates[i].det);
 		for (let j = i + 1; j < candidates.length; j++) {
 			if (suppressed.has(j)) continue;
-			if (candidates[i].det.classId !== candidates[j].det.classId) continue;
 			const iou = iouMatrix[candidates[i].origIdx * n + candidates[j].origIdx];
 			if (iou > iouThreshold) {
 				suppressed.add(j);

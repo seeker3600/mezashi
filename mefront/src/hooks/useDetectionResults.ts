@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { mergeDetectionSets } from "../lib/exportResults";
-import { NMS_IOU_THRESHOLD } from "../lib/labels";
+import { NMS_CLASS_AGNOSTIC, NMS_IOU_THRESHOLD } from "../lib/labels";
 import { buildIouMatrix, nmsFromRaw } from "../lib/nms";
 import type { DetectionSet, GeoTIFFMeta } from "../lib/types";
 
@@ -42,13 +42,17 @@ export function useDetectionResults(
 	const lastIouMatrix = useMemo(() => {
 		if (detectionSets.length === 0) return null;
 		const last = detectionSets[detectionSets.length - 1];
-		return buildIouMatrix(last.detections, last.task);
+		return buildIouMatrix(last.detections, last.task, NMS_CLASS_AGNOSTIC);
 	}, [detectionSets]);
 
 	// Pre-compute IoU matrix for the merged result.
 	const mergedIouMatrix = useMemo(() => {
 		if (!mergedResult || detectionSets.length === 0) return null;
-		return buildIouMatrix(mergedResult.detections, detectionSets[0].task);
+		return buildIouMatrix(
+			mergedResult.detections,
+			detectionSets[0].task,
+			NMS_CLASS_AGNOSTIC,
+		);
 	}, [mergedResult, detectionSets]);
 
 	return useMemo(() => {

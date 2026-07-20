@@ -7,12 +7,17 @@ import {
 	DIRECTION_MARKER_STYLES,
 	DIRECTION_MODE_HYSTERESIS,
 	DIRECTION_OVERVIEW_GRID_SPACING,
+	NMS_CLASS_AGNOSTIC,
 } from "../labels";
 
 describe("labels", () => {
 	it("CONFIDENCE_THRESHOLD should be a valid probability", () => {
 		expect(CONFIDENCE_THRESHOLD).toBeGreaterThan(0);
 		expect(CONFIDENCE_THRESHOLD).toBeLessThan(1);
+	});
+
+	it("should enable class-agnostic NMS by default", () => {
+		expect(NMS_CLASS_AGNOSTIC).toBe(true);
 	});
 
 	it("should default direction markers to arrows", () => {

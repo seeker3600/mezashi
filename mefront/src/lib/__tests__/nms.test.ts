@@ -39,14 +39,24 @@ describe("buildIouMatrix", () => {
 		expect(matrix[1 * 2 + 0]).toBeCloseTo(matrix[0 * 2 + 1]); // symmetric
 	});
 
-	it("should store zero IoU for different-class pairs (never suppress cross-class)", () => {
+	it("should store zero IoU for different-class pairs in class-aware mode", () => {
 		const dets = [
 			makeDet({ cx: 100, cy: 100, width: 50, height: 50, classId: 0 }),
 			makeDet({ cx: 100, cy: 100, width: 50, height: 50, classId: 1 }),
 		];
-		const matrix = buildIouMatrix(dets, "detect");
+		const matrix = buildIouMatrix(dets, "detect", false);
 		expect(matrix[0 * 2 + 1]).toBe(0);
 		expect(matrix[1 * 2 + 0]).toBe(0);
+	});
+
+	it("should compute IoU for different-class pairs in class-agnostic mode", () => {
+		const dets = [
+			makeDet({ cx: 100, cy: 100, width: 50, height: 50, classId: 0 }),
+			makeDet({ cx: 100, cy: 100, width: 50, height: 50, classId: 1 }),
+		];
+		const matrix = buildIouMatrix(dets, "detect", true);
+		expect(matrix[0 * 2 + 1]).toBeCloseTo(1);
+		expect(matrix[1 * 2 + 0]).toBeCloseTo(1);
 	});
 
 	it("should be symmetric", () => {
@@ -93,6 +103,61 @@ describe("nmsFromRaw", () => {
 		expect(result[0].confidence).toBe(0.9);
 	});
 
+	it("should keep perpendicular elongated OBBs with low polygon IoU", () => {
+		const dets = [
+			makeDet({
+				width: 100,
+				height: 10,
+				angle: 0,
+				confidence: 0.9,
+			}),
+			makeDet({
+				width: 100,
+				height: 10,
+				angle: Math.PI / 2,
+				confidence: 0.8,
+			}),
+		];
+		const matrix = buildIouMatrix(dets, "obb");
+		const result = nmsFromRaw(dets, matrix, 0.25, 0.45);
+		expect(result).toHaveLength(2);
+	});
+
+	it("should suppress overlapping OBBs with the same rotation", () => {
+		const dets = [
+			makeDet({
+				cx: 100,
+				cy: 100,
+				width: 100,
+				height: 10,
+				angle: 0.5,
+				confidence: 0.9,
+			}),
+			makeDet({
+				cx: 102,
+				cy: 101,
+				width: 100,
+				height: 10,
+				angle: 0.5,
+				confidence: 0.8,
+			}),
+		];
+		const matrix = buildIouMatrix(dets, "obb");
+		const result = nmsFromRaw(dets, matrix, 0.25, 0.45);
+		expect(result).toHaveLength(1);
+		expect(result[0].confidence).toBe(0.9);
+	});
+
+	it("should keep perpendicular thin AABBs with low IoU", () => {
+		const dets = [
+			makeDet({ width: 10, height: 100, confidence: 0.9 }),
+			makeDet({ width: 100, height: 10, confidence: 0.8 }),
+		];
+		const matrix = buildIouMatrix(dets, "detect");
+		const result = nmsFromRaw(dets, matrix, 0.25, 0.45);
+		expect(result).toHaveLength(2);
+	});
+
 	it("should keep non-overlapping detections", () => {
 		const dets = [
 			makeDet({ cx: 100, cy: 100, width: 20, height: 20, confidence: 0.9 }),
@@ -103,7 +168,7 @@ describe("nmsFromRaw", () => {
 		expect(result).toHaveLength(2);
 	});
 
-	it("should keep different-class detections even if overlapping", () => {
+	it("should keep different-class detections when NMS is class-aware", () => {
 		const dets = [
 			makeDet({
 				cx: 100,
@@ -122,9 +187,34 @@ describe("nmsFromRaw", () => {
 				confidence: 0.8,
 			}),
 		];
-		const matrix = buildIouMatrix(dets, "detect");
+		const matrix = buildIouMatrix(dets, "detect", false);
 		const result = nmsFromRaw(dets, matrix, 0.25, 0.45);
 		expect(result).toHaveLength(2);
+	});
+
+	it("should suppress overlapping different-class detections when NMS is class-agnostic", () => {
+		const dets = [
+			makeDet({
+				cx: 100,
+				cy: 100,
+				width: 50,
+				height: 50,
+				classId: 0,
+				confidence: 0.9,
+			}),
+			makeDet({
+				cx: 100,
+				cy: 100,
+				width: 50,
+				height: 50,
+				classId: 1,
+				confidence: 0.8,
+			}),
+		];
+		const matrix = buildIouMatrix(dets, "detect", true);
+		const result = nmsFromRaw(dets, matrix, 0.25, 0.45);
+		expect(result).toHaveLength(1);
+		expect(result[0].classId).toBe(0);
 	});
 
 	it("should re-run NMS using only detections above the new threshold", () => {

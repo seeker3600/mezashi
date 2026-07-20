@@ -16,8 +16,6 @@ export interface TaskHandler {
 		offset: number,
 		labels: readonly string[],
 	): Detection | null;
-	/** Non-maximum suppression across tiled detections */
-	nms(detections: Detection[], iouThreshold: number): Detection[];
 }
 
 // ---------------------------------------------------------------------------
@@ -64,31 +62,6 @@ export function computeOBBIoU(a: Detection, b: Detection): number {
 	return convexPolygonIoU(getOBBCorners(a), getOBBCorners(b));
 }
 
-function nms(
-	detections: Detection[],
-	iouThreshold: number,
-	iouFn: (a: Detection, b: Detection) => number,
-): Detection[] {
-	if (detections.length === 0) return [];
-
-	const sorted = [...detections].sort((a, b) => b.confidence - a.confidence);
-	const keep: Detection[] = [];
-	const suppressed = new Set<number>();
-
-	for (let i = 0; i < sorted.length; i++) {
-		if (suppressed.has(i)) continue;
-		keep.push(sorted[i]);
-		for (let j = i + 1; j < sorted.length; j++) {
-			if (suppressed.has(j)) continue;
-			if (sorted[i].classId !== sorted[j].classId) continue;
-			if (iouFn(sorted[i], sorted[j]) > iouThreshold) {
-				suppressed.add(j);
-			}
-		}
-	}
-	return keep;
-}
-
 // ---------------------------------------------------------------------------
 // OBB task handler (YOLOv8-OBB: 7 columns)
 // ---------------------------------------------------------------------------
@@ -111,10 +84,6 @@ const obbHandler: TaskHandler = {
 			height: data[offset + 3],
 			angle: data[offset + 6],
 		};
-	},
-
-	nms(detections, iouThreshold) {
-		return nms(detections, iouThreshold, computeOBBIoU);
 	},
 };
 
@@ -140,10 +109,6 @@ const detectHandler: TaskHandler = {
 			height: data[offset + 3],
 			angle: 0,
 		};
-	},
-
-	nms(detections, iouThreshold) {
-		return nms(detections, iouThreshold, computeAABBIoU);
 	},
 };
 

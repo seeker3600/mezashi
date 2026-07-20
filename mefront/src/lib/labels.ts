@@ -12,7 +12,10 @@ export const DEFAULT_METADATA_URL =
 export const TILE_OVERLAP = 0.5;
 
 /** IoU threshold for non-maximum suppression */
-export const NMS_IOU_THRESHOLD = 0.45;
+export const NMS_IOU_THRESHOLD = 0.5;
+
+/** Whether non-maximum suppression should ignore detection classes */
+export const NMS_CLASS_AGNOSTIC = true;
 
 /** Available marker styles for OBB direction displays */
 export const DIRECTION_MARKER_STYLES = {
