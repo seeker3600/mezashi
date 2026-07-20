@@ -16,7 +16,7 @@ import type { Detection, GeoTIFFMeta, ModelMetadata } from "./types";
 // Use WASM backend (works in all browsers, no WebGL/WebGPU required)
 ort.env.wasm.wasmPaths = import.meta.env.DEV
 	? "/node_modules/onnxruntime-web/dist/"
-	: "/";
+	: import.meta.env.BASE_URL;
 ort.env.wasm.numThreads = 1;
 
 let sessionPromise: Promise<ort.InferenceSession> | null = null;
