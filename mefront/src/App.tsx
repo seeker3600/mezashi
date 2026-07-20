@@ -207,7 +207,7 @@ function App() {
 								{modelMetadata?.task === "obb" && (
 									<label
 										className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300"
-										title="モデルの OBB 角度を仮の船首方位として表示します。船首と船尾は区別できません。"
+										title="拡大時は個別、縮小時は集約して表示します。モデルの OBB 角度に基づく仮の方位であり、船首と船尾は区別できません。"
 									>
 										<input
 											type="checkbox"

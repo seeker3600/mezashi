@@ -1,4 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { DirectionDisplayMode } from "../lib/directionDisplay";
+import {
+	aggregateDirectionsByGrid,
+	getDetailScaleThreshold,
+	getDirectionDisplayMode,
+} from "../lib/directionDisplay";
+import {
+	DIRECTION_MARKER_STYLE,
+	DIRECTION_MARKER_STYLES,
+	DIRECTION_OVERVIEW_GRID_SPACING,
+} from "../lib/labels";
 import { getOBBCorners, getOBBLongAxisAngle } from "../lib/obbUtils";
 import type { Detection } from "../lib/types";
 
@@ -28,6 +39,62 @@ const COLORS = [
 	"#6473FF",
 	"#0018EC",
 ];
+
+const OVERVIEW_DIRECTION_COLOR = "#0F766E";
+
+interface DirectionMarkerOptions {
+	cx: number;
+	cy: number;
+	angle: number;
+	length: number;
+	lineWidth: number;
+	color: string;
+	alpha: number;
+}
+
+function drawDirectionMarker(
+	ctx: CanvasRenderingContext2D,
+	{ cx, cy, angle, length, lineWidth, color, alpha }: DirectionMarkerOptions,
+): void {
+	if (length <= 0) return;
+
+	const directionX = Math.cos(angle);
+	const directionY = Math.sin(angle);
+	ctx.strokeStyle = hexToRgba(color, alpha);
+	ctx.lineWidth = lineWidth;
+
+	if (DIRECTION_MARKER_STYLE === DIRECTION_MARKER_STYLES.LINE) {
+		ctx.beginPath();
+		ctx.moveTo(cx - (directionX * length) / 2, cy - (directionY * length) / 2);
+		ctx.lineTo(cx + (directionX * length) / 2, cy + (directionY * length) / 2);
+		ctx.stroke();
+		return;
+	}
+
+	const endX = cx + directionX * length;
+	const endY = cy + directionY * length;
+	const arrowHeadLength = Math.min(lineWidth * 4, length * 0.35);
+	ctx.beginPath();
+	ctx.moveTo(cx, cy);
+	ctx.lineTo(endX, endY);
+	ctx.stroke();
+
+	if (arrowHeadLength <= 0) return;
+
+	ctx.beginPath();
+	ctx.moveTo(endX, endY);
+	ctx.lineTo(
+		endX - directionX * arrowHeadLength - directionY * arrowHeadLength * 0.6,
+		endY - directionY * arrowHeadLength + directionX * arrowHeadLength * 0.6,
+	);
+	ctx.lineTo(
+		endX - directionX * arrowHeadLength + directionY * arrowHeadLength * 0.6,
+		endY - directionY * arrowHeadLength - directionX * arrowHeadLength * 0.6,
+	);
+	ctx.closePath();
+	ctx.fillStyle = hexToRgba(color, alpha);
+	ctx.fill();
+}
 
 interface DetectionCanvasProps {
 	imageSource: HTMLCanvasElement | HTMLImageElement | null;
@@ -59,6 +126,7 @@ export function DetectionCanvas({
 	const [offset, setOffset] = useState({ x: 0, y: 0 });
 	const [isPanning, setIsPanning] = useState(false);
 	const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+	const directionModeRef = useRef<DirectionDisplayMode>("overview");
 
 	const handleDragOver = useCallback(
 		(e: React.DragEvent) => {
@@ -215,6 +283,15 @@ export function DetectionCanvas({
 		// Draw image at origin
 		ctx.drawImage(imageSource, 0, 0, displayWidth, displayHeight);
 
+		const directionMode = showDirection
+			? getDirectionDisplayMode(
+					scale,
+					getDetailScaleThreshold(detections, fitScale),
+					directionModeRef.current,
+				)
+			: null;
+		if (directionMode) directionModeRef.current = directionMode;
+
 		// Draw detections
 		for (const det of detections) {
 			const color = COLORS[det.classId % COLORS.length];
@@ -241,53 +318,18 @@ export function DetectionCanvas({
 				ctx.stroke();
 			}
 
-			if (showDirection) {
-				const directionAngle = getOBBLongAxisAngle(det);
-				const directionX = Math.cos(directionAngle);
-				const directionY = Math.sin(directionAngle);
+			if (directionMode === "detail") {
 				const longAxisLength = Math.max(det.width, det.height) * fitScale;
-				const halfArrowLength = Math.max(0, longAxisLength / 2 - 4 / scale);
-				const startOffset = halfArrowLength * 0.2;
-				const endOffset = halfArrowLength;
-				const cx = det.cx * fitScale;
-				const cy = det.cy * fitScale;
-				const startX = cx + directionX * startOffset;
-				const startY = cy + directionY * startOffset;
-				const endX = cx + directionX * endOffset;
-				const endY = cy + directionY * endOffset;
-				const arrowHeadLength = Math.min(8 / scale, halfArrowLength * 0.6);
-
-				if (arrowHeadLength > 0) {
-					ctx.beginPath();
-					ctx.moveTo(startX, startY);
-					ctx.lineTo(endX, endY);
-					ctx.strokeStyle = hexToRgba(color, 0.8);
-					ctx.lineWidth =
-						Math.max(2, Math.min(displayWidth, displayHeight) / 500) / scale;
-					ctx.stroke();
-
-					ctx.beginPath();
-					ctx.moveTo(endX, endY);
-					ctx.lineTo(
-						endX -
-							directionX * arrowHeadLength -
-							directionY * arrowHeadLength * 0.6,
-						endY -
-							directionY * arrowHeadLength +
-							directionX * arrowHeadLength * 0.6,
-					);
-					ctx.lineTo(
-						endX -
-							directionX * arrowHeadLength +
-							directionY * arrowHeadLength * 0.6,
-						endY -
-							directionY * arrowHeadLength -
-							directionX * arrowHeadLength * 0.6,
-					);
-					ctx.closePath();
-					ctx.fillStyle = hexToRgba(color, 0.8);
-					ctx.fill();
-				}
+				drawDirectionMarker(ctx, {
+					cx: det.cx * fitScale,
+					cy: det.cy * fitScale,
+					angle: getOBBLongAxisAngle(det),
+					length: Math.max(0, longAxisLength * 0.4 - 4 / scale),
+					lineWidth:
+						Math.max(2, Math.min(displayWidth, displayHeight) / 500) / scale,
+					color,
+					alpha: 0.8,
+				});
 			}
 
 			// Draw label inside OBB with rotation
@@ -326,6 +368,22 @@ export function DetectionCanvas({
 
 				// Restore context state
 				ctx.restore();
+			}
+		}
+
+		if (directionMode === "overview") {
+			const gridSize =
+				DIRECTION_OVERVIEW_GRID_SPACING / Math.max(fitScale * scale, 1e-6);
+			for (const group of aggregateDirectionsByGrid(detections, gridSize)) {
+				drawDirectionMarker(ctx, {
+					cx: group.x * fitScale,
+					cy: group.y * fitScale,
+					angle: group.angle,
+					length: 24 / scale,
+					lineWidth: 2 / scale,
+					color: OVERVIEW_DIRECTION_COLOR,
+					alpha: Math.min(0.9, 0.45 + Math.sqrt(group.count) * 0.1),
+				});
 			}
 		}
 
