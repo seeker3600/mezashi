@@ -40,7 +40,8 @@ const COLORS = [
 	"#0018EC",
 ];
 
-const OVERVIEW_DIRECTION_COLOR = "#0F766E";
+const OVERVIEW_DIRECTION_OUTLINE_COLOR = "#111827";
+const OVERVIEW_DIRECTION_COLOR = "#FDE047";
 
 interface DirectionMarkerOptions {
 	cx: number;
@@ -380,9 +381,18 @@ export function DetectionCanvas({
 					cy: group.y * fitScale,
 					angle: group.angle,
 					length: 24 / scale,
+					lineWidth: 5 / scale,
+					color: OVERVIEW_DIRECTION_OUTLINE_COLOR,
+					alpha: 0.9,
+				});
+				drawDirectionMarker(ctx, {
+					cx: group.x * fitScale,
+					cy: group.y * fitScale,
+					angle: group.angle,
+					length: 24 / scale,
 					lineWidth: 2 / scale,
 					color: OVERVIEW_DIRECTION_COLOR,
-					alpha: Math.min(0.9, 0.45 + Math.sqrt(group.count) * 0.1),
+					alpha: 0.9,
 				});
 			}
 		}
@@ -415,7 +425,7 @@ export function DetectionCanvas({
 		>
 			<canvas
 				ref={canvasRef}
-				className="max-h-[70vh] w-full object-contain"
+				className="h-[70vh] w-full object-contain"
 				style={{
 					imageRendering: "auto",
 					cursor: isPanning ? "grabbing" : "grab",
