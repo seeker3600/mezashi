@@ -62,6 +62,7 @@ function App() {
 	const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
 	const [showBoxes, setShowBoxes] = useState(true);
 	const [showLabels, setShowLabels] = useState(true);
+	const [showDirection, setShowDirection] = useState(false);
 
 	// Intercept file selection: show GSD dialog for non-GeoTIFF files
 	const handleFileSelect = useCallback(
@@ -174,8 +175,9 @@ function App() {
 								disabled={isProcessing}
 								showBoxes={showBoxes}
 								showLabels={showLabels}
+								showDirection={showDirection && modelMetadata?.task === "obb"}
 							/>
-							<div className="flex items-center gap-4">
+							<div className="flex flex-wrap items-center gap-4">
 								<button
 									type="button"
 									onClick={() => dispatch({ type: "CLEAR_ALL" })}
@@ -202,6 +204,20 @@ function App() {
 									/>
 									ラベル
 								</label>{" "}
+								{modelMetadata?.task === "obb" && (
+									<label
+										className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300"
+										title="モデルの OBB 角度を仮の船首方位として表示します。船首と船尾は区別できません。"
+									>
+										<input
+											type="checkbox"
+											checked={showDirection}
+											onChange={(e) => setShowDirection(e.target.checked)}
+											className="h-4 w-4 accent-blue-600"
+										/>
+										方向（仮）
+									</label>
+								)}
 								<StatusMessage status={status} />
 							</div>
 						</>

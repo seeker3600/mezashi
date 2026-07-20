@@ -3,6 +3,13 @@ import type { Detection } from "./types";
 type Point = [number, number];
 
 /**
+ * Return the angle of an OBB's long axis.
+ */
+export function getOBBLongAxisAngle(d: Detection): number {
+	return d.height > d.width ? d.angle + Math.PI / 2 : d.angle;
+}
+
+/**
  * Calculate the 4 corner points of an oriented bounding box.
  */
 export function getOBBCorners(d: Detection): Point[] {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	convexPolygonIoU,
 	getOBBCorners,
+	getOBBLongAxisAngle,
 	intersectConvexPolygons,
 	polygonArea,
 } from "../obbUtils";
@@ -76,6 +77,24 @@ describe("getOBBCorners", () => {
 		expect(corners[0][1]).toBeCloseTo(-2, 5);
 		expect(corners[1][0]).toBeCloseTo(1, 5);
 		expect(corners[1][1]).toBeCloseTo(2, 5);
+	});
+});
+
+describe("getOBBLongAxisAngle", () => {
+	it("should use the OBB angle when width is the long side", () => {
+		const angle = getOBBLongAxisAngle(
+			makeDetection({ width: 40, height: 20, angle: Math.PI / 4 }),
+		);
+
+		expect(angle).toBeCloseTo(Math.PI / 4);
+	});
+
+	it("should rotate the angle by 90 degrees when height is the long side", () => {
+		const angle = getOBBLongAxisAngle(
+			makeDetection({ width: 20, height: 40, angle: 0 }),
+		);
+
+		expect(angle).toBeCloseTo(Math.PI / 2);
 	});
 });
 

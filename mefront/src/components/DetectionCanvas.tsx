@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getOBBCorners } from "../lib/obbUtils";
+import { getOBBCorners, getOBBLongAxisAngle } from "../lib/obbUtils";
 import type { Detection } from "../lib/types";
 
 /** Convert hex color to rgba string */
@@ -38,6 +38,7 @@ interface DetectionCanvasProps {
 	disabled?: boolean;
 	showBoxes?: boolean;
 	showLabels?: boolean;
+	showDirection?: boolean;
 }
 
 export function DetectionCanvas({
@@ -49,6 +50,7 @@ export function DetectionCanvas({
 	disabled = false,
 	showBoxes = true,
 	showLabels = true,
+	showDirection = false,
 }: DetectionCanvasProps) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -231,6 +233,55 @@ export function DetectionCanvas({
 				ctx.stroke();
 			}
 
+			if (showDirection) {
+				const directionAngle = getOBBLongAxisAngle(det);
+				const directionX = Math.cos(directionAngle);
+				const directionY = Math.sin(directionAngle);
+				const longAxisLength = Math.max(det.width, det.height) * fitScale;
+				const halfArrowLength = Math.max(0, longAxisLength / 2 - 4 / scale);
+				const startOffset = halfArrowLength * 0.2;
+				const endOffset = halfArrowLength;
+				const cx = det.cx * fitScale;
+				const cy = det.cy * fitScale;
+				const startX = cx + directionX * startOffset;
+				const startY = cy + directionY * startOffset;
+				const endX = cx + directionX * endOffset;
+				const endY = cy + directionY * endOffset;
+				const arrowHeadLength = Math.min(8 / scale, halfArrowLength * 0.6);
+
+				if (arrowHeadLength > 0) {
+					ctx.beginPath();
+					ctx.moveTo(startX, startY);
+					ctx.lineTo(endX, endY);
+					ctx.strokeStyle = hexToRgba(color, 0.8);
+					ctx.lineWidth =
+						Math.max(2, Math.min(displayWidth, displayHeight) / 500) / scale;
+					ctx.stroke();
+
+					ctx.beginPath();
+					ctx.moveTo(endX, endY);
+					ctx.lineTo(
+						endX -
+							directionX * arrowHeadLength -
+							directionY * arrowHeadLength * 0.6,
+						endY -
+							directionY * arrowHeadLength +
+							directionX * arrowHeadLength * 0.6,
+					);
+					ctx.lineTo(
+						endX -
+							directionX * arrowHeadLength +
+							directionY * arrowHeadLength * 0.6,
+						endY -
+							directionY * arrowHeadLength -
+							directionX * arrowHeadLength * 0.6,
+					);
+					ctx.closePath();
+					ctx.fillStyle = hexToRgba(color, 0.8);
+					ctx.fill();
+				}
+			}
+
 			// Draw label inside OBB with rotation
 			if (showLabels) {
 				const label = `${det.className} ${(det.confidence * 100).toFixed(0)}%`;
@@ -280,6 +331,7 @@ export function DetectionCanvas({
 		offset,
 		showBoxes,
 		showLabels,
+		showDirection,
 	]);
 
 	if (!imageSource) return null;
