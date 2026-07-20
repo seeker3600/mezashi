@@ -1,3 +1,4 @@
+import * as ort from "onnxruntime-web";
 import { describe, expect, it } from "vitest";
 import { mapDetectionFromAugmentedTile } from "../inference";
 import type { Detection } from "../types";
@@ -15,6 +16,10 @@ const baseDetection: Detection = {
 
 describe("mapDetectionFromAugmentedTile", () => {
 	const size = 640;
+
+	it("loads ONNX Runtime assets from the Vite base URL", () => {
+		expect(ort.env.wasm.wasmPaths).toBe(import.meta.env.BASE_URL);
+	});
 
 	it("maps horizontal flip back to original coordinates", () => {
 		const mapped = mapDetectionFromAugmentedTile(
